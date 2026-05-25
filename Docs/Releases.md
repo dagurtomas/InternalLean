@@ -80,5 +80,5 @@ Release checklist:
    ```
 
 Do not move or force-push public release tags. If a fix is needed for the same Lean version after a
-tag is public, create a new tag such as `v4.30.0-rc2-internallean.1` and ask downstream projects to
-use that tag.
+tag is public, create a new unique tag such as `v4.30.0-rc2-patch` or
+`v4.30.0-rc2-internallean.1` and ask downstream projects to use that tag.

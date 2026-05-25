@@ -75,8 +75,9 @@ lhs ≡ rhs
 Notes:
 
 - `Type`, `Type u`, and `Type max u v` are object-level universe expressions.
-- `→` is the current user-facing object/function-arrow notation.
-- `⇒` is an explicit spelling for the framework's structural function layer.
+- `→` is user-facing object/function-arrow notation. It requires the theory to provide the
+  `FunctionCore` fragment (`Fun`, `lam`, and `app`).
+- `⇒` is the framework structural arrow for LF arities and dependent rule parameters.
 - `fun x => body` builds an object lambda.
 - `lhs ≡ rhs` is object-expression syntax for judgmental-equality-shaped expressions.
 - `{x := value}` is an explicit implicit-argument marker used by the LF elaborator.
@@ -239,6 +240,24 @@ structural
 The `computation` role marks rules that prove conversion/equality consequences. Object `simp` uses
 these rules as rewrite candidates when they conclude in a judgment marked `type_conversion` or
 `term_conversion`.
+
+### Diagnostic object macros and roles
+
+```lean
+object_macro T Name (x, y) => template
+object_role T Name : role
+object_role T Name : role for Related
+#print_object_macros T
+#print_object_roles T
+#expand_object T expr
+```
+
+`object_macro` records theory-local diagnostic notation and can be expanded with `#expand_object`.
+It is not part of checked LF elaboration: checked declarations should use the expanded expression.
+If a macro head appears in a checked declaration, InternalLean rejects it with a diagnostic asking
+for the expanded expression.
+
+`object_role` attaches non-semantic role metadata to an object declaration or macro.
 
 ### Rewrite and transport metadata
 
@@ -466,6 +485,9 @@ generate_public_model_interface T as M
 #print_model_template T as M
 #print_public_model_template T as M
 ```
+
+Generation commands must be run at the root namespace. Printing and checking commands are safe to
+use for inspection before generation.
 
 Model sections:
 

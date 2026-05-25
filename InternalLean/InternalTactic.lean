@@ -505,10 +505,8 @@ def objectGoalNormalizationMismatchString (sig : HLSignature) (ctx : Array HLBin
   let mentioned := collectLFDefinitionMentions defs locals mentioned expected
   let unfolded := collectLFDefinitionUnfolds defs locals #[] actual
   let unfolded := collectLFDefinitionUnfolds defs locals unfolded expected
-  let blocked : Array Name := #[]
   let remaining := collectLFDefinitionMentions defs locals #[] actualN
   let remaining := collectLFDefinitionMentions defs locals remaining expectedN
-  let blockedLine : List String := []
   let remainingLine :=
     if remaining.isEmpty then []
     else [s!"Definition head(s) still present after bounded unfolding: \
@@ -518,7 +516,7 @@ def objectGoalNormalizationMismatchString (sig : HLSignature) (ctx : Array HLBin
     s!"normalized expected: {diagnosticObjExprString expectedN}",
     s!"LF definitions mentioned before unfolding: {diagnosticNameListString mentioned}",
     s!"LF definitions unfolded: {diagnosticNameListString unfolded}"] ++
-      blockedLine ++ remainingLine
+      remainingLine
 
 /-- Split an object application into a head and spine. -/
 partial def objectAppHeadAndArgs : ObjExpr → ObjExpr × Array ObjExpr

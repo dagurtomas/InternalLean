@@ -42,8 +42,9 @@ A small command sequence looks like this:
 generate_model_interface TinyNat as TinyNatModel
 ```
 
-After `generate_model_interface`, `TinyNatModel` is a Lean structure available in the current
-environment.
+Generation commands must be run at the root namespace so generated declarations have deterministic
+names. After `generate_model_interface`, `TinyNatModel` is a Lean structure available in the
+current environment.
 
 ## Inspecting obligations
 
@@ -83,7 +84,8 @@ the environment.
 generate_model_interface T as M
 ```
 
-Generates the model interface as Lean code.
+Generates the model interface as Lean code. Run generation commands at the root namespace; if the
+current namespace is non-root, InternalLean reports an error before emitting declarations.
 
 Public/minimal variants:
 
@@ -223,7 +225,8 @@ generate_lf_model_transports T only f g h for M
 ```
 
 Use the selected form when you only want a small subset of declarations or when debugging one
-transport at a time.
+transport at a time. Selected LF transports automatically include transitive checked theorem
+references needed by the selected declarations, and dependencies are emitted before dependents.
 
 ## Admissions and generated transports
 
@@ -248,6 +251,9 @@ A model workflow should distinguish:
 4. model fields supplied by the user.
 
 ## Common troubleshooting
+
+If generation fails under a namespace, close the namespace and rerun the generation command at the
+root. Printing commands such as `#print_model_interface` remain useful for inspection.
 
 If a model obligation is missing, check whether the declaration was hidden by `model_internal` or
 `model_compat`.

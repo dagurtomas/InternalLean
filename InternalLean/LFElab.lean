@@ -2328,8 +2328,13 @@ partial def checkKnownNamesInLFExpr (sig : HLSignature) (globals locals : NameSe
   | .ident n => do
       let n := n.eraseMacroScopes
       if !(locals.contains n) && !(globals.contains n) then
-        throwError "unknown identifier '{n}' in {where_} of {ownerKind} '{ownerName}' in type \
-          theory '{sig.name}'"
+        if (findObjectMacro? sig n).isSome then
+          throwError "object_macro '{n}' in type theory '{sig.name}' is diagnostic-only and \
+            cannot appear in checked LF declarations; expand it before writing {where_} of \
+              {ownerKind} '{ownerName}'"
+        else
+          throwError "unknown identifier '{n}' in {where_} of {ownerKind} '{ownerName}' in type \
+            theory '{sig.name}'"
       if let some (some arity) := opaqueArities.find? n then
         if arity != 0 then
           throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' uses lf_opaque '{n}' \
@@ -2340,8 +2345,13 @@ partial def checkKnownNamesInLFExpr (sig : HLSignature) (globals locals : NameSe
       | (.ident head, args) =>
           let head := head.eraseMacroScopes
           if !(locals.contains head) && !(globals.contains head) then
-            throwError "unknown identifier '{head}' in {where_} of {ownerKind} '{ownerName}' in \
-              type theory '{sig.name}'"
+            if (findObjectMacro? sig head).isSome then
+              throwError "object_macro '{head}' in type theory '{sig.name}' is diagnostic-only \
+                and cannot appear in checked LF declarations; expand it before writing {where_} \
+                  of {ownerKind} '{ownerName}'"
+            else
+              throwError "unknown identifier '{head}' in {where_} of {ownerKind} '{ownerName}' \
+                in type theory '{sig.name}'"
           checkLFOpaqueArity sig opaqueArities ownerKind ownerName where_ head args
           for arg in args do
             checkKnownNamesInLFExpr sig globals locals opaqueArities ownerKind ownerName where_ arg

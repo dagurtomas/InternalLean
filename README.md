@@ -186,6 +186,9 @@ generate_model_interface T as M
 generate_model_transport T f for M
 ```
 
+Run model-generation commands at the root namespace. Selected LF transport generation includes
+checked theorem dependencies before selected theorem transports.
+
 Longer `#check_default_profile_lf_*`, `#print_default_profile_*`, `#print_lean_type_*`, and
 `#print_lf_model_*` commands are developer diagnostics for inspecting replay/model internals.
 
@@ -211,7 +214,8 @@ In particular, checked LF artifacts track:
 - generated model obligations and transports derived from checked LF artifacts.
 
 Remaining trusted leaves are explicit: opaque LF constants, opaque side-condition solvers or
-certificates unless backed by checked hooks, and the shallow built-in raw syntax constructors.
+certificates unless backed by checked hooks, and low-level raw replay payload constructors. Public
+APIs should prefer checked replay wrappers such as `CheckedKernelLFDerivation.ofReplay`.
 
 Model interpretation should consume checked LF artifacts, not parser traces alone.
 

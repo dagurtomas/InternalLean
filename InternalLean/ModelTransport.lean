@@ -20,6 +20,17 @@ open Lean Elab Command
 
 namespace InternalLean
 
+/-- Reject generation commands under a non-root namespace.
+
+Generated declarations are intentionally placed in deterministic top-level namespaces named by the
+source theory and model structure. Running these commands under another namespace would otherwise
+produce nested Lean names that differ from preview diagnostics. -/
+def requireRootNamespaceForModelGeneration (commandName : String) : CommandElabM Unit := do
+  let ns ← getCurrNamespace
+  unless ns == .anonymous do
+    throwError "{commandName} must be run at the root namespace; current namespace is '{ns}'. \
+      Close the namespace before generating model interfaces or transports."
+
 def elabGeneratedCommandSyntaxInTheoryNamespace (theoryName : Name) (cmd : Syntax) :
   CommandElabM Unit := do
   let nsId := mkIdent theoryName
@@ -114,6 +125,10 @@ elab "#check_lf_model_obligation_validation_self_tests" : command => do
   expectFailure #[mk .theoremSideConditionCertificate .derivedParameter `cert,
       mk .theoremSideConditionCertificate .derivedParameter `cert]
     "duplicate derived parameter name 'cert'"
+  expectFailure #[mk .syntaxSort .field `mk]
+    "invalid field name 'mk'"
+  expectFailure #[mk .syntaxSort .field `Qualified.field]
+    "invalid field name 'Qualified.field'"
   logInfo m!"LF model obligation validation self-tests passed"
 
 /-- Print the stable contract for generated LF model obligations and names. -/
@@ -237,6 +252,7 @@ elab "#print_lf_model_derived_theorems " theory:ident " for " structureName:iden
 
 /-- Generate an LF-model structure from checked LF metadata. -/
 elab "generate_lf_model_structure " theory:ident " as " structureName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_lf_model_structure"
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
@@ -356,6 +372,7 @@ def generateLFAdmissionModelMethod (theoryName structureName : Name) (checked : 
 
 /-- Generate derived LF theorem declarations by replaying checked LF derivations over a model. -/
 elab "generate_lf_model_derived_theorems " theory:ident " for " structureName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_lf_model_derived_theorems"
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
@@ -444,13 +461,59 @@ elab "#print_lf_model_transports " theory:ident " for " structureName:ident : co
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
   logInfo m!"{← lfModelTransportPreviewString theory.getId structureName.getId checked admissions}"
 
+/-- Theorem heads syntactically mentioned in a checked LF expression. -/
+partial def lfTheoremRefsInCheckedLFExpr : CheckedLFExpr → Array Name
+  | .ident h => if h.kind == .lfTheorem then #[h.name.eraseMacroScopes] else #[]
+  | .sort | .univ _ => #[]
+  | .app f a => lfTheoremRefsInCheckedLFExpr f ++ lfTheoremRefsInCheckedLFExpr a
+  | .arrow _ A B => lfTheoremRefsInCheckedLFExpr A ++ lfTheoremRefsInCheckedLFExpr B
+  | .lam _ body => lfTheoremRefsInCheckedLFExpr body
+  | .jeq lhs rhs => lfTheoremRefsInCheckedLFExpr lhs ++ lfTheoremRefsInCheckedLFExpr rhs
+
+/-- Transitive theorem references needed by a selected theorem transport. -/
+partial def lfModelTransportTheoremDependencyClosure (checked : CheckedSignature)
+    (name : Name) (visited : NameSet := {}) : NameSet := Id.run do
+  let name := name.eraseMacroScopes
+  if visited.contains name then
+    return visited
+  let visited := visited.insert name
+  let some t := LeanTypeModelGeneration.findCheckedLFJudgmentTheorem? checked.lfJudgmentTheorems
+    name
+    | return visited
+  let mut refs := t.premiseTheorems.map Name.eraseMacroScopes
+  match t.proofHead? with
+  | some h =>
+      if h.kind == .lfTheorem then
+        refs := refs.push h.name.eraseMacroScopes
+  | none => pure ()
+  refs := refs ++ lfTheoremRefsInCheckedLFExpr t.checkedProof
+  if let some derivation := t.derivation? then
+    refs := refs ++ LeanTypeModelGeneration.lfTheoremRefsInDerivation derivation
+  let mut out := visited
+  for ref in refs do
+    out := lfModelTransportTheoremDependencyClosure checked ref out
+  return out
+
+/-- Add transitive theorem dependencies to a selected transport set. -/
+def expandSelectedLFModelTransportSet (checked : CheckedSignature) (selected : NameSet) : NameSet :=
+  Id.run do
+  let mut out := selected
+  for t in checked.lfJudgmentTheorems do
+    if selected.contains t.name.eraseMacroScopes then
+      for dep in (lfModelTransportTheoremDependencyClosure checked t.name {}).toList do
+        out := out.insert dep.eraseMacroScopes
+  return out
+
 /-- Generate selected checked/admitted LF declarations as model-interface methods. -/
 def generateSelectedLFModelMethods (theoryName structureName : Name) (checked : CheckedSignature)
     (admissions : Array InternalAdmission) (selected? : Option NameSet := none) :
       CommandElabM Unit := do
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  let selectedExpanded? := match selected? with
+    | none => none
+    | some selected => some (expandSelectedLFModelTransportSet checked selected)
   let wanted (n : Name) : Bool :=
-    match selected? with
+    match selectedExpanded? with
     | none => true
     | some names => names.contains n.eraseMacroScopes
   LeanTypeModelGeneration.addLFModelInterfaceLibrarySuggestionDenyList structureName 1
@@ -477,6 +540,7 @@ def generateSelectedLFModelMethods (theoryName structureName : Name) (checked : 
 /-- Generate all renderable checked LF definitions and judgment theorems as model-interface methods.
 -/
 elab "generate_lf_model_transports " theory:ident " for " structureName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_lf_model_transports"
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
@@ -485,6 +549,7 @@ elab "generate_lf_model_transports " theory:ident " for " structureName:ident : 
 /-- Generate only the named checked/admitted LF declarations as model-interface methods. -/
 elab "generate_lf_model_transports \
   " theory:ident " only " decls:ident* " for " structureName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_lf_model_transports"
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
@@ -664,6 +729,7 @@ elab "#print_public_model_interface " theory:ident " as " structureName:ident : 
 
 /-- Generate a model interface using the LF workflow backend. -/
 elab "generate_model_interface " theory:ident " as " structureName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_model_interface"
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
@@ -683,6 +749,7 @@ elab "generate_model_interface " theory:ident " as " structureName:ident : comma
 
 /-- Generate a public/minimal model interface using the LF workflow backend. -/
 elab "generate_public_model_interface " theory:ident " as " structureName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_public_model_interface"
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
@@ -703,6 +770,7 @@ elab "generate_public_model_interface " theory:ident " as " structureName:ident 
 
 /-- Generate a sectioned model interface from theory-local `model_section` metadata. -/
 elab "generate_model_section_interface " theory:ident " as " structureName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_model_section_interface"
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
@@ -718,6 +786,7 @@ elab "generate_model_section_interface " theory:ident " as " structureName:ident
 -/
 elab "generate_public_model_section_interface " theory:ident " as " structureName:ident :
   command => do
+  requireRootNamespaceForModelGeneration "generate_public_model_section_interface"
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
@@ -736,6 +805,7 @@ projection without elaborating a duplicate large sectioned telescope. Use
 `generate_model_section_interface` for a standalone section-owned interface. -/
 elab "generate_model_sections \
   " theory:ident " as " structureName:ident " adapting " flatName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_model_sections"
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
@@ -750,6 +820,7 @@ elab "generate_model_sections \
 interface. -/
 elab "generate_public_model_sections \
   " theory:ident " as " structureName:ident " adapting " flatName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_public_model_sections"
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
@@ -796,6 +867,7 @@ elab "#print_public_model_section_bundles \
 /-- Generate true model-section bundle structures plus an adapter to an existing flat interface. -/
 elab "generate_model_section_bundles \
   " theory:ident " as " bundleName:ident " adapting " flatName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_model_section_bundles"
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
@@ -812,6 +884,7 @@ elab "generate_model_section_bundles \
 interface. -/
 elab "generate_public_model_section_bundles \
   " theory:ident " as " bundleName:ident " adapting " flatName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_public_model_section_bundles"
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
@@ -957,6 +1030,7 @@ elab "#print_model_transport_signature " theory:ident declName:ident " for " str
 /-- Generate the model transport declaration for one internal declaration. -/
 elab "generate_model_transport " theory:ident declName:ident " for " structureName:ident :
   command => do
+  requireRootNamespaceForModelGeneration "generate_model_transport"
   match ← modelTransportCommandSyntax? theory.getId declName.getId structureName.getId with
   | some transport =>
       ensureModelTransportNameAvailable theory.getId structureName.getId transport

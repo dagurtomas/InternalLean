@@ -34,6 +34,20 @@ object_role MacroSmoke rel_refl : intro for SelfRel
 #print_object_macros MacroSmoke
 #print_object_roles MacroSmoke
 
+/--
+error: failed to check internal LF declaration 'MacroSmoke.bad' in type theory 'MacroSmoke'
+
+LF object definition path:
+object_macro 'SelfRel' in type theory 'MacroSmoke' is diagnostic-only and cannot appear in checked
+LF declarations; expand it before writing type of lf_def 'bad'
+
+LF judgment theorem path:
+object_macro 'SelfRel' in type theory 'MacroSmoke' is diagnostic-only and cannot appear in checked
+LF declarations; expand it before writing statement of judgment_theorem 'bad'
+-/
+#guard_msgs (whitespace := lax) in
+internal def MacroSmoke.bad : SelfRel base := rel_refl base
+
 internal def MacroSmoke.baseRel : Rel base base :=
   rel_refl base
 

@@ -26,6 +26,24 @@ namespace InternalLeanTest.RawConversion
     (Raw.tmApp `lam [.leanParam `x, .tmApp `id [.leanParam `x]])
     (Raw.tmApp `lam [.leanParam `y, .tmApp `id [.leanParam `y]])
 
+/- The preferred replay API wraps raw derivations only after executable checking. -/
+#guard
+  let stmt := Judgment.custom `J []
+  let ruleSchema : RuleSchema := RuleSchema.mk `intro [] [] [] [] [] stmt
+  let sig : Signature := { name := `T, rules := [ruleSchema] }
+  let raw := KernelLFDerivation.ruleApp `intro stmt {} [] []
+  match CheckedKernelLFDerivation.ofDerivation sig {} raw with
+  | .ok checked => checked.check.isOk
+  | .error _ => false
+
+/- Checked replay wrappers reject raw derivations that cannot be replayed. -/
+#guard
+  let stmt := Judgment.custom `J []
+  let raw := KernelLFDerivation.ruleApp `missing stmt {} [] []
+  match CheckedKernelLFDerivation.ofDerivation { name := `T } {} raw with
+  | .ok _ => false
+  | .error err => err.contains "unknown rule"
+
 /- A non-identity beta redex should not reduce to its argument. -/
 #guard
   let lhs := Raw.tmApp `_app [.tmApp `lam [.leanParam `x, .tmConst `c], .tmConst `a]

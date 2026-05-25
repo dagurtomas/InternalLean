@@ -208,6 +208,17 @@ Theory and trust-boundary inspection:
 #lint_type_theory_sorries T
 ```
 
+Model-generation consistency checks:
+
+- `generate_model_interface` and related generation commands must run at the root namespace. They
+  emit declarations in deterministic top-level namespaces named by the theory/model interface.
+- Selective LF model transports include checked theorem-reference dependencies before the selected
+  theorem transport.
+- Generated model field and method names are validated before Lean structure elaboration; qualified
+  names and reserved structure names such as `mk` are rejected.
+- `object_macro` is diagnostic/ergonomic metadata. Checked LF declarations must use the expanded
+  expression explicitly.
+
 Developer-level LF diagnostics include:
 
 ```lean
@@ -216,6 +227,11 @@ Developer-level LF diagnostics include:
 #print_logical_framework_rule_schemas T
 #print_lf_replay_trust_summary T
 ```
+
+Low-level replay payload constructors such as `KernelLFDerivation.ruleApp` are raw syntax. Public
+APIs should prefer `CheckedKernelLFDerivation.ofReplay`,
+`CheckedKernelLFDerivation.ofDerivation`, or `KernelLFReplayCertificate.toChecked`; these wrappers
+rerun executable replay validation and are the supported trust-boundary tokens.
 
 The developer diagnostics are useful for implementation work. Public examples should usually prefer
 the shorter user-facing commands.

@@ -91,6 +91,8 @@ judgment predicates, rules, admitted LF constants, and side-condition certificat
 
 A model transport specializes a checked internal declaration or LF theorem to a completed model.
 The generated code should be derived from checked LF artifacts rather than raw parser traces.
+Generation commands run at the root namespace so emitted Lean names are deterministic; selected LF
+transport generation includes transitive checked theorem dependencies before dependents.
 
 Current model generation targets Lean structures. The architecture should also leave room for
 future semantic backends, such as categorical, presheaf, sheaf, cohesive, modal, or custom semantic
@@ -122,10 +124,10 @@ The main trusted leaves are explicit:
 - opaque LF constants declared by the user;
 - admitted internal declarations;
 - side-condition solvers or certificates without checked hooks;
-- the shallow built-in raw syntax constructors.
+- low-level raw replay payload constructors.
 
-Everything else should be pushed toward checked LF rules, checked certificates, or generated model
-obligations.
+Everything else should be pushed toward checked LF rules, checked certificates, generated model
+obligations, or checked replay wrappers at public API boundaries.
 
 ## Design principles
 

@@ -185,6 +185,59 @@ declare_type_theory LFParameterSubstitutionCaptureReject where
     conclusion : EqFun (fun y => x) (fun y => y)
   judgment_theorem bad : EqFun (fun y => y) (fun y => y) := bad_rule y
 
+declare_type_theory DependentFunctionRuleReplaySmoke where
+  syntax_sort Ctx
+  syntax_sort Ty (Γ : Ctx)
+  judgment J (P : (Γ : Ctx) ⇒ Ty Γ)
+  lf_opaque mkTy (Γ : Ctx) : Ty Γ
+  rule intro (P : (Γ : Ctx) ⇒ Ty Γ) where
+    conclusion : J P
+  judgment_theorem good : J (fun Γ => mkTy Γ) := intro (fun Γ => mkTy Γ)
+
+/--
+error: judgment_theorem 'bad' in type theory 'DependentFunctionRuleReject' has proof argument for
+rule 'intro' parameter 'P' argument 'fun Γ => mkTy other' with type 'Ty other', expected 'Ty Γ'
+-/
+#guard_msgs (whitespace := lax) in
+declare_type_theory DependentFunctionRuleReject where
+  syntax_sort Ctx
+  syntax_sort Ty (Γ : Ctx)
+  lf_opaque empty : Ctx
+  lf_opaque other : Ctx
+  lf_opaque mkTy (Γ : Ctx) : Ty Γ
+  judgment J (P : (Γ : Ctx) ⇒ Ty Γ)
+  rule intro (P : (Γ : Ctx) ⇒ Ty Γ) where
+    conclusion : J P
+  judgment_theorem bad : J (fun Γ => mkTy Γ) := intro (fun Γ => mkTy other)
+
+declare_type_theory SelectiveTransportDependencySmoke where
+  syntax_sort Obj
+  judgment J
+  rule intro where
+    conclusion : J
+  judgment_theorem t1 : J := intro
+  judgment_theorem t2 : J := t1
+
+generate_model_interface SelectiveTransportDependencySmoke as SelectiveTransportDependencyModel
+generate_lf_model_transports SelectiveTransportDependencySmoke only t2 for
+  SelectiveTransportDependencyModel
+#check SelectiveTransportDependencySmoke.SelectiveTransportDependencyModel.t1
+#check SelectiveTransportDependencySmoke.SelectiveTransportDependencyModel.t2
+
+declare_type_theory NamespaceGenerationRejectSmoke where
+  syntax_sort Obj
+
+namespace Wrapper
+
+/--
+error: generate_model_interface must be run at the root namespace; current namespace is 'Wrapper'.
+Close the namespace before generating model interfaces or transports.
+-/
+#guard_msgs (whitespace := lax) in
+generate_model_interface NamespaceGenerationRejectSmoke as BadModel
+
+end Wrapper
+
 declare_type_theory ReplaySummarySmoke where
   syntax_sort Obj
   judgment J

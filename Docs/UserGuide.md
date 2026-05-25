@@ -292,8 +292,10 @@ those declarations to the environment.
 generate_model_interface TinyNat as TinyNatModel
 ```
 
-Generates the Lean model-interface structure and inherited projection exports. After this command,
-`TinyNatModel` is available as a Lean structure to instantiate.
+Generates the Lean model-interface structure and inherited projection exports. Run generation
+commands at the root namespace; InternalLean rejects generation under wrapper namespaces to keep
+Lean names deterministic. After this command, `TinyNatModel` is available as a Lean structure to
+instantiate.
 
 ```lean
 #print_model_template TinyNat as TinyNatModel
@@ -306,7 +308,8 @@ items, and omitted declarations.
 
 A model transport specializes a checked internal declaration or LF theorem to a completed model.
 Transport generation consumes checked LF artifacts. It should not depend on raw parser traces or
-unchecked tactic scripts.
+unchecked tactic scripts. Selected LF transport generation automatically includes transitive checked
+theorem dependencies before the selected theorem transport.
 
 Use these commands after generating or importing a model interface.
 

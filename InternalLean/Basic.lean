@@ -121,7 +121,7 @@ All metavariable constructors still share the same namespace. The `scopedBind` n
 staging binder, so substitutions do not rewrite references to its bound name in the body. A
 trusted replay path separately checks instantiation entries so that context metavariables are
 instantiated by contexts, type metavariables by types, etc. -/
-def instantiate (σ : Instantiation) (raw : Raw) : Raw :=
+partial def instantiate (σ : Instantiation) (raw : Raw) : Raw :=
   let rec go (blocked : List Name) : Raw → Raw
     | .ctxNil => .ctxNil
     | .ctxMeta x => if blocked.contains x then .ctxMeta x else σ x
@@ -133,7 +133,22 @@ def instantiate (σ : Instantiation) (raw : Raw) : Raw :=
     | .tmVar i => .tmVar i
     | .tmMeta x => if blocked.contains x then .tmMeta x else σ x
     | .tmConst c => .tmConst c
-    | .tmApp f args => .tmApp f (args.map (go blocked))
+    | .tmApp f args =>
+        if f == `lam then
+          match args.reverse with
+          | [] => .tmApp f []
+          | body :: revBinders =>
+              let binders := revBinders.reverse
+              if binders.all (fun | .leanParam _ => true | _ => false) then
+                let cleanBinders := binders.map fun
+                  | .leanParam x => .leanParam x.eraseMacroScopes
+                  | other => other
+                let blocked' := cleanBinders.filterMap (fun | .leanParam x => some x | _ => none)
+                .tmApp f (cleanBinders ++ [go (blocked' ++ blocked) body])
+              else
+                .tmApp f (args.map (go blocked))
+        else
+          .tmApp f (args.map (go blocked))
     | .tmSubst t τ => .tmSubst (go blocked t) (go blocked τ)
     | .substId Γ => .substId (go blocked Γ)
     | .substMeta x => if blocked.contains x then .substMeta x else σ x
@@ -150,7 +165,7 @@ def instantiate (σ : Instantiation) (raw : Raw) : Raw :=
 This is a syntactic dependency approximation used by the kernel-facing replay checker. It is
 binder-aware for `scopedBind`, but it is not a full free-variable analysis for future binder
 forms. -/
-def localRefNames : Raw → List Name
+partial def localRefNames : Raw → List Name
   | .ctxNil => []
   | .ctxMeta x => [x]
   | .ctxExt Γ A => localRefNames Γ ++ localRefNames A
@@ -161,7 +176,21 @@ def localRefNames : Raw → List Name
   | .tmVar _ => []
   | .tmMeta x => [x]
   | .tmConst _ => []
-  | .tmApp _ args => args.flatMap localRefNames
+  | .tmApp f args =>
+      if f == `lam then
+        match args.reverse with
+        | [] => []
+        | body :: revBinders =>
+            let rawBinders := revBinders.reverse
+            if rawBinders.all (fun | .leanParam _ => true | _ => false) then
+              let binders := rawBinders.filterMap fun
+                | .leanParam x => some x.eraseMacroScopes
+                | _ => none
+              (localRefNames body).filter (fun y => !binders.contains y.eraseMacroScopes)
+            else
+              args.flatMap localRefNames
+      else
+        args.flatMap localRefNames
   | .tmSubst t τ => localRefNames t ++ localRefNames τ
   | .substId Γ => localRefNames Γ
   | .substMeta x => [x]
@@ -309,7 +338,24 @@ partial def instantiateChecked (σ : Instantiation) (raw : Raw) : Except String 
     | .tmVar i => pure (.tmVar i)
     | .tmMeta x => subst blocked .tmMeta x
     | .tmConst c => pure (.tmConst c)
-    | .tmApp f args => return .tmApp f (← args.mapM (go blocked))
+    | .tmApp f args =>
+        if f == `lam then
+          match args.reverse with
+          | [] => pure (.tmApp f [])
+          | body :: revBinders =>
+              let binders := revBinders.reverse
+              if binders.all (fun | .leanParam _ => true | _ => false) then
+                let cleanBinders := binders.map fun
+                  | .leanParam x => .leanParam x.eraseMacroScopes
+                  | other => other
+                let blocked' := cleanBinders.filterMap fun
+                  | .leanParam x => some x
+                  | _ => none
+                return .tmApp f (cleanBinders ++ [← go (blocked' ++ blocked) body])
+              else
+                return .tmApp f (← args.mapM (go blocked))
+        else
+          return .tmApp f (← args.mapM (go blocked))
     | .tmSubst t τ => return .tmSubst (← go blocked t) (← go blocked τ)
     | .substId Γ => return .substId (← go blocked Γ)
     | .substMeta x => subst blocked .substMeta x
@@ -348,7 +394,27 @@ partial def substLeanParam (x : Name) (value : Raw) : Raw → Raw
   | .tmVar i => .tmVar i
   | .tmMeta y => .tmMeta y
   | .tmConst c => .tmConst c
-  | .tmApp f args => .tmApp f (args.map (substLeanParam x value))
+  | .tmApp f args =>
+      if f == `lam then
+        match args.reverse with
+        | [] => .tmApp f []
+        | body :: revBinders =>
+            let binders := revBinders.reverse
+            if binders.all (fun | .leanParam _ => true | _ => false) then
+              let cleanBinders := binders.map fun
+                | .leanParam y => .leanParam y.eraseMacroScopes
+                | other => other
+              let binderNames := cleanBinders.filterMap fun
+                | .leanParam y => some y
+                | _ => none
+              if binderNames.contains x.eraseMacroScopes then
+                .tmApp f (cleanBinders ++ [body])
+              else
+                .tmApp f (cleanBinders ++ [substLeanParam x value body])
+            else
+              .tmApp f (args.map (substLeanParam x value))
+      else
+        .tmApp f (args.map (substLeanParam x value))
   | .tmSubst t τ => .tmSubst (substLeanParam x value t) (substLeanParam x value τ)
   | .substId Γ => .substId (substLeanParam x value Γ)
   | .substMeta y => .substMeta y
@@ -914,7 +980,7 @@ def asInstantiation (σ : ScopedInstantiation) : Instantiation := fun x =>
 `Sort args` shape produced by LF syntax-sort declarations. -/
 def annotationCustomSort? : Raw → Option Name
   | .tyConst n => some n
-  | .tyApp n _ => some n
+  | .tyApp n _ => if n == `arrow then none else some n
   | _ => none
 
 /-- Find kernel-facing typed LF constant schemas by name and arity. More than one match is
@@ -973,6 +1039,21 @@ def expectedConstantAritiesMessage (schemas : List LFConstantSchema) : String :=
   | [] => "no registered arity"
   | [n] => s!"{n} argument(s)"
   | ns => "one of " ++ String.intercalate ", " (ns.map (fun n => s!"{n} argument(s)"))
+
+/-- Binder names carried by the raw LF lambda convention, if any. -/
+def rawLamBinderNames? : Raw → Option (List Name)
+  | .tmApp f args =>
+      if f == `lam then
+        match args.reverse with
+        | [] => some []
+        | _body :: revBinders =>
+            let binders := revBinders.reverse
+            binders.mapM fun
+              | .leanParam x => some x.eraseMacroScopes
+              | _ => none
+      else
+        none
+  | _ => none
 
 /-- A tiny kernel-facing type lookup for scoped-instantiation values, with diagnostics.
 
@@ -1132,7 +1213,8 @@ def validateAgainstWithConstants (constants : List LFConstantSchema)
           throw s!"scoped instantiation entry '{e.name}' has type annotation '{reprStr e.type?}', \
             expected scoped type annotation '{reprStr expectedType?}'"
         if let some ty := e.type? then
-          checkScopedRefs e.name "type annotation" available ty
+          let ownBinders := (rawLamBinderNames? e.value).getD []
+          checkScopedRefs e.name "type annotation" (available ++ ownBinders) ty
           ty.validateBuiltinConstructorDiscipline s!"scoped instantiation entry \
             '{e.name}'" "type annotation"
           if let some sortName := annotationCustomSort? ty then
@@ -1260,11 +1342,14 @@ def validateAgainst (σ : ScopedInstantiation) (metavariables : List RuleMetaVar
 
 end ScopedInstantiation
 
-/-- A kernel-facing, recursively replayed LF derivation tree.
+/-- A raw kernel-facing, recursively replayed LF derivation tree.
 
-This remains a checked staging artifact rather than trusted Lean evidence. Compared with the older
-shallow `CheckedLFDerivation`, it is expressed in terms of low-level `Judgment`s, finite scoped
-instantiations, typed metavariable entries, and certificate names. -/
+The constructors are public syntax for replay payloads, not a trust boundary. Consumers that need
+validated evidence should use `CheckedKernelLFDerivation.ofReplay`,
+`CheckedKernelLFDerivation.ofDerivation`, or `KernelLFReplayCertificate.toChecked`; those wrappers
+rerun executable replay validation against an explicit signature and context. Compared with the
+older shallow `CheckedLFDerivation`, this payload is expressed in terms of low-level `Judgment`s,
+finite scoped instantiations, typed metavariable entries, and certificate names. -/
 inductive KernelLFDerivation where
   /-- Reference to a local theorem assumption in the ambient replay context. -/
   | assumption (name : Name) (statement : Judgment) : KernelLFDerivation

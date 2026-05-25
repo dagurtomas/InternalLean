@@ -1376,6 +1376,20 @@ def lfModelContractString (checked : CheckedSignature) : String :=
     "  generic LF-model structure fields currently render LF universes as Lean Type / explicit \
       Type levels from LF syntax"]
 
+/-- Whether a generated Lean model field/declaration name is a safe simple identifier. -/
+def isSafeGeneratedLFModelName (n : Name) : Bool :=
+  match n.eraseMacroScopes with
+  | .str .anonymous s => s != "mk" && s != "rec" && s != "noConfusion"
+  | _ => false
+
+/-- Check one generated LF model name before it reaches Lean structure elaboration. -/
+def checkSafeGeneratedLFModelName (theoryName : Name) (role : String) (sourceName : Name)
+    (generatedName : Name) : Except String Unit := do
+  unless isSafeGeneratedLFModelName generatedName do
+    throw s!"LF model obligations for '{theoryName}' generate invalid {role} name \
+      '{generatedName}' from source declaration '{sourceName}'. Generated names must be simple \
+      unqualified identifiers and may not be reserved structure names such as 'mk'."
+
 /-- Pure structural validation for a generic LF model-obligation array.
 
 This helper is separate from environment-backed obligation extraction so regression tests can
@@ -1392,6 +1406,9 @@ def validateLFModelObligationArray (theoryName : Name) (obs : Array LFModelOblig
         return .error s!"LF model obligation '{o.name}' is a renderable field but has no \
           generated field name"
       | some n =>
+          match checkSafeGeneratedLFModelName theoryName "field" o.name n with
+          | .error msg => return .error msg
+          | .ok () => pure ()
           if seenFields.contains n then
             return .error s!"LF model obligations for '{theoryName}' generate duplicate field \
               name '{n}'"
@@ -1408,6 +1425,9 @@ def validateLFModelObligationArray (theoryName : Name) (obs : Array LFModelOblig
         return .error s!"LF model obligation '{o.name}' is a renderable derived declaration but \
           has no generated declaration name"
       | some n =>
+          match checkSafeGeneratedLFModelName theoryName "derived declaration" o.name n with
+          | .error msg => return .error msg
+          | .ok () => pure ()
           if seenDerivedDecls.contains n then
             return .error s!"LF model obligations for '{theoryName}' generate duplicate derived \
               declaration name '{n}'"
@@ -1421,6 +1441,9 @@ def validateLFModelObligationArray (theoryName : Name) (obs : Array LFModelOblig
         return .error s!"LF model obligation '{o.name}' is a renderable derived parameter but has \
           no generated parameter name"
       | some n =>
+          match checkSafeGeneratedLFModelName theoryName "derived parameter" o.name n with
+          | .error msg => return .error msg
+          | .ok () => pure ()
           if seenDerivedParams.contains n then
             return .error s!"LF model obligations for '{theoryName}' generate duplicate derived \
               parameter name '{n}'"
