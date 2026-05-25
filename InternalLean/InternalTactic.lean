@@ -448,7 +448,7 @@ structure CheckedLFObjectConversion where
   normalizedRhs : ObjExpr
   /-- Explicit checked steps that justify the conversion. -/
   steps : Array LFObjectConversionStep := #[]
-  /-- Local names that blocked LF-definition unfolding. -/
+  /-- Local names that blocked LF-definition unfolding in older checker versions. -/
   blockedLocalNames : Array Name := #[]
   /-- Definition heads still present after bounded unfolding. -/
   remainingDefinitionHeads : Array Name := #[]
@@ -461,8 +461,7 @@ def checkObjectGoalConversion (sig : HLSignature) (_levels : Array Name) (ctx : 
   let locals := internalObjectLocalNames ctx
   let aN := unfoldLFDefinitionsInExprWithLocals defs locals a
   let bN := unfoldLFDefinitionsInExprWithLocals defs locals b
-  let blocked := collectLFDefinitionBlockedLocals defs locals #[] a
-  let blocked := collectLFDefinitionBlockedLocals defs locals blocked b
+  let blocked : Array Name := #[]
   let remaining := collectLFDefinitionMentions defs locals #[] aN
   let remaining := collectLFDefinitionMentions defs locals remaining bN
   if objectExprEq a b then
@@ -470,7 +469,7 @@ def checkObjectGoalConversion (sig : HLSignature) (_levels : Array Name) (ctx : 
       lhs := a, rhs := b, normalizedLhs := aN, normalizedRhs := bN,
       steps := #[{ kind := .syntacticRefl, lhs := a, rhs := b }],
       blockedLocalNames := blocked, remainingDefinitionHeads := remaining }
-  else if objectExprEq aN bN then
+  else if lfExprAlphaEq aN bN then
     let unfolded := collectLFDefinitionUnfolds defs locals #[] a
     let unfolded := collectLFDefinitionUnfolds defs locals unfolded b
     .ok {
@@ -506,14 +505,10 @@ def objectGoalNormalizationMismatchString (sig : HLSignature) (ctx : Array HLBin
   let mentioned := collectLFDefinitionMentions defs locals mentioned expected
   let unfolded := collectLFDefinitionUnfolds defs locals #[] actual
   let unfolded := collectLFDefinitionUnfolds defs locals unfolded expected
-  let blocked := collectLFDefinitionBlockedLocals defs locals #[] actual
-  let blocked := collectLFDefinitionBlockedLocals defs locals blocked expected
+  let blocked : Array Name := #[]
   let remaining := collectLFDefinitionMentions defs locals #[] actualN
   let remaining := collectLFDefinitionMentions defs locals remaining expectedN
-  let blockedLine :=
-    if blocked.isEmpty then []
-    else [s!"LF-definition unfolding blocked by local binder(s): \
-      {diagnosticNameListString blocked}"]
+  let blockedLine : List String := []
   let remainingLine :=
     if remaining.isEmpty then []
     else [s!"Definition head(s) still present after bounded unfolding: \

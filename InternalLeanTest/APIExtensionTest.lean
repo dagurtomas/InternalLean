@@ -1483,9 +1483,10 @@ declare_type_theory LFInternalDefinitionSmoke where
   judgment shapeIncl (Γ : Ctx) (S : Shape Γ) (T : Shape Γ)
   lf_opaque emptyCtx / 0
   lf_opaque simplexPayload / 0
-  lf_opaque proofPayload / 0
   lf_def Simplex : Shape emptyCtx := simplexPayload
-  judgment_theorem simplex_refl : shapeIncl emptyCtx Simplex Simplex := proofPayload
+  rule simplex_refl_rule where
+    conclusion : shapeIncl emptyCtx Simplex Simplex
+  judgment_theorem simplex_refl : shapeIncl emptyCtx Simplex Simplex := simplex_refl_rule
 
 #check_type_theory LFInternalDefinitionSmoke
 #print_logical_framework_definitions LFInternalDefinitionSmoke
@@ -1496,10 +1497,12 @@ declare_type_theory LFDefinitionReferenceTypeSmoke where
   judgment shapeIncl (Γ : Ctx) (S : Shape Γ) (T : Shape Γ)
   lf_opaque emptyCtx / 0
   lf_opaque simplexPayload / 0
-  lf_opaque proofPayload / 0
   lf_def Simplex : Shape emptyCtx := simplexPayload
   lf_def SimplexAlias : Shape emptyCtx := Simplex
-  judgment_theorem simplex_alias_refl : shapeIncl emptyCtx SimplexAlias Simplex := proofPayload
+  rule simplex_alias_refl_rule where
+    conclusion : shapeIncl emptyCtx SimplexAlias Simplex
+  judgment_theorem simplex_alias_refl : shapeIncl emptyCtx SimplexAlias Simplex :=
+    simplex_alias_refl_rule
 
 #check_type_theory LFDefinitionReferenceTypeSmoke
 #print_logical_framework_definitions LFDefinitionReferenceTypeSmoke
@@ -1849,8 +1852,8 @@ normalized actual: shapeIncl emptyCtx simplexPayload otherPayload
 normalized expected: shapeIncl emptyCtx simplexPayload simplexPayload
 LF definitions mentioned before unfolding: Alias, Other
 LF definitions unfolded: Alias, Other
-Normalization policy: LF matching unfolds earlier checked `lf_def` values and beta-reduces
-explicit LF lambdas. It never unfolds through local binders that shadow a definition name.
+Normalization policy: LF matching unfolds earlier checked `lf_def` values, beta-reduces
+explicit LF lambdas, and alpha-renames binders to avoid local-binder capture.
 -/
 #guard_msgs (whitespace := lax) in
 declare_type_theory BadLFDefinitionNormalizationMismatch where
@@ -1896,8 +1899,8 @@ normalized actual: shapeIncl emptyCtx simplexPayload simplexPayload
 normalized expected: shapeIncl emptyCtx simplexPayload otherPayload
 LF definitions mentioned before unfolding: Simplex, Other
 LF definitions unfolded: Simplex, Other
-Normalization policy: LF matching unfolds earlier checked `lf_def` values and beta-reduces
-explicit LF lambdas. It never unfolds through local binders that shadow a definition name.
+Normalization policy: LF matching unfolds earlier checked `lf_def` values, beta-reduces
+explicit LF lambdas, and alpha-renames binders to avoid local-binder capture.
 -/
 #guard_msgs (whitespace := lax) in
 declare_type_theory BadLFTheoremReferenceStatementMismatch where
@@ -1974,8 +1977,8 @@ normalized actual: shapeIncl emptyCtx otherPayload otherPayload
 normalized expected: shapeIncl emptyCtx simplexPayload simplexPayload
 LF definitions mentioned before unfolding: Other, Simplex
 LF definitions unfolded: Other, Simplex
-Normalization policy: LF matching unfolds earlier checked `lf_def` values and beta-reduces
-explicit LF lambdas. It never unfolds through local binders that shadow a definition name.
+Normalization policy: LF matching unfolds earlier checked `lf_def` values, beta-reduces
+explicit LF lambdas, and alpha-renames binders to avoid local-binder capture.
 -/
 #guard_msgs (whitespace := lax) in
 declare_type_theory BadLFNestedTheoremReferencePremiseMismatch where
@@ -2034,8 +2037,8 @@ normalized actual: shapeIncl emptyCtx simplexPayload otherPayload
 normalized expected: shapeIncl emptyCtx simplexPayload simplexPayload
 LF definitions mentioned before unfolding: Simplex, Other
 LF definitions unfolded: Simplex, Other
-Normalization policy: LF matching unfolds earlier checked `lf_def` values and beta-reduces
-explicit LF lambdas. It never unfolds through local binders that shadow a definition name.
+Normalization policy: LF matching unfolds earlier checked `lf_def` values, beta-reduces
+explicit LF lambdas, and alpha-renames binders to avoid local-binder capture.
 -/
 #guard_msgs (whitespace := lax) in
 declare_type_theory BadLFNestedRuleApplicationPremiseMismatch where

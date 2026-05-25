@@ -11,6 +11,8 @@ import InternalLeanTest.LFModelStressTest
 import InternalLeanTest.LogicalFrameworkMetadataExamplesTest
 import InternalLeanTest.ModelWorkflowUXTest
 import InternalLeanTest.NaturalNumbersTest
+import InternalLeanTest.RawConversionTest
+import InternalLeanTest.SoundnessRegressionTest
 import InternalLeanTest.TheoryAnchorTest
 import InternalLeanTest.TinyNatModel
 import InternalLeanTest.TransportPlanTest

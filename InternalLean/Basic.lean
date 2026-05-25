@@ -172,6 +172,125 @@ def localRefNames : Raw → List Name
       localRefNames ty ++ (localRefNames body).filter (fun y => y != x)
   | .leanParam x => [x]
 
+/-- Lookup a canonical alpha-normalization representative for a raw local name. -/
+def lookupAlphaLocal? : List (Name × Name) → Name → Option Name
+  | [], _ => none
+  | (oldName, newName) :: rest, n =>
+      if oldName.eraseMacroScopes == n.eraseMacroScopes then some newName else
+        lookupAlphaLocal? rest n
+
+/-- Deterministic binder name used by raw alpha-normalization. -/
+def alphaBinderName (idx : Nat) (avoid : List Name) : Name :=
+  let base : Name := .str `_lfBound s!"b{idx}"
+  let rec go : Nat → Nat → Name
+    | 0, n => .str base s!"_{n}"
+    | fuel + 1, n =>
+        let candidate := if n == 0 then base else .str base s!"_{n}"
+        if avoid.contains candidate then go fuel (n + 1) else candidate
+  go (avoid.length + 32) 0
+
+/-- Alpha-normalize raw replay payload binders emitted for LF lambdas and scoped binders. -/
+partial def alphaNormalizeWithAvoid (avoid : List Name) (raw : Raw) : Raw :=
+  let renameLocal (locals : List (Name × Name)) (mk : Name → Raw) (x : Name) : Raw :=
+    let x := x.eraseMacroScopes
+    match lookupAlphaLocal? locals x with
+    | some y => mk y
+    | none => mk x
+  let rec go (locals : List (Name × Name)) (next : Nat) : Raw → Raw × Nat
+    | .ctxNil => (.ctxNil, next)
+    | .ctxMeta x => (renameLocal locals .ctxMeta x, next)
+    | .ctxExt Γ A =>
+        let (Γ, next) := go locals next Γ
+        let (A, next) := go locals next A
+        (.ctxExt Γ A, next)
+    | .tyMeta x => (renameLocal locals .tyMeta x, next)
+    | .tyConst c => (.tyConst c, next)
+    | .tyApp f args =>
+        let (args, next) := Id.run do
+          let mut out := []
+          let mut next := next
+          for arg in args do
+            let (arg, next') := go locals next arg
+            out := out ++ [arg]
+            next := next'
+          return (out, next)
+        (.tyApp f args, next)
+    | .tySubst A τ =>
+        let (A, next) := go locals next A
+        let (τ, next) := go locals next τ
+        (.tySubst A τ, next)
+    | .tmVar i => (.tmVar i, next)
+    | .tmMeta x => (renameLocal locals .tmMeta x, next)
+    | .tmConst c => (.tmConst c, next)
+    | .tmApp f args =>
+        if f == `lam then
+          match args.reverse with
+          | [] => (.tmApp `lam [], next)
+          | body :: revBinders =>
+              let binders := revBinders.reverse
+              if binders.all (fun | .leanParam _ => true | _ => false) then
+                let (binderArgs, locals, next) := binders.foldl
+                  (init := ([], locals, next)) fun (out, locals, next) binder =>
+                    match binder with
+                    | .leanParam x =>
+                        let x := x.eraseMacroScopes
+                        let x' := alphaBinderName next avoid
+                        (out ++ [.leanParam x'], (x, x') :: locals, next + 1)
+                    | _ => (out, locals, next)
+                let (body, next) := go locals next body
+                (.tmApp `lam (binderArgs ++ [body]), next)
+              else
+                let (args, next) := Id.run do
+                  let mut out := []
+                  let mut next := next
+                  for arg in args do
+                    let (arg, next') := go locals next arg
+                    out := out ++ [arg]
+                    next := next'
+                  return (out, next)
+                (.tmApp `lam args, next)
+        else
+          let (args, next) := Id.run do
+            let mut out := []
+            let mut next := next
+            for arg in args do
+              let (arg, next') := go locals next arg
+              out := out ++ [arg]
+              next := next'
+            return (out, next)
+          (.tmApp f args, next)
+    | .tmSubst t τ =>
+        let (t, next) := go locals next t
+        let (τ, next) := go locals next τ
+        (.tmSubst t τ, next)
+    | .substId Γ =>
+        let (Γ, next) := go locals next Γ
+        (.substId Γ, next)
+    | .substMeta x => (renameLocal locals .substMeta x, next)
+    | .substComp τ υ =>
+        let (τ, next) := go locals next τ
+        let (υ, next) := go locals next υ
+        (.substComp τ υ, next)
+    | .substEmpty => (.substEmpty, next)
+    | .substExt τ t =>
+        let (τ, next) := go locals next τ
+        let (t, next) := go locals next t
+        (.substExt τ t, next)
+    | .scopedBind zone cls x ty body =>
+        let (ty, next) := go locals next ty
+        let x := x.eraseMacroScopes
+        let x' := alphaBinderName next avoid
+        let (body, next) := go ((x, x') :: locals) (next + 1) body
+        (.scopedBind zone cls x' ty body, next)
+    | .leanParam x => (renameLocal locals .leanParam x, next)
+  (go [] 0 raw).1
+
+/-- Alpha-equivalence for raw replay payloads. -/
+def alphaEq (a b : Raw) : Bool :=
+  let avoid :=
+    a.localRefNames.map Name.eraseMacroScopes ++ b.localRefNames.map Name.eraseMacroScopes
+  alphaNormalizeWithAvoid avoid a == alphaNormalizeWithAvoid avoid b
+
 /-- Capture-checking variant of `instantiate` for replay validation.
 
 The pure `instantiate` function is intentionally lightweight. This checked variant is used at
@@ -250,7 +369,7 @@ implements the smallest useful generic executable conversion step: applying a on
 lambda to one argument. -/
 def betaReduce? : Raw → Option Raw
   | .tmApp `_app [.tmApp `lam [.leanParam x, body], arg] =>
-      some (body.substLeanParam x arg)
+      some (Raw.substLeanParam x arg body)
   | _ => none
 
 end Raw
@@ -310,6 +429,23 @@ def localRefNames : Judgment → List Name
   | .eqTy Γ A B => Γ.localRefNames ++ A.localRefNames ++ B.localRefNames
   | .eqTm Γ t u A => Γ.localRefNames ++ t.localRefNames ++ u.localRefNames ++ A.localRefNames
   | .custom _ args => args.flatMap Raw.localRefNames
+
+/-- Alpha-equivalence for kernel-facing judgments. -/
+def alphaEq : Judgment → Judgment → Bool
+  | .wfCtx Γ, .wfCtx Γ' => Raw.alphaEq Γ Γ'
+  | .wfTy Γ A, .wfTy Γ' A' => Raw.alphaEq Γ Γ' && Raw.alphaEq A A'
+  | .wfTm Γ t A, .wfTm Γ' t' A' =>
+      Raw.alphaEq Γ Γ' && Raw.alphaEq t t' && Raw.alphaEq A A'
+  | .wfSubst Δ τ Γ, .wfSubst Δ' τ' Γ' =>
+      Raw.alphaEq Δ Δ' && Raw.alphaEq τ τ' && Raw.alphaEq Γ Γ'
+  | .eqTy Γ A B, .eqTy Γ' A' B' =>
+      Raw.alphaEq Γ Γ' && Raw.alphaEq A A' && Raw.alphaEq B B'
+  | .eqTm Γ t u A, .eqTm Γ' t' u' A' =>
+      Raw.alphaEq Γ Γ' && Raw.alphaEq t t' && Raw.alphaEq u u' && Raw.alphaEq A A'
+  | .custom k args, .custom k' args' =>
+      k == k' && args.length == args'.length && (args.zip args').all (fun (a, b) =>
+        Raw.alphaEq a b)
+  | _, _ => false
 
 end Judgment
 
@@ -1693,7 +1829,7 @@ def validateRuleApplicationAgainstRule (sig : Signature) (ruleName : Name) (r : 
   expectedConclusion.validateBuiltinConstructorDiscipline s!"rule application \
     '{ruleName}'" "instantiated conclusion"
   conclusion.validateBuiltinConstructorDiscipline s!"rule application '{ruleName}'" "conclusion"
-  if conclusion != expectedConclusion then
+  if !conclusion.alphaEq expectedConclusion then
     throw s!"rule application '{ruleName}' has conclusion '{reprStr conclusion}', expected \
       instantiated rule conclusion '{reprStr expectedConclusion}'"
   if premiseCount != r.premises.length then
@@ -1774,7 +1910,7 @@ def validateAssumptionWithContext (ctx : KernelLFCheckContext) (name : Name)
     | _ =>
       throw s!"local theorem assumption '{name}' is ambiguous: checked replay context contains \
         duplicate assumption entries"
-  if entry.statement != stmt then
+  if !entry.statement.alphaEq stmt then
     throw s!"local theorem assumption '{name}' has statement '{reprStr stmt}', but replay context \
       records '{reprStr entry.statement}'"
 
@@ -1790,7 +1926,7 @@ def validateTheoremReferenceWithContext (ctx : KernelLFCheckContext) (name : Nam
     | _ =>
       throw s!"theorem reference '{name}' is ambiguous: checked replay context contains duplicate \
         theorem entries"
-  if entry.statement != stmt then
+  if !entry.statement.alphaEq stmt then
     throw s!"theorem reference '{name}' has statement '{reprStr stmt}', but replay context \
       records '{reprStr entry.statement}'"
 
@@ -1809,7 +1945,7 @@ def validateCertificateWithContext (ctx : KernelLFCheckContext) (name : Name)
     | _ =>
       throw s!"certificate-backed derivation '{name}' is ambiguous: checked certificate context \
         contains duplicate entries"
-  if entry.statement != stmt then
+  if !entry.statement.alphaEq stmt then
     throw s!"certificate-backed derivation '{name}' has statement '{reprStr stmt}', but \
       certificate context records '{reprStr entry.statement}'"
   if entry.certificateName != certificateName then
@@ -1824,22 +1960,22 @@ checked side-condition certificate names. -/
 partial def checkWithContext (ctx : KernelLFCheckContext) (sig : Signature) :
     KernelLFDerivation → Judgment → Except String Unit
   | .assumption name stmt, expected => do
-      if stmt != expected then
+      if !stmt.alphaEq expected then
         throw s!"local theorem assumption '{name}' has statement '{reprStr stmt}', expected \
           '{reprStr expected}'"
       validateAssumptionWithContext ctx name stmt
   | .theoremRef name stmt, expected => do
-      if stmt != expected then
+      if !stmt.alphaEq expected then
         throw s!"theorem reference '{name}' has statement '{reprStr stmt}', expected \
           '{reprStr expected}'"
       validateTheoremReferenceWithContext ctx name stmt
   | .certificate name stmt certificateName, expected => do
-      if stmt != expected then
+      if !stmt.alphaEq expected then
         throw s!"certificate-backed derivation '{name}' has statement '{reprStr stmt}', expected \
           '{reprStr expected}'"
       validateCertificateWithContext ctx name stmt certificateName
   | .ruleApp ruleName conclusion inst premises certificateNames, expected => do
-      if conclusion != expected then
+      if !conclusion.alphaEq expected then
         throw s!"rule application '{ruleName}' has conclusion '{reprStr conclusion}', expected \
           '{reprStr expected}'"
       let some r := findRule? sig ruleName
