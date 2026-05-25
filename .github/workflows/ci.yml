@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Lean libraries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build default Lean target
+        uses: leanprover/lean-action@v1
+
+      - name: Build root modules explicitly
+        run: |
+          lake build InternalLean InternalLeanTest
+          lake env lean InternalLean.lean
+          lake env lean InternalLeanTest.lean
+
+  style:
+    name: Style checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Check basic text style
+        run: scripts/check_text_style.py
+
+      - name: Check Lean line lengths
+        run: scripts/check_lean_line_lengths.py --max 100

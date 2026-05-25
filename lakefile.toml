@@ -1,0 +1,9 @@
+name = "InternalLean"
+version = "0.1.0"
+defaultTargets = ["InternalLean"]
+
+[[lean_lib]]
+name = "InternalLean"
+
+[[lean_lib]]
+name = "InternalLeanTest"
