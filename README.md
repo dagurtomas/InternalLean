@@ -60,7 +60,7 @@ downstream project should use a compatible Lean toolchain. Until compatibility r
 use the same toolchain as this repository, currently:
 
 ```text
-leanprover/lean4:v4.29.1
+leanprover/lean4:v4.30.0-rc2
 ```
 
 In a `lakefile.toml`, add:
