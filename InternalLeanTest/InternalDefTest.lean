@@ -71,7 +71,7 @@ annotation was checked in theory 'InternalDefLFSmoke', but the body was not chec
 internal def InternalDefLFSmoke.admittedRel : Rel a b := sorry
 
 /-- warning: type theory 'InternalDefLFSmoke' has 1 admitted internal declaration(s):
-admitted internal def InternalDefLFSmoke.admittedRel : Rel a b [missing doc] -/
+admitted internal theorem InternalDefLFSmoke.admittedRel : Rel a b [missing doc] -/
 #guard_msgs (whitespace := lax) in
 #lint_type_theory_sorries InternalDefLFSmoke
 

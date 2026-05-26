@@ -183,8 +183,8 @@ generate_model_transport ModelWorkflowLF relUnaryAdmitted for LFUXModel
 admitted internal def ModelWorkflowLF.admittedObj : Obj [documented]
 admitted internal def ModelWorkflowLF.admittedUnary (x : Obj) : Obj [documented]
 downstream declarations mentioning admissions:
-internal def relAdmitted depends on admitted admittedObj
-internal def relUnaryAdmitted depends on admitted admittedObj, admittedUnary
+internal theorem relAdmitted depends on admitted admittedObj
+internal theorem relUnaryAdmitted depends on admitted admittedObj, admittedUnary
 generated transported declarations with Lean `sorryAx` dependency:
 transported declaration ModelWorkflowLF.LFUXModel.admittedObj for admitted admittedObj over model
 LFUXModel intentionally uses Lean `sorry`/`sorryAx`

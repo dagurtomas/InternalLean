@@ -230,13 +230,13 @@ initialize checkedTheoryExt :
           | .sig checked => m.insert checked.name checked
   }
 
-/-- Persistent profile record for internal-declaration registration. -/
+/-- Persistent profile record for a theory or internal-declaration registration event. -/
 structure InternalRegistrationProfile where
   /-- Owning object theory. -/
   theoryName : Name
-  /-- Theory-local declaration name. -/
+  /-- Theory-local declaration name or registration event label. -/
   declName : Name
-  /-- Registration strategy used for this declaration. -/
+  /-- Registration strategy used for this event. -/
   strategy : String
   /-- Existing checked object definitions before this declaration. -/
   priorObjectDefs : Nat := 0
@@ -250,13 +250,13 @@ structure InternalRegistrationProfile where
   incrementallyChecked : Nat := 0
   deriving Inhabited, Repr, BEq
 
-/-- Persistent entries for internal-declaration registration profiles. -/
+/-- Persistent entries for registration profiles. -/
 inductive InternalRegistrationProfileEntry where
-  /-- Record one internal-declaration registration event. -/
+  /-- Record one registration event. -/
   | profile : InternalRegistrationProfile → InternalRegistrationProfileEntry
   deriving Inhabited, Repr
 
-/-- Per-theory internal-declaration registration profiles. -/
+/-- Per-theory registration profiles. -/
 abbrev InternalRegistrationProfileState := NameMap (Array InternalRegistrationProfile)
 
 initialize internalRegistrationProfileExt : SimplePersistentEnvExtension
@@ -277,6 +277,28 @@ initialize internalRegistrationProfileExt : SimplePersistentEnvExtension
               m.insert p.theoryName (xs.push p)
   }
 
+/-- The checked shape of an internal declaration admitted by `sorry`. -/
+inductive InternalAdmissionKind where
+  /-- An admitted typed LF opaque constant, generated from an object-sort-shaped annotation. -/
+  | lfOpaque
+  /-- A theorem-shaped admission, checked as an LF judgment statement but not as a model field. -/
+  | judgmentTheorem
+  deriving Inhabited, Repr, BEq
+
+namespace InternalAdmissionKind
+
+/-- Human-readable label for admitted declaration diagnostics. -/
+def label : InternalAdmissionKind → String
+  | .lfOpaque => "lf_opaque"
+  | .judgmentTheorem => "judgment theorem"
+
+/-- User-facing source command category for admitted declaration diagnostics. -/
+def sourceNoun : InternalAdmissionKind → String
+  | .lfOpaque => "internal def"
+  | .judgmentTheorem => "internal theorem"
+
+end InternalAdmissionKind
+
 /-- Persistent record for an internal declaration whose body was admitted by `sorry`. -/
 structure InternalAdmission where
   /-- Owning object theory. -/
@@ -289,6 +311,8 @@ structure InternalAdmission where
   params : Array HLBinding := #[]
   /-- Source-level annotation after `:`. -/
   typeExpr : ObjExpr
+  /-- Checked admission category. -/
+  kind : InternalAdmissionKind := .lfOpaque
   deriving Inhabited, Repr, BEq
 
 /-- Persistent entries for internal declaration admissions. -/
@@ -491,16 +515,16 @@ def getCheckedTheory? (nm : Name) : CoreM (Option CheckedSignature) := do
 def registerCheckedTheory (checked : CheckedSignature) : CoreM Unit := do
   modifyEnv fun env => checkedTheoryExt.addEntry env (.sig checked)
 
-/-- Return internal-declaration registration profile entries. -/
+/-- Return registration profile entries. -/
 def getInternalRegistrationProfiles : CoreM InternalRegistrationProfileState := do
   return internalRegistrationProfileExt.getState (← getEnv)
 
-/-- Return internal-declaration registration profile entries for one theory. -/
+/-- Return registration profile entries for one theory. -/
 def getInternalRegistrationProfilesFor (theoryName : Name) :
     CoreM (Array InternalRegistrationProfile) := do
   return ((← getInternalRegistrationProfiles).find? theoryName).getD #[]
 
-/-- Record one internal-declaration registration profile entry. -/
+/-- Record one registration profile entry. -/
 def registerInternalRegistrationProfile (p : InternalRegistrationProfile) : CoreM Unit := do
   modifyEnv fun env => internalRegistrationProfileExt.addEntry env (.profile p)
 

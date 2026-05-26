@@ -298,10 +298,13 @@ elab "#check_lf_model_derived_theorems " theory:ident " for " structureName:iden
 
 /-- Whether an admission can be generated as an LF model-interface method. -/
 def isLFModelAdmission (checked : CheckedSignature) (a : InternalAdmission) : Bool :=
-  match checked.lfOpaqueConsts.find? (fun c =>
-    c.name.eraseMacroScopes == a.declName.eraseMacroScopes) with
-  | some c => c.checkedTypeExpr?.isSome
-  | none => LeanTypeModelGeneration.isLFJudgmentAdmission checked a
+  match a.kind with
+  | .lfOpaque =>
+      match checked.lfOpaqueConsts.find? (fun c =>
+        c.name.eraseMacroScopes == a.declName.eraseMacroScopes) with
+      | some c => c.checkedTypeExpr?.isSome
+      | none => false
+  | .judgmentTheorem => LeanTypeModelGeneration.isLFJudgmentAdmission checked a
 
 /-- Check whether a generated LF model-interface method name is available. -/
 def ensureLFModelMethodNameAvailable (theoryName structureName methodName : Name) :
@@ -400,11 +403,7 @@ def lfModelTransportPreviewString (theoryName structureName : Name) (checked : C
   let mut skipped := 0
   for a in admissions do
     if isLFModelAdmission checked a then
-      let kind :=
-        if LeanTypeModelGeneration.isLFJudgmentAdmission checked a then
-          "admitted judgment"
-        else
-          "admitted lf_opaque"
+      let kind := s!"admitted {a.kind.label}"
       admissionLines :=
         admissionLines.push (← methodLine kind a.declName a.declName "; Lean sorry-backed")
       generated := generated + 1

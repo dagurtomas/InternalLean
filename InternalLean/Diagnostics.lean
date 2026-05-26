@@ -128,7 +128,7 @@ def internalAdmissionDependencyLines (sig : HLSignature) (admissions : Array Int
     let deps := depsForExpr t.proof
     unless deps.isEmpty do
       out :=
-        out.push s!"internal def {docLintNameString t.name} depends on admitted \
+        out.push s!"internal theorem {docLintNameString t.name} depends on admitted \
           {String.intercalate ", " (deps.toList.map docLintNameString)}"
   return out
 
@@ -258,13 +258,12 @@ elab "#lint_type_theory_docs" theory:ident : command => do
   let (ok, text) ← liftCoreM <| lintInternalLeanDocsString sig
   if ok then logInfo m!"{text}" else logWarning m!"{text}"
 
-/-- Print accumulated internal-declaration registration profile entries. -/
+/-- Print accumulated theory/internal-declaration registration profile entries. -/
 elab "#print_internal_registration_profile " theory:ident : command => do
   liftCoreM <| requireTheoryAnchor theory.getId
   let profiles ← liftCoreM <| getInternalRegistrationProfilesFor theory.getId
   if profiles.isEmpty then
-    logInfo m!"type theory '{theory.getId}' has no internal-declaration registration profile \
-      entries"
+    logInfo m!"type theory '{theory.getId}' has no registration profile entries"
   else
     let totals := profiles.foldl
       (init := (0, 0, 0))
@@ -275,9 +274,9 @@ elab "#print_internal_registration_profile " theory:ident : command => do
       s!"{p.declName.eraseMacroScopes}: {p.strategy}; prior={p.priorObjectDefs} object def(s), \
         {p.priorJudgmentTheorems} theorem(s); rechecked={p.recheckedObjectDefs} object def(s), \
         {p.recheckedJudgmentTheorems} theorem(s); incremental={p.incrementallyChecked}"
-    logInfo m!"internal-declaration registration profile for {theory.getId}: {profiles.size} \
-      event(s); total rechecked={totals.1} object def(s), {totals.2.1} theorem(s); \
-      incrementally checked={totals.2.2}\n{String.intercalate "\n" lines.toList}"
+    logInfo m!"registration profile for {theory.getId}: {profiles.size} event(s); total \
+      old-artifact rechecks={totals.1} object def(s), {totals.2.1} theorem(s); incrementally \
+      checked={totals.2.2}\n{String.intercalate "\n" lines.toList}"
 
 /-- Report internal declarations admitted by `sorry` for a type theory. -/
 elab "#lint_type_theory_sorries" theory:ident : command => do
@@ -296,12 +295,13 @@ elab "#lint_type_theory_sorries" theory:ident : command => do
       let binderText :=
         if a.params.isEmpty then ""
         else " " ++ String.intercalate " " (a.params.toList.map HLBinding.summary)
-      s!"admitted internal def {a.anchorName.eraseMacroScopes}{binderText} : {a.typeExpr}{docText}"
+      s!"admitted {a.kind.sourceNoun} {a.anchorName.eraseMacroScopes}{binderText} : \
+        {a.typeExpr}{docText}"
     let deps := internalAdmissionDependencyLines sig admissions
     let transports ← liftCoreM <| getInternalAdmissionTransportsFor theory.getId
     let transportLines := transports.map fun t =>
       s!"transported declaration {t.generatedName.eraseMacroScopes} for admitted \
-        {t.declName.eraseMacroScopes} over model {t.structureName.eraseMacroScopes} intentionally \
+        {t.declName.eraseMacroScopes} over model\n{t.structureName.eraseMacroScopes} intentionally \
           uses Lean `sorry`/`sorryAx`"
     let allLines := lines ++
       (if deps.isEmpty then #[] else #["downstream declarations mentioning admissions:"] ++ deps) ++

@@ -1025,9 +1025,10 @@ def LFModelObligation.summary (o : LFModelObligation) : MessageData :=
 def countLFModelObligations (obs : Array LFModelObligation) (p : LFModelObligation → Bool) : Nat :=
   obs.foldl (init := 0) fun n o => if p o then n + 1 else n
 
-/-- Names of internal declarations admitted by `sorry`. -/
+/-- Names of admitted LF opaque constants that should not become model fields. -/
 def internalAdmissionNameSet (admissions : Array InternalAdmission) : NameSet :=
-  admissions.foldl (init := {}) fun names a => names.insert a.declName.eraseMacroScopes
+  admissions.foldl (init := {}) fun names a =>
+    if a.kind == .lfOpaque then names.insert a.declName.eraseMacroScopes else names
 
 /-- Union of two name sets. -/
 def unionNameSet (xs ys : NameSet) : NameSet := Id.run do
@@ -3004,10 +3005,13 @@ def modelTransportDeclName (structureName sourceName : Name) : Name :=
 
 /-- Whether an admission's annotation is headed by a checked LF judgment. -/
 def isLFJudgmentAdmission (checked : CheckedSignature) (a : InternalAdmission) : Bool :=
-  let (head, _) := splitObjApp a.typeExpr
-  match head with
-  | .ident n => checked.lfJudgments.any (fun j => j.name.eraseMacroScopes == n.eraseMacroScopes)
-  | _ => false
+  if a.kind != .judgmentTheorem then
+    false
+  else
+    let (head, _) := splitObjApp a.typeExpr
+    match head with
+    | .ident n => checked.lfJudgments.any (fun j => j.name.eraseMacroScopes == n.eraseMacroScopes)
+    | _ => false
 
 /-- Render the model type of an admitted LF judgment statement, if applicable. -/
 def admittedLFJudgmentTypeSyntax? (checked : CheckedSignature) (modelIdent : Ident)
@@ -3495,14 +3499,15 @@ def modelTransportStatusString (theoryName structureName : Name) (checked : Chec
         checked.lfOpaqueConsts.any (fun c =>
           c.name.eraseMacroScopes == a.declName.eraseMacroScopes && c.checkedTypeExpr?.isSome) ||
           isLFJudgmentAdmission checked a
+      let kind := a.kind.label
       if isLF then
         lines :=
-          lines.push s!"  admitted {nameString a.declName} → \
+          lines.push s!"  admitted {kind} {nameString a.declName} → \
             {nameString (structureName ++ a.declName)} (dot: M.{nameString a.declName}; Lean \
               sorry-backed method)"
       else
         lines :=
-          lines.push s!"  admitted {nameString a.declName} → \
+          lines.push s!"  admitted {kind} {nameString a.declName} → \
             {nameString (modelTransportDeclName structureName a.declName)}"
   return String.intercalate "\n" lines.toList
 

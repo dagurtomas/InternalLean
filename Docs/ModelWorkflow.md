@@ -256,9 +256,9 @@ A model workflow should distinguish:
 If generation fails under a namespace, close the namespace and rerun the generation command at the
 root. Printing commands such as `#print_model_interface` remain useful for inspection.
 
-Use `#print_internal_registration_profile T` when many standalone `internal def` declarations are
-slow; it reports whether declarations were checked incrementally or rechecked through the full
-signature path.
+Use `#print_internal_registration_profile T` when many standalone `internal def` declarations or
+`extend_type_theory` blocks are slow; it reports incremental registrations and full-signature
+extension checks that reprocess old LF definitions/theorems.
 
 If a model obligation is missing, check whether the declaration was hidden by `model_internal` or
 `model_compat`.
