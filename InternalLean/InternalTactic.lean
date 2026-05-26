@@ -3052,62 +3052,22 @@ def elabInternalDefSorryWithBinders (doc? : Option (TSyntax ``Parser.Command.doc
   let sourceDoc? ← optDocCommentString? doc?
   let typeExpr ← elabObjExpr typeStx
   let params ← binders.mapM elabHLBinding
-  try
-    if !levels.isEmpty then
-      throwError "LF opaque admissions do not support declaration-local universe parameters"
-    liftCoreM
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-      <| registerAdmittedInternalLFOpaque target.theoryName target.anchorName target.localName
-        params typeExpr
-  catch lfOpaqueEx =>
-    try
-      if !levels.isEmpty then
-        throwError "LF judgment admissions do not support declaration-local universe parameters"
-      liftCoreM
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        <| registerAdmittedInternalLFJudgmentTheorem target.theoryName target.anchorName
-          target.localName params typeExpr
-    catch lfJudgmentEx =>
-      throwError "failed to check admitted internal LF declaration '{target.anchorName}' in type \
-        theory '{target.theoryName}'\n\nLF opaque admission \
-          path:\n{exceptionMessageData lfOpaqueEx}\n\nLF judgment admission \
-            path:\n{exceptionMessageData lfJudgmentEx}"
+  if !levels.isEmpty then
+    throwError "admitted internal declarations do not support declaration-local universe \
+      parameters"
+  match ← liftCoreM <| classifyInternalSorryAdmissionShape target.theoryName target.localName
+      params typeExpr with
+  | .lfOpaque =>
+      liftCoreM <| registerAdmittedInternalLFOpaque target.theoryName target.anchorName
+        target.localName params typeExpr
+  | .judgmentTheorem =>
+      liftCoreM <| registerAdmittedInternalLFJudgmentTheorem target.theoryName
+        target.anchorName target.localName params typeExpr
+  | .unsupported reason =>
+      throwError "failed to classify admitted internal LF declaration '{target.anchorName}' in \
+        type theory '{target.theoryName}': {reason}\n\nAccepted forms are object-shaped \
+        admissions such as `internal def c : Obj := sorry` and theorem-shaped admissions such as \
+        `internal theorem h : J a := sorry`."
   if let some doc := sourceDoc? then
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
   addInternalDeclarationAnchor target typeExpr true sourceDoc? (← getRef) declNameStx
@@ -3219,6 +3179,106 @@ def isSorryObjExprSyntax (stx : Syntax) : Bool :=
   | .ident _ _ val _ => val.eraseMacroScopes == `sorry
   | _ => false
 
+/-- Parsed admitted declaration inside an `internal_defs where` batch. -/
+structure InternalDefsSorryBatchItem where
+  /-- Original declaration syntax, used for range metadata. -/
+  declStx : Syntax
+  /-- Declaration identifier syntax. -/
+  declNameStx : Syntax
+  /-- Resolved target theory/local name. -/
+  target : InternalDefTarget
+  /-- Source-level documentation, if present. -/
+  sourceDoc? : Option String := none
+  /-- Elaborated source binders. -/
+  params : Array HLBinding := #[]
+  /-- Elaborated source annotation. -/
+  typeExpr : ObjExpr
+  deriving Inhabited
+
+/-- Parse one admitted declaration in an `internal_defs where` batch, if it is admitted. -/
+def elabInternalDefsSorryBatchItem? (decl : TSyntax `internalDefsDecl) :
+    CommandElabM (Option InternalDefsSorryBatchItem) := do
+  let mkItem (doc? : Option (TSyntax ``Parser.Command.docComment)) (declNameStx : Syntax)
+      (declName : Name) (binders : TSyntaxArray `ttBinder) (typeStx : TSyntax `ttExpr) := do
+    let target ← resolveInternalDefTarget declName
+    ensureInternalDeclarationNamesAvailable target
+    let sourceDoc? ← optDocCommentString? doc?
+    let params ← binders.mapM elabHLBinding
+    let typeExpr ← elabObjExpr typeStx
+    pure (some {
+      declStx := decl.raw
+      declNameStx := declNameStx
+      target := target
+      sourceDoc? := sourceDoc?
+      params := params
+      typeExpr := typeExpr })
+  match decl with
+  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr := sorry) =>
+      mkItem doc? declName declName.getId #[] typeStx
+  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := sorry) =>
+      mkItem doc? declName declName.getId binders typeStx
+  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr :=
+      $valueStx:ttExpr) =>
+      if isSorryObjExprSyntax valueStx.raw then
+        mkItem doc? declName declName.getId #[] typeStx
+      else
+        pure none
+  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := $valueStx:ttExpr) =>
+      if isSorryObjExprSyntax valueStx.raw then
+        mkItem doc? declName declName.getId binders typeStx
+      else
+        pure none
+  | _ => pure none
+
+/-- Try to register an all-opaque-admission `internal_defs where` block as one checked delta. -/
+def tryElabInternalDefsSorryOpaqueBatch (decls : Array (TSyntax `internalDefsDecl)) :
+    CommandElabM Bool := do
+  if decls.isEmpty then
+    return false
+  let mut items : Array InternalDefsSorryBatchItem := #[]
+  for decl in decls do
+    match ← elabInternalDefsSorryBatchItem? decl with
+    | some item => items := items.push item
+    | none => return false
+  let some first := items[0]?
+    | return false
+  let theoryName := first.target.theoryName
+  let mut seenLocals : NameSet := {}
+  let mut seenAnchors : NameSet := {}
+  let mut requests : Array AdmittedInternalLFOpaqueRequest := #[]
+  for item in items do
+    if item.target.theoryName != theoryName then
+      return false
+    let localName := item.target.localName.eraseMacroScopes
+    if seenLocals.contains localName then
+      throwError "duplicate internal_defs declaration '{item.target.localName}' in type theory \
+        '{theoryName}'"
+    seenLocals := seenLocals.insert localName
+    let anchorName := item.target.anchorName.eraseMacroScopes
+    if seenAnchors.contains anchorName then
+      throwError "duplicate Lean-visible internal_defs anchor '{item.target.anchorName}'"
+    seenAnchors := seenAnchors.insert anchorName
+    requests := requests.push {
+      localName := item.target.localName
+      anchorName := item.target.anchorName
+      params := item.params
+      typeExpr := item.typeExpr }
+  let shapes ← liftCoreM <| classifyInternalSorryAdmissionShapes theoryName requests
+  unless shapes.all (· == .lfOpaque) do
+    return false
+  liftCoreM <| registerAdmittedInternalLFOpaqueBatch theoryName requests
+  for item in items do
+    if let some doc := item.sourceDoc? then
+      liftCoreM <| registerSourceDoc item.target.theoryName .internalDef item.target.localName doc
+    addInternalDeclarationAnchor item.target item.typeExpr true item.sourceDoc? item.declStx
+      item.declNameStx
+    logWarning m!"internal declaration '{item.target.anchorName}' was admitted by `sorry`; the \
+      annotation was checked in theory '{item.target.theoryName}', but the body was not checked. \
+      Use `#lint_type_theory_sorries {item.target.theoryName}` to list current admissions."
+  return true
+
 /-- Elaborate one declaration in an `internal_defs where` batch. -/
 def elabInternalDefsDecl : TSyntax `internalDefsDecl → CommandElabM Unit
   | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr := sorry) =>
@@ -3240,10 +3300,59 @@ def elabInternalDefsDecl : TSyntax `internalDefsDecl → CommandElabM Unit
         elabInternalDefCheckedWithBinders doc? declName declName.getId #[] binders typeStx valueStx
   | stx => throwError "unsupported internal_defs declaration:{indentD stx}"
 
+/-- Elaborate an `internal_defs where` block, batching consecutive LF-opaque admissions. -/
+def elabInternalDefsDeclsWithSorryOpaqueBatches (decls : Array (TSyntax `internalDefsDecl)) :
+    CommandElabM Unit := do
+  let flush (items : Array InternalDefsSorryBatchItem) : CommandElabM Unit := do
+    if items.isEmpty then
+      return ()
+    let theoryName := items[0]!.target.theoryName
+    let requests := items.map fun item =>
+      ({ localName := item.target.localName
+         anchorName := item.target.anchorName
+         params := item.params
+         typeExpr := item.typeExpr } : AdmittedInternalLFOpaqueRequest)
+    liftCoreM <| registerAdmittedInternalLFOpaqueBatch theoryName requests
+    for item in items do
+      if let some doc := item.sourceDoc? then
+        liftCoreM <| registerSourceDoc item.target.theoryName .internalDef
+          item.target.localName doc
+      addInternalDeclarationAnchor item.target item.typeExpr true item.sourceDoc? item.declStx
+        item.declNameStx
+      logWarning m!"internal declaration '{item.target.anchorName}' was admitted by `sorry`; the \
+        annotation was checked in theory '{item.target.theoryName}', but the body was not \
+        checked. Use `#lint_type_theory_sorries {item.target.theoryName}` to list current \
+        admissions."
+  let mut batch : Array InternalDefsSorryBatchItem := #[]
+  for decl in decls do
+    match ← elabInternalDefsSorryBatchItem? decl with
+    | some item =>
+        match ← liftCoreM <| classifyInternalSorryAdmissionShape item.target.theoryName
+            item.target.localName item.params item.typeExpr with
+        | .lfOpaque =>
+            if let some first := batch[0]? then
+              if first.target.theoryName != item.target.theoryName then
+                flush batch
+                batch := #[]
+            let localName := item.target.localName.eraseMacroScopes
+            if batch.any (fun old => old.target.localName.eraseMacroScopes == localName) then
+              throwError "duplicate internal_defs declaration '{item.target.localName}' in type \
+                theory '{item.target.theoryName}'"
+            batch := batch.push item
+        | .judgmentTheorem | .unsupported _ =>
+            flush batch
+            batch := #[]
+            elabInternalDefsDecl decl
+    | none =>
+        flush batch
+        batch := #[]
+        elabInternalDefsDecl decl
+  flush batch
+
 elab_rules : command
   | `(internal_defs where $decls:internalDefsDecl*) => do
-      for decl in decls do
-        elabInternalDefsDecl decl
+      unless ← tryElabInternalDefsSorryOpaqueBatch decls do
+        elabInternalDefsDeclsWithSorryOpaqueBatches decls
   | `($[$doc?:docComment]? internal theorem $declName:ident : $typeStx:ttExpr := sorry) =>
       elabInternalTheoremSorryWithBinders doc? declName declName.getId #[] #[] typeStx
   | `($[$doc?:docComment]? internal theorem $declName:ident $binders:ttBinder* :

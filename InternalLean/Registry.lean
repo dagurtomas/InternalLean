@@ -242,10 +242,22 @@ structure InternalRegistrationProfile where
   priorObjectDefs : Nat := 0
   /-- Existing checked judgment theorems before this declaration. -/
   priorJudgmentTheorems : Nat := 0
+  /-- Existing checked LF opaque constants before this declaration. -/
+  priorOpaqueConsts : Nat := 0
+  /-- Existing checked rules before this declaration. -/
+  priorRules : Nat := 0
+  /-- Existing checked LF metadata declarations before this declaration. -/
+  priorMetadataDecls : Nat := 0
   /-- Number of LF object definitions rechecked by this registration. -/
   recheckedObjectDefs : Nat := 0
   /-- Number of LF judgment theorems rechecked by this registration. -/
   recheckedJudgmentTheorems : Nat := 0
+  /-- Number of LF opaque constants rechecked by this registration. -/
+  recheckedOpaqueConsts : Nat := 0
+  /-- Number of checked rules rechecked by this registration. -/
+  recheckedRules : Nat := 0
+  /-- Number of LF metadata declarations rechecked by this registration. -/
+  recheckedMetadataDecls : Nat := 0
   /-- Number of new declarations checked incrementally. -/
   incrementallyChecked : Nat := 0
   deriving Inhabited, Repr, BEq

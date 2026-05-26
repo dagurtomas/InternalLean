@@ -266,17 +266,21 @@ elab "#print_internal_registration_profile " theory:ident : command => do
     logInfo m!"type theory '{theory.getId}' has no registration profile entries"
   else
     let totals := profiles.foldl
-      (init := (0, 0, 0))
-      (fun (objs, thms, inc) p =>
+      (init := (0, 0, 0, 0))
+      (fun (objs, thms, opaques, inc) p =>
         (objs + p.recheckedObjectDefs, thms + p.recheckedJudgmentTheorems,
-          inc + p.incrementallyChecked))
+          opaques + p.recheckedOpaqueConsts, inc + p.incrementallyChecked))
     let lines := profiles.map fun p =>
       s!"{p.declName.eraseMacroScopes}: {p.strategy}; prior={p.priorObjectDefs} object def(s), \
-        {p.priorJudgmentTheorems} theorem(s); rechecked={p.recheckedObjectDefs} object def(s), \
-        {p.recheckedJudgmentTheorems} theorem(s); incremental={p.incrementallyChecked}"
+        {p.priorJudgmentTheorems} theorem(s){internalRegistrationProfileMetadataSuffix p}; \
+        rechecked={p.recheckedObjectDefs} object def(s), {p.recheckedJudgmentTheorems} \
+        theorem(s); incremental={p.incrementallyChecked}"
+    let opaqueText :=
+      if totals.2.2.1 == 0 then ""
+      else s!", {totals.2.2.1} opaque(s)"
     logInfo m!"registration profile for {theory.getId}: {profiles.size} event(s); total \
-      old-artifact rechecks={totals.1} object def(s), {totals.2.1} theorem(s); incrementally \
-      checked={totals.2.2}\n{String.intercalate "\n" lines.toList}"
+      old-artifact rechecks={totals.1} object def(s), {totals.2.1} theorem(s){opaqueText}; \
+      incrementally checked={totals.2.2.2}\n{String.intercalate "\n" lines.toList}"
 
 /-- Report internal declarations admitted by `sorry` for a type theory. -/
 elab "#lint_type_theory_sorries" theory:ident : command => do

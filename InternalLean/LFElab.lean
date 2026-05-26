@@ -4911,17 +4911,7 @@ def checkedSignatureToHLSignature (sourceBase : HLSignature) (checked : CheckedS
 
 /-- Return a fallback reason when a block still needs the full checker. -/
 def unsupportedIncrementalTheoryBlockReason? (block : HLTheoryBlock) : Option String :=
-  if !block.contextZones.isEmpty then
-    some "unsupported incremental declaration kind: context_zone"
-  else if !block.binderClasses.isEmpty then
-    some "unsupported incremental declaration kind: binder_class"
-  else if !block.syntaxSortRoles.isEmpty then
-    some "unsupported incremental declaration kind: syntax_sort_role"
-  else if !block.judgmentRoles.isEmpty then
-    some "unsupported incremental declaration kind: judgment_role"
-  else if !block.ruleRoles.isEmpty then
-    some "unsupported incremental declaration kind: rule_role"
-  else if !block.rewriteRelations.isEmpty then
+  if !block.rewriteRelations.isEmpty then
     some "unsupported incremental declaration kind: rewrite_relation"
   else if !block.rewriteSymmetries.isEmpty then
     some "unsupported incremental declaration kind: rewrite_symmetry"
@@ -4936,10 +4926,12 @@ def unsupportedIncrementalTheoryBlockReason? (block : HLTheoryBlock) : Option St
 
 /-- Count declarations/metadata entries handled by the incremental extension checker. -/
 def theoryBlockIncrementalDeclCount (block : HLTheoryBlock) : Nat :=
-  block.syntaxSorts.size + block.syntaxAbbrevs.size + block.judgments.size +
-    block.rules.size + block.sideConditionSolvers.size + block.conversionPlugins.size +
-    block.lfOpaqueConsts.size + block.modelVisibilities.size + block.modelSections.size +
-    block.lfObjectDefs.size + block.lfJudgmentTheorems.size
+  block.syntaxSorts.size + block.syntaxAbbrevs.size + block.syntaxSortRoles.size +
+    block.contextZones.size + block.binderClasses.size + block.judgments.size +
+    block.judgmentRoles.size + block.rules.size + block.ruleRoles.size +
+    block.sideConditionSolvers.size + block.conversionPlugins.size + block.lfOpaqueConsts.size +
+    block.modelVisibilities.size + block.modelSections.size + block.lfObjectDefs.size +
+    block.lfJudgmentTheorems.size
 
 /-- Check that new declaration names do not collide with the already flattened baseline. -/
 def checkNoExtensionNameCollisions (flatBase : HLSignature) (block : HLTheoryBlock) :
@@ -4958,6 +4950,10 @@ def checkNoExtensionNameCollisions (flatBase : HLSignature) (block : HLTheoryBlo
     seen ← checkName seen "syntax-sort" d.name
   for d in block.syntaxAbbrevs do
     seen ← checkName seen "syntax abbreviation" d.name
+  for d in block.contextZones do
+    seen ← checkName seen "context zone" d.name
+  for d in block.binderClasses do
+    seen ← checkName seen "binder class" d.name
   for d in block.judgments do
     seen ← checkName seen "judgment" d.name
   for d in block.rules do
@@ -5301,7 +5297,11 @@ def appendCheckedTheoryDelta (checked : CheckedSignature) (delta : CheckedTheory
   let modelSectionMemberships :=
     checked.modelSectionMemberships ++ delta.modelSectionMemberships
   let defValues := checkedLFDefinitionValues lfObjectDefs
-  let lfKernelRuleSchemas := checkedLFRuleSchemasToKernel defValues lfRuleSchemas
+  let lfKernelRuleSchemas :=
+    if delta.objectDefs.isEmpty && delta.ruleSchemas.isEmpty then
+      checked.lfKernelRuleSchemas
+    else
+      checkedLFRuleSchemasToKernel defValues lfRuleSchemas
   let lfEnvironment : CheckedLFEnvironment := {
     checked.lfEnvironment with
     syntaxSorts := lfSyntaxSorts
@@ -5434,6 +5434,133 @@ def validateLFTheoremKernelReplayBlock (sig : HLSignature)
     checkedTheorems := checkedTheorems.push t
   pure (checkedTheorems, ctx)
 
+/-- Check simple role metadata added by one incremental extension block. -/
+def checkIncrementalRoleMetadataDelta (flatForCheck : HLSignature)
+    (checkedBase : CheckedSignature) (block : HLTheoryBlock) :
+    CoreM (Array SyntaxSortRoleDecl × Array JudgmentRoleDecl × Array RuleRoleDecl) := do
+  let syntaxSortNames : NameSet :=
+    flatForCheck.syntaxSorts.foldl (init := {}) fun acc s => acc.insert s.name.eraseMacroScopes
+  let judgmentNames : NameSet :=
+    flatForCheck.judgments.foldl (init := {}) fun acc j => acc.insert j.name.eraseMacroScopes
+  let ruleNames : NameSet :=
+    flatForCheck.rules.foldl (init := {}) fun acc r => acc.insert r.name.eraseMacroScopes
+  let mut seenSortRoles : NameMap NameSet := {}
+  for role in checkedBase.lfSyntaxSortRoles do
+    let sortName := role.sortName.eraseMacroScopes
+    let kinds := (seenSortRoles.find? sortName).getD {}
+    seenSortRoles := seenSortRoles.insert sortName (kinds.insert role.kind.eraseMacroScopes)
+  let mut syntaxSortRoles := #[]
+  for role in block.syntaxSortRoles do
+    let sortName := role.sortName.eraseMacroScopes
+    let kind := role.kind.eraseMacroScopes
+    if !syntaxSortNames.contains sortName then
+      throwError "syntax_sort_role for unknown syntax sort '{role.sortName}' in type theory \
+        '{flatForCheck.name}'"
+    let kinds := (seenSortRoles.find? sortName).getD {}
+    if kinds.contains kind then
+      throwError "duplicate syntax_sort_role '{role.kind}' for syntax sort '{role.sortName}' in \
+        type theory '{flatForCheck.name}'"
+    seenSortRoles := seenSortRoles.insert sortName (kinds.insert kind)
+    syntaxSortRoles := syntaxSortRoles.push { sortName := sortName, kind := kind }
+  let mut seenJudgmentRoles : NameMap NameSet := {}
+  for role in checkedBase.lfJudgmentRoles do
+    let judgmentName := role.judgmentName.eraseMacroScopes
+    let kinds := (seenJudgmentRoles.find? judgmentName).getD {}
+    seenJudgmentRoles :=
+      seenJudgmentRoles.insert judgmentName (kinds.insert role.kind.eraseMacroScopes)
+  let mut judgmentRoles := #[]
+  for role in block.judgmentRoles do
+    let judgmentName := role.judgmentName.eraseMacroScopes
+    let kind := role.kind.eraseMacroScopes
+    if !judgmentNames.contains judgmentName then
+      throwError "judgment_role for unknown judgment '{role.judgmentName}' in type theory \
+        '{flatForCheck.name}'"
+    let kinds := (seenJudgmentRoles.find? judgmentName).getD {}
+    if kinds.contains kind then
+      throwError "duplicate judgment_role '{role.kind}' for judgment '{role.judgmentName}' in \
+        type theory '{flatForCheck.name}'"
+    seenJudgmentRoles := seenJudgmentRoles.insert judgmentName (kinds.insert kind)
+    judgmentRoles := judgmentRoles.push { judgmentName := judgmentName, kind := kind }
+  let mut seenRuleRoles : NameMap NameSet := {}
+  for role in checkedBase.lfRuleRoles do
+    let ruleName := role.ruleName.eraseMacroScopes
+    let kinds := (seenRuleRoles.find? ruleName).getD {}
+    seenRuleRoles := seenRuleRoles.insert ruleName (kinds.insert role.kind.eraseMacroScopes)
+  let mut ruleRoles := #[]
+  for role in block.ruleRoles do
+    let ruleName := role.ruleName.eraseMacroScopes
+    let kind := role.kind.eraseMacroScopes
+    if !ruleNames.contains ruleName then
+      throwError "rule_role for unknown rule '{role.ruleName}' in type theory '{flatForCheck.name}'"
+    let kinds := (seenRuleRoles.find? ruleName).getD {}
+    if kinds.contains kind then
+      throwError "duplicate rule_role '{role.kind}' for rule '{role.ruleName}' in type theory \
+        '{flatForCheck.name}'"
+    seenRuleRoles := seenRuleRoles.insert ruleName (kinds.insert kind)
+    ruleRoles := ruleRoles.push { ruleName := ruleName, kind := kind }
+  pure (syntaxSortRoles, judgmentRoles, ruleRoles)
+
+/-- Check context-zone and binder-class metadata added by one incremental extension block. -/
+def checkIncrementalContextBinderMetadataDelta (flatForCheck : HLSignature)
+    (checkedBase : CheckedSignature) (block : HLTheoryBlock) :
+    CoreM (Array CheckedLFContextZone × Array CheckedLFBinderClass) := do
+  let syntaxSortNames : NameSet :=
+    flatForCheck.syntaxSorts.foldl (init := {}) fun acc s => acc.insert s.name.eraseMacroScopes
+  let mut seenZones : NameSet :=
+    checkedBase.lfContextZones.foldl (init := {}) fun acc z => acc.insert z.name.eraseMacroScopes
+  let mut checkedContextZones := #[]
+  for zone in block.contextZones do
+    let zoneName := zone.name.eraseMacroScopes
+    let sortName := zone.sortName.eraseMacroScopes
+    if seenZones.contains zoneName then
+      throwError "duplicate context_zone '{zoneName}' in type theory '{flatForCheck.name}'"
+    if !syntaxSortNames.contains sortName then
+      throwError "context_zone '{zone.name}' in type theory '{flatForCheck.name}' uses unknown \
+        syntax sort '{zone.sortName}'"
+    let mut seenDeps : NameSet := {}
+    for dep in zone.dependsOn do
+      let dep := dep.eraseMacroScopes
+      if seenDeps.contains dep then
+        throwError "context_zone '{zone.name}' in type theory '{flatForCheck.name}' has \
+          duplicate dependency '{dep}'"
+      seenDeps := seenDeps.insert dep
+      if !seenZones.contains dep then
+        throwError "context_zone '{zone.name}' in type theory '{flatForCheck.name}' depends on \
+          unknown or later zone '{dep}'"
+    seenZones := seenZones.insert zoneName
+    checkedContextZones := checkedContextZones.push (checkedLFContextZoneDeclArtifact zone)
+  let mut seenBinderClasses : NameSet :=
+    checkedBase.lfBinderClasses.foldl (init := {}) fun acc b =>
+      acc.insert b.name.eraseMacroScopes
+  let allZones : NameSet :=
+    flatForCheck.contextZones.foldl (init := {}) fun acc z => acc.insert z.name.eraseMacroScopes
+  let mut checkedBinderClasses := #[]
+  for binderClass in block.binderClasses do
+    let binderName := binderClass.name.eraseMacroScopes
+    let sortName := binderClass.boundSortName.eraseMacroScopes
+    let zoneName := binderClass.zoneName.eraseMacroScopes
+    if seenBinderClasses.contains binderName then
+      throwError "duplicate binder_class '{binderName}' in type theory '{flatForCheck.name}'"
+    seenBinderClasses := seenBinderClasses.insert binderName
+    if !syntaxSortNames.contains sortName then
+      throwError "binder_class '{binderClass.name}' in type theory '{flatForCheck.name}' uses \
+        unknown syntax sort '{binderClass.boundSortName}'"
+    if !allZones.contains zoneName then
+      throwError "binder_class '{binderClass.name}' in type theory '{flatForCheck.name}' uses \
+        unknown context zone '{binderClass.zoneName}'"
+    let mut seenDeps : NameSet := {}
+    for dep in binderClass.dependsOn do
+      let dep := dep.eraseMacroScopes
+      if seenDeps.contains dep then
+        throwError "binder_class '{binderClass.name}' in type theory '{flatForCheck.name}' has \
+          duplicate dependency '{dep}'"
+      seenDeps := seenDeps.insert dep
+      if !allZones.contains dep then
+        throwError "binder_class '{binderClass.name}' in type theory '{flatForCheck.name}' \
+          depends on unknown context zone '{dep}'"
+    checkedBinderClasses := checkedBinderClasses.push (checkedLFBinderClassDeclArtifact binderClass)
+  pure (checkedContextZones, checkedBinderClasses)
+
 /-- Check metadata declarations in a theory block and collect checked delta artifacts. -/
 def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : CheckedSignature)
     (block : HLTheoryBlock) : CoreM CheckedTheoryDelta := do
@@ -5462,8 +5589,10 @@ def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : Ch
       syntaxSortArities globalHeads a
     checkedSyntaxAbbrevs :=
       checkedSyntaxAbbrevs.push (← checkedLFSyntaxAbbrevDeclArtifact flatForCheck globalHeads a)
-  let checkedContextZones := block.contextZones.map checkedLFContextZoneDeclArtifact
-  let checkedBinderClasses := block.binderClasses.map checkedLFBinderClassDeclArtifact
+  let (checkedSyntaxSortRoles, checkedJudgmentRoles, checkedRuleRoles) ←
+    checkIncrementalRoleMetadataDelta flatForCheck checkedBase block
+  let (checkedContextZones, checkedBinderClasses) ←
+    checkIncrementalContextBinderMetadataDelta flatForCheck checkedBase block
   let mut checkedJudgments : Array CheckedLFJudgment := #[]
   for j in block.judgments do
     checkLFLocalBinderHygieneInJudgmentDecl flatForCheck j
@@ -5499,13 +5628,16 @@ def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : Ch
   pure {
     syntaxSorts := checkedSyntaxSorts
     syntaxAbbrevs := checkedSyntaxAbbrevs
+    syntaxSortRoles := checkedSyntaxSortRoles
     contextZones := checkedContextZones
     binderClasses := checkedBinderClasses
     judgments := checkedJudgments
+    judgmentRoles := checkedJudgmentRoles
     opaqueConsts := checkedOpaques
     sideConditionSolvers := checkedSolvers
     conversionPlugins := checkedPlugins
     rules := checkedRules
+    ruleRoles := checkedRuleRoles
     ruleSchemas := checkedRuleSchemas
     sideConditionCertificates := checkedCertificates
     modelVisibilities := block.modelVisibilities

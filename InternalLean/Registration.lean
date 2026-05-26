@@ -26,14 +26,36 @@ register_option internalLean.profileInternalDef : Bool := {
     are checked"
 }
 
+/-- Count checked LF metadata declarations represented in a checked signature. -/
+def checkedLFMetadataDeclCount (checked : CheckedSignature) : Nat :=
+  checked.lfSyntaxSorts.size + checked.lfSyntaxAbbrevs.size +
+    checked.lfSyntaxSortRoles.size + checked.lfContextZones.size +
+    checked.lfBinderClasses.size + checked.lfJudgments.size + checked.lfJudgmentRoles.size +
+    checked.lfOpaqueConsts.size + checked.lfSideConditionSolvers.size +
+    checked.lfConversionPlugins.size + checked.lfRules.size + checked.lfRuleRoles.size +
+    checked.lfRewriteRelations.size + checked.lfRewriteSymmetries.size +
+    checked.lfRewriteCongruences.size + checked.lfTransportRules.size +
+    checked.lfTransportPositions.size
+
+/-- Extra profile detail for metadata-heavy registrations, omitted when all counts are zero. -/
+def internalRegistrationProfileMetadataSuffix (p : InternalRegistrationProfile) : String :=
+  if p.priorOpaqueConsts == 0 && p.recheckedOpaqueConsts == 0 && p.priorRules == 0 &&
+      p.recheckedRules == 0 && p.priorMetadataDecls == 0 && p.recheckedMetadataDecls == 0 then
+    ""
+  else
+    s!", prior opaque(s)={p.priorOpaqueConsts}, rule(s)={p.priorRules}, metadata=\
+      {p.priorMetadataDecls}; rechecked opaque(s)={p.recheckedOpaqueConsts}, rule(s)=\
+      {p.recheckedRules}, metadata={p.recheckedMetadataDecls}"
+
 /-- Record and optionally print one registration profile entry. -/
 def recordInternalRegistrationProfile (p : InternalRegistrationProfile) : CoreM Unit := do
   registerInternalRegistrationProfile p
   if (← getBoolOption `internalLean.profileInternalDef) then
     logInfo m!"registration profile {p.theoryName}.{p.declName}: strategy={p.strategy}, \
-      prior object defs={p.priorObjectDefs}, prior theorem(s)={p.priorJudgmentTheorems}, \
-      old object defs rechecked={p.recheckedObjectDefs}, old theorem(s) rechecked=\
-      {p.recheckedJudgmentTheorems}, incremental={p.incrementallyChecked}"
+      prior object defs={p.priorObjectDefs}, prior theorem(s)={p.priorJudgmentTheorems}\
+      {internalRegistrationProfileMetadataSuffix p}, old object defs rechecked=\
+      {p.recheckedObjectDefs}, old theorem(s) rechecked={p.recheckedJudgmentTheorems}, \
+      incremental={p.incrementallyChecked}"
 
 /-- Render a compact summary for the generated Lean-visible theory anchor. -/
 def theoryAnchorSummaryString (sig : HLSignature) (sourceDoc? : Option String := none) : String :=
@@ -262,8 +284,14 @@ def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : C
         strategy := s!"full fallback extend_type_theory: {reason}"
         priorObjectDefs := priorChecked.lfObjectDefs.size
         priorJudgmentTheorems := priorChecked.lfJudgmentTheorems.size
+        priorOpaqueConsts := priorChecked.lfOpaqueConsts.size
+        priorRules := priorChecked.lfRules.size
+        priorMetadataDecls := checkedLFMetadataDeclCount priorChecked
         recheckedObjectDefs := priorChecked.lfObjectDefs.size
         recheckedJudgmentTheorems := priorChecked.lfJudgmentTheorems.size
+        recheckedOpaqueConsts := priorChecked.lfOpaqueConsts.size
+        recheckedRules := priorChecked.lfRules.size
+        recheckedMetadataDecls := checkedLFMetadataDeclCount priorChecked
         incrementallyChecked := 0 }
       modifyEnv fun env =>
         checkedTheoryExt.addEntry (theoryExt.addEntry env (.sig candidate)) (.sig checked)
@@ -278,6 +306,148 @@ partial def splitAdmittedLFOpaqueType (params : Array HLBinding) :
         .explicit }) B
   | typeExpr => (params, typeExpr)
 
+/-- The shape selected for an admitted internal declaration. -/
+inductive InternalSorryAdmissionShape where
+  /-- The admission should add a typed LF opaque constant. -/
+  | lfOpaque
+  /-- The admission should be recorded as theorem-shaped debt only. -/
+  | judgmentTheorem
+  /-- The annotation is not an admission shape supported by the LF frontend. -/
+  | unsupported (reason : String)
+  deriving Inhabited, Repr, BEq
+
+/-- One admitted LF opaque requested by a command or batch command. -/
+structure AdmittedInternalLFOpaqueRequest where
+  /-- Theory-local declaration name. -/
+  localName : Name
+  /-- Lean-visible anchor name. -/
+  anchorName : Name
+  /-- Source-level binders before `:`. -/
+  params : Array HLBinding := #[]
+  /-- Source-level annotation after `:`. -/
+  typeExpr : ObjExpr
+  deriving Inhabited, Repr, BEq
+
+/-- Convert one admitted declaration request to an LF opaque declaration. -/
+def admittedInternalLFOpaqueDeclOfRequest (r : AdmittedInternalLFOpaqueRequest) :
+    LFOpaqueConstDecl :=
+  let (params, resultTypeExpr) := splitAdmittedLFOpaqueType r.params r.typeExpr
+  { name := r.localName
+    arity? := some params.size
+    params := params
+    typeExpr? := some resultTypeExpr }
+
+/-- Classify an admitted internal declaration without running the full signature checker. -/
+def classifyInternalSorryAdmissionShapes (theoryName : Name)
+    (requests : Array AdmittedInternalLFOpaqueRequest) :
+    CoreM (Array InternalSorryAdmissionShape) := do
+  if requests.isEmpty then
+    return #[]
+  let some sig ← getTheory? theoryName
+    | throwError "unknown type theory '{theoryName}'"
+  let some checked ← getCheckedTheory? theoryName
+    | throwError "no checked artifact stored for type theory '{theoryName}'"
+  let flatSourceBase ← flattenSignature sig
+  let rawBlock : HLTheoryBlock := {
+    lfOpaqueConsts := requests.map admittedInternalLFOpaqueDeclOfRequest }
+  let priorKnownTypes := checkedLFDefinitionTypeMapFromDefs checked.lfObjectDefs
+  let blockForRegistry ←
+    elaborateImplicitAppsInTheoryBlockExtension flatSourceBase priorKnownTypes rawBlock
+  let checkedBase := checkedSignatureToHLSignature flatSourceBase checked
+  let blockForCheck ← expandSyntaxAbbrevsInTheoryBlockExtension checkedBase blockForRegistry
+  let flatForCheck := checkedBase.appendBlock blockForCheck
+  let globalHeads := lfGlobalHeadInfo flatForCheck
+  let mut out := #[]
+  for req in requests, d in blockForCheck.lfOpaqueConsts do
+    let locals := d.params.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
+    let typeExpr := d.typeExpr?.getD req.typeExpr
+    match checkedLFHead? globalHeads locals typeExpr with
+    | some head =>
+        if head.kind == .judgment then
+          out := out.push .judgmentTheorem
+        else if head.kind == .syntaxSort || head.kind == .local then
+          out := out.push .lfOpaque
+        else
+          out := out.push <| .unsupported s!"admitted annotation is headed by \
+            {head.kind.label} '{head.name}', expected a syntax_sort/local-family or judgment head"
+    | none =>
+        out := out.push <| .unsupported s!"admitted annotation is not headed by a known LF \
+          identifier: {typeExpr}"
+  if out.size != requests.size then
+    throwError "internal error: classified {out.size} admitted declaration(s), expected \
+      {requests.size}"
+  pure out
+
+/-- Classify an admitted internal declaration without running the full signature checker. -/
+def classifyInternalSorryAdmissionShape (theoryName localName : Name)
+    (params : Array HLBinding) (typeExpr : ObjExpr) : CoreM InternalSorryAdmissionShape := do
+  let shapes ← classifyInternalSorryAdmissionShapes theoryName #[{
+    localName := localName
+    anchorName := theoryName ++ localName
+    params := params
+    typeExpr := typeExpr }]
+  pure (shapes[0]!)
+
+/-- Register a batch of admitted internal declarations as typed LF opaque constants. -/
+def registerAdmittedInternalLFOpaqueBatch (theoryName : Name)
+    (requests : Array AdmittedInternalLFOpaqueRequest) : CoreM Unit := do
+  if requests.isEmpty then
+    return ()
+  let some sig ← getTheory? theoryName
+    | throwError "unknown type theory '{theoryName}'"
+  let some checked ← getCheckedTheory? theoryName
+    | throwError "no checked artifact stored for type theory '{theoryName}'"
+  let flatSourceBase ← flattenSignature sig
+  let rawBlock : HLTheoryBlock := {
+    lfOpaqueConsts := requests.map admittedInternalLFOpaqueDeclOfRequest }
+  checkNoExtensionNameCollisions flatSourceBase rawBlock
+  let priorKnownTypes := checkedLFDefinitionTypeMapFromDefs checked.lfObjectDefs
+  let blockForRegistry ←
+    elaborateImplicitAppsInTheoryBlockExtension flatSourceBase priorKnownTypes rawBlock
+  let checkedBase := checkedSignatureToHLSignature flatSourceBase checked
+  let blockForCheck ← expandSyntaxAbbrevsInTheoryBlockExtension checkedBase blockForRegistry
+  let flatForCheck := checkedBase.appendBlock blockForCheck
+  let delta ← checkTheoryBlockMetadataDelta flatForCheck checked blockForCheck
+  unless delta.opaqueConsts.size == requests.size do
+    throwError "internal error: admitted LF opaque batch produced {delta.opaqueConsts.size} \
+      checked opaque(s) for {requests.size} request(s)"
+  let checked' := appendCheckedTheoryDelta checked delta
+  let mut admissions : Array InternalAdmission := #[]
+  for req in requests, d in blockForRegistry.lfOpaqueConsts do
+    let typeExpr := d.typeExpr?.getD req.typeExpr
+    admissions := admissions.push {
+      theoryName := theoryName
+      declName := req.localName
+      anchorName := req.anchorName
+      params := d.params
+      typeExpr := typeExpr
+      kind := .lfOpaque }
+  let profileDeclName :=
+    if requests.size == 1 then requests[0]!.localName.eraseMacroScopes else `internal_defs
+  let strategy :=
+    if requests.size == 1 then "incremental admitted LF opaque"
+    else "incremental admitted LF opaque batch"
+  recordInternalRegistrationProfile {
+    theoryName := theoryName
+    declName := profileDeclName
+    strategy := strategy
+    priorObjectDefs := checked.lfObjectDefs.size
+    priorJudgmentTheorems := checked.lfJudgmentTheorems.size
+    priorOpaqueConsts := checked.lfOpaqueConsts.size
+    priorRules := checked.lfRules.size
+    priorMetadataDecls := checkedLFMetadataDeclCount checked
+    recheckedObjectDefs := 0
+    recheckedJudgmentTheorems := 0
+    recheckedOpaqueConsts := 0
+    recheckedRules := 0
+    recheckedMetadataDecls := 0
+    incrementallyChecked := requests.size }
+  modifyEnv fun env =>
+    let env := theoryExt.addEntry env (.sig (sig.appendBlock blockForRegistry))
+    let env := checkedTheoryExt.addEntry env (.sig checked')
+    admissions.foldl (init := env) fun env admission =>
+      internalAdmissionExt.addEntry env (.admission admission)
+
 /-- Register an explicitly admitted internal declaration as a typed LF opaque constant.
 
 This is the visible postulate path for generic LF metadata theories: the annotation is
@@ -285,39 +455,11 @@ checked by the LF metadata checker, the body remains admitted, and later LF defi
 judgment theorems may refer to the admitted name as an opaque theory-local constant. -/
 def registerAdmittedInternalLFOpaque (theoryName anchorName localName : Name)
     (params : Array HLBinding) (typeExpr : ObjExpr) : CoreM Unit := do
-  let some sig ← getTheory? theoryName
-    | throwError "unknown type theory '{theoryName}'"
-  let flatSig ← flattenSignature sig
-  if flatSig.containsName localName then
-    throwError "declaration '{localName}' already exists in type theory '{theoryName}' or one of \
-      its parents"
-  let (params, resultTypeExpr) := splitAdmittedLFOpaqueType params typeExpr
-  let d : LFOpaqueConstDecl := {
-    name := localName
-    arity? := some params.size
+  registerAdmittedInternalLFOpaqueBatch theoryName #[{
+    localName := localName
+    anchorName := anchorName
     params := params
-    typeExpr? := some resultTypeExpr
-  }
-  let flatSig := { flatSig with lfOpaqueConsts := flatSig.lfOpaqueConsts.push d }
-  let d ← elaborateImplicitAppsInLFOpaqueConstDecl flatSig d
-  let candidate := { sig with lfOpaqueConsts := sig.lfOpaqueConsts.push d }
-  let checked ← checkSignatureForRegistration candidate
-  let admission : InternalAdmission := {
-    theoryName, declName := localName, anchorName, params := d.params,
-    typeExpr := d.typeExpr?.getD resultTypeExpr, kind := .lfOpaque }
-  recordInternalRegistrationProfile {
-    theoryName := theoryName
-    declName := localName.eraseMacroScopes
-    strategy := "full admitted LF opaque"
-    priorObjectDefs := checked.lfObjectDefs.size
-    priorJudgmentTheorems := checked.lfJudgmentTheorems.size
-    recheckedObjectDefs := checked.lfObjectDefs.size
-    recheckedJudgmentTheorems := checked.lfJudgmentTheorems.size
-    incrementallyChecked := 0 }
-  modifyEnv fun env =>
-    let env := theoryExt.addEntry env (.lfOpaqueConst theoryName d)
-    let env := checkedTheoryExt.addEntry env (.sig checked)
-    internalAdmissionExt.addEntry env (.admission admission)
+    typeExpr := typeExpr }]
 
 /-- Previously checked LF definition result types, used as available local type information for
 validating an admitted custom-judgment statement. -/
@@ -342,77 +484,124 @@ records a specific theorem-shaped admission for model transport and linting afte
 that the statement is a well-formed LF judgment over the current signature. -/
 def registerAdmittedInternalLFJudgmentTheorem (theoryName anchorName localName : Name)
     (params : Array HLBinding) (typeExpr : ObjExpr) : CoreM Unit := do
-  if !params.isEmpty then
-    throwError "LF judgment admissions do not yet support source binders; write a closed judgment \
-      statement or introduce explicit LF objects first"
   let some sig ← getTheory? theoryName
     | throwError "unknown type theory '{theoryName}'"
-  let flatSig ← flattenSignature sig
-  if flatSig.containsName localName then
+  let flatSourceBase ← flattenSignature sig
+  if flatSourceBase.containsName localName then
     throwError "declaration '{localName}' already exists in type theory '{theoryName}' or one of \
       its parents"
   let some checked ← getCheckedTheory? theoryName
     | throwError "no checked artifact stored for type theory '{theoryName}'"
   let knownLFDefTypes := checkedLFDefinitionTypeMap checked
+  let (params, theoremKnownTypes, theoremLocals) ←
+    elaborateImplicitAppsInBindings flatSourceBase knownLFDefTypes {} "admitted internal \
+      declaration" localName params
   let typeExpr ←
-    elaborateImplicitAppsInExpr flatSig knownLFDefTypes {} "admitted internal \
-      declaration" localName "statement" none typeExpr
-  let lfGlobals := lfKnownGlobalNames flatSig
-  let opaqueArities := lfOpaqueArities flatSig
-  let globalHeads := lfGlobalHeadInfo flatSig
-  let judgmentArities : NameMap Nat := flatSig.judgments.foldl (init := {}) fun acc j =>
-    acc.insert j.name.eraseMacroScopes j.params.size
-  checkKnownNamesInLFExpr flatSig lfGlobals {} opaqueArities "admitted internal \
-    declaration" localName "statement" typeExpr
-  checkLFDefinitionReferencesAvailable flatSig globalHeads knownLFDefTypes "admitted internal \
-    declaration" localName "statement" (locals := {}) typeExpr
-  checkLFSyntaxSortArgumentsInExpr flatSig "admitted internal \
-    declaration" localName "statement" knownLFDefTypes typeExpr
-  checkLFInferableApplicationArguments flatSig "admitted internal \
-    declaration" localName "statement" knownLFDefTypes typeExpr
-  let judgmentHead ← checkRuleJudgmentHead flatSig judgmentArities localName "statement" typeExpr
+    elaborateImplicitAppsInExpr flatSourceBase theoremKnownTypes theoremLocals
+      "admitted internal declaration" localName "statement" none typeExpr
+  let checkedBase := checkedSignatureToHLSignature flatSourceBase checked
+  let params ← expandSyntaxAbbrevsInBindings checkedBase "admitted internal declaration"
+    localName params
+  let locals := params.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
+  let typeExpr ←
+    expandSyntaxAbbrevsInExpr checkedBase "admitted internal declaration" localName
+      "statement" locals (checkedBase.syntaxAbbrevs.size + 1) typeExpr
+  let flatForCheck := checkedBase
+  for b in params do
+    checkNoLFLocalBinderShadowingInBinding flatForCheck "admitted internal declaration"
+      localName b
+    checkDeclaredLevelParamsInLFBinding flatForCheck "admitted internal declaration"
+      localName b
+  checkNoLFLocalBinderShadowingInExpr flatForCheck "admitted internal declaration" localName
+    "statement" typeExpr
+  checkDeclaredLevelParamsInLFExpr flatForCheck "admitted internal declaration" localName
+    "statement" typeExpr
+  let lfGlobals := lfKnownGlobalNames flatForCheck
+  let opaqueArities := lfOpaqueArities flatForCheck
+  let globalHeads := lfGlobalHeadInfo flatForCheck
+  let syntaxSortArities : NameMap Nat :=
+    flatForCheck.syntaxSorts.foldl (init := {}) fun acc s =>
+      acc.insert s.name.eraseMacroScopes s.params.size
+  let judgmentArities : NameMap Nat :=
+    flatForCheck.judgments.foldl (init := {}) fun acc j =>
+      acc.insert j.name.eraseMacroScopes j.params.size
+  checkNoDuplicateMetadataBinders flatForCheck "admitted internal declaration" localName params
+  discard <| checkKnownNamesInMetadataBindings flatForCheck lfGlobals opaqueArities
+    "admitted internal declaration" localName params
+  checkSyntaxSortApplicationsInBindings flatForCheck syntaxSortArities
+    "admitted internal declaration" localName params
+  checkLFSyntaxSortArgumentsInBindings flatForCheck "admitted internal declaration" localName
+    params
+  let (_, theoremLocals) ← checkedLFBindings flatForCheck globalHeads
+    "admitted internal declaration" localName params
+  let mut theoremKnownTypes := knownLFDefTypes
+  let mut priorTheoremLocals : NameSet := {}
+  for b in params do
+    let where_ := s!"parameter '{b.name.eraseMacroScopes}' type"
+    checkNoCaptureUnsafeBetaInLFExpr flatForCheck "admitted internal declaration" localName
+      where_ b.typeExpr
+    checkLFSyntaxSortArgumentsInExpr flatForCheck "admitted internal declaration" localName
+      where_ theoremKnownTypes b.typeExpr
+    checkLFInferableApplicationArguments flatForCheck "admitted internal declaration" localName
+      where_ theoremKnownTypes b.typeExpr
+    let typeHead? := checkedLFHead? globalHeads priorTheoremLocals b.typeExpr
+    match typeHead? with
+    | some head =>
+        if head.kind == .judgment then
+          let (_, args) := splitObjApp b.typeExpr
+          checkLFJudgmentArgumentsWithKnownTypes flatForCheck "admitted internal declaration"
+            localName where_ theoremKnownTypes head.name args
+        else if head.kind == .syntaxSort then
+          pure ()
+        else
+          throwError "admitted internal declaration '{localName}' in type theory \
+            '{flatForCheck.name}' has parameter '{b.name.eraseMacroScopes}' type headed by \
+            {head.kind.label} '{head.name}', expected a syntax_sort or judgment"
+    | none =>
+        throwError "admitted internal declaration '{localName}' in type theory \
+          '{flatForCheck.name}' has parameter '{b.name.eraseMacroScopes}' type not headed by a \
+          known LF identifier: {b.typeExpr}"
+    theoremKnownTypes :=
+      theoremKnownTypes.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
+    priorTheoremLocals := priorTheoremLocals.insert b.name.eraseMacroScopes
+  checkKnownNamesInLFExpr flatForCheck lfGlobals theoremLocals opaqueArities
+    "admitted internal declaration" localName "statement" typeExpr
+  checkNoCaptureUnsafeBetaInLFExpr flatForCheck "admitted internal declaration" localName
+    "statement" typeExpr
+  checkLFDefinitionReferencesAvailable flatForCheck globalHeads theoremKnownTypes
+    "admitted internal declaration" localName "statement" (locals := theoremLocals) typeExpr
+  checkLFSyntaxSortArgumentsInExpr flatForCheck "admitted internal declaration" localName
+    "statement" theoremKnownTypes typeExpr
+  checkLFInferableApplicationArguments flatForCheck "admitted internal declaration" localName
+    "statement" theoremKnownTypes typeExpr
+  let judgmentHead ← checkRuleJudgmentHead flatForCheck judgmentArities localName "statement"
+    typeExpr
   let (_, judgmentArgs) := splitObjApp typeExpr
-  checkLFJudgmentArgumentsWithKnownTypes flatSig "admitted internal \
-    declaration" localName "statement"
-    knownLFDefTypes judgmentHead.name judgmentArgs
-  discard
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    <| resolveLFExpr flatSig globalHeads {} "admitted internal \
-      declaration" localName "statement" typeExpr
+  checkLFJudgmentArgumentsWithKnownTypes flatForCheck "admitted internal declaration" localName
+    "statement" theoremKnownTypes judgmentHead.name judgmentArgs
+  discard <| resolveLFExpr flatForCheck globalHeads theoremLocals
+    "admitted internal declaration" localName "statement" typeExpr
   let admission : InternalAdmission := {
     theoryName := theoryName
     declName := localName
     anchorName := anchorName
     params := params
     typeExpr := typeExpr
-    kind := .judgmentTheorem
-  }
+    kind := .judgmentTheorem }
   recordInternalRegistrationProfile {
     theoryName := theoryName
     declName := localName.eraseMacroScopes
     strategy := "incremental LF judgment admission"
     priorObjectDefs := checked.lfObjectDefs.size
     priorJudgmentTheorems := checked.lfJudgmentTheorems.size
+    priorOpaqueConsts := checked.lfOpaqueConsts.size
+    priorRules := checked.lfRules.size
+    priorMetadataDecls := checkedLFMetadataDeclCount checked
     recheckedObjectDefs := 0
     recheckedJudgmentTheorems := 0
+    recheckedOpaqueConsts := 0
+    recheckedRules := 0
+    recheckedMetadataDecls := 0
     incrementallyChecked := 1 }
   modifyEnv fun env => internalAdmissionExt.addEntry env (.admission admission)
 

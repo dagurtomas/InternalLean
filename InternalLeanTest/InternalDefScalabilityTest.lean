@@ -382,3 +382,100 @@ declare_type_theory IntraBlockLargeDeclareSmoke where
 #guard_internal_registration_profile_strategy IntraBlockLargeDeclareSmoke
   "full declare_type_theory (streaming artifacts)"
 
+declare_type_theory SorryAdmissionIncrementalSmoke where
+  syntax_sort Obj
+  lf_opaque base : Obj
+
+namespace SorryAdmissionIncrementalSmoke
+
+internal def d01 : Obj := base
+internal def d02 : Obj := d01
+
+#guard_msgs (drop warning) in
+internal def admitted01 : Obj := sorry
+
+#guard_msgs (drop warning) in
+internal def admitted02 : Obj := sorry
+
+end SorryAdmissionIncrementalSmoke
+
+extend_type_theory SorryAdmissionIncrementalSmoke where
+  lf_def after : Obj := admitted02
+
+#check_type_theory SorryAdmissionIncrementalSmoke
+#guard_internal_registration_profile_totals SorryAdmissionIncrementalSmoke 6 5 0 0
+#guard_internal_registration_profile_strategy SorryAdmissionIncrementalSmoke
+  "incremental admitted LF opaque"
+#guard_internal_registration_profile_strategy SorryAdmissionIncrementalSmoke
+  "incremental extend_type_theory (streaming block)"
+
+declare_type_theory SorryAdmissionBatchSmoke where
+  syntax_sort Obj
+  lf_opaque base : Obj
+
+namespace SorryAdmissionBatchSmoke
+
+#guard_msgs (drop warning) in
+internal_defs where
+  def admitted01 : Obj := sorry
+  def admitted02 : Obj := sorry
+  def admitted03 : Obj := sorry
+  def admitted04 : Obj := sorry
+
+end SorryAdmissionBatchSmoke
+
+extend_type_theory SorryAdmissionBatchSmoke where
+  lf_def after : Obj := admitted04
+
+#check_type_theory SorryAdmissionBatchSmoke
+#guard_internal_registration_profile_totals SorryAdmissionBatchSmoke 3 5 0 0
+#guard_internal_registration_profile_strategy SorryAdmissionBatchSmoke
+  "incremental admitted LF opaque batch"
+
+declare_type_theory SorryAdmissionTheoremRouteSmoke where
+  syntax_sort Obj
+  judgment J (x : Obj)
+  lf_opaque base : Obj
+  rule intro (x : Obj) : J x
+
+namespace SorryAdmissionTheoremRouteSmoke
+
+#guard_msgs (drop warning) in
+internal def admittedTheorem : J base := sorry
+
+end SorryAdmissionTheoremRouteSmoke
+
+#guard_internal_registration_profile_totals SorryAdmissionTheoremRouteSmoke 2 1 0 0
+#guard_internal_registration_profile_strategy SorryAdmissionTheoremRouteSmoke
+  "incremental LF judgment admission"
+
+declare_type_theory IncrementalRoleMetadataSmoke where
+  syntax_sort Obj
+  judgment J (x : Obj)
+  lf_opaque base : Obj
+  rule intro (x : Obj) : J x
+  lf_def d : Obj := base
+
+extend_type_theory IncrementalRoleMetadataSmoke where
+  syntax_sort_role Obj : term_sort
+  judgment_role J : term_typing
+  rule_role intro : introduction
+
+#check_type_theory IncrementalRoleMetadataSmoke
+#guard_internal_registration_profile_totals IncrementalRoleMetadataSmoke 2 3 0 0
+#guard_internal_registration_profile_strategy IncrementalRoleMetadataSmoke
+  "incremental extend_type_theory (streaming block)"
+
+declare_type_theory IncrementalContextBinderMetadataSmoke where
+  syntax_sort Ctx
+  syntax_sort Tm (Γ : Ctx)
+
+extend_type_theory IncrementalContextBinderMetadataSmoke where
+  context_zone ordinary : Ctx
+  binder_class ordinary_var : Tm in ordinary
+
+#check_type_theory IncrementalContextBinderMetadataSmoke
+#guard_internal_registration_profile_totals IncrementalContextBinderMetadataSmoke 2 2 0 0
+#guard_internal_registration_profile_strategy IncrementalContextBinderMetadataSmoke
+  "incremental extend_type_theory (streaming block)"
+
