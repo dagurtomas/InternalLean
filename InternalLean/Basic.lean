@@ -379,20 +379,36 @@ where
               '{binder.eraseMacroScopes}'{localIdentitySuffix binder}"
       pure value
 
-/-- Substitute a raw Lean-parameter placeholder by raw syntax.
+/-- Name-list membership after erasing macro scopes. -/
+def rawNameListContains (names : List Name) (x : Name) : Bool :=
+  names.any fun y => y.eraseMacroScopes == x.eraseMacroScopes
 
-This is a deliberately tiny helper for generic conversion-certificate engines.  It is aware of
-`scopedBind` staging binders so a substitution for the bound name does not cross the binder body. -/
-partial def substLeanParam (x : Name) (value : Raw) : Raw → Raw
+/-- Pick a deterministic raw local name avoiding a finite set. -/
+def freshRawLocalNameAvoiding (base : Name) (avoid : List Name) : Name :=
+  let base := base.eraseMacroScopes
+  let rec go : Nat → Nat → Name
+    | 0, n => .str base s!"_hyg{n}"
+    | fuel + 1, n =>
+        let candidate := .str base s!"_hyg{n}"
+        if rawNameListContains avoid candidate then go fuel (n + 1) else candidate
+  if rawNameListContains avoid base then go (avoid.length + 32) 0 else base
+
+/-- Rename raw local occurrences while respecting raw lambda and scoped binders. -/
+partial def renameRawLocalOccurrences (oldName newName : Name) : Raw → Raw
   | .ctxNil => .ctxNil
-  | .ctxMeta y => .ctxMeta y
-  | .ctxExt Γ A => .ctxExt (substLeanParam x value Γ) (substLeanParam x value A)
-  | .tyMeta y => .tyMeta y
+  | .ctxMeta y => if y.eraseMacroScopes == oldName.eraseMacroScopes then
+      .ctxMeta newName.eraseMacroScopes else .ctxMeta y.eraseMacroScopes
+  | .ctxExt Γ A => .ctxExt (renameRawLocalOccurrences oldName newName Γ)
+      (renameRawLocalOccurrences oldName newName A)
+  | .tyMeta y => if y.eraseMacroScopes == oldName.eraseMacroScopes then
+      .tyMeta newName.eraseMacroScopes else .tyMeta y.eraseMacroScopes
   | .tyConst c => .tyConst c
-  | .tyApp f args => .tyApp f (args.map (substLeanParam x value))
-  | .tySubst A τ => .tySubst (substLeanParam x value A) (substLeanParam x value τ)
+  | .tyApp f args => .tyApp f (args.map (renameRawLocalOccurrences oldName newName))
+  | .tySubst A τ => .tySubst (renameRawLocalOccurrences oldName newName A)
+      (renameRawLocalOccurrences oldName newName τ)
   | .tmVar i => .tmVar i
-  | .tmMeta y => .tmMeta y
+  | .tmMeta y => if y.eraseMacroScopes == oldName.eraseMacroScopes then
+      .tmMeta newName.eraseMacroScopes else .tmMeta y.eraseMacroScopes
   | .tmConst c => .tmConst c
   | .tmApp f args =>
       if f == `lam then
@@ -407,7 +423,79 @@ partial def substLeanParam (x : Name) (value : Raw) : Raw → Raw
               let binderNames := cleanBinders.filterMap fun
                 | .leanParam y => some y
                 | _ => none
-              if binderNames.contains x.eraseMacroScopes then
+              if rawNameListContains binderNames oldName then
+                .tmApp f (cleanBinders ++ [body])
+              else
+                .tmApp f (cleanBinders ++ [renameRawLocalOccurrences oldName newName body])
+            else
+              .tmApp f (args.map (renameRawLocalOccurrences oldName newName))
+      else
+        .tmApp f (args.map (renameRawLocalOccurrences oldName newName))
+  | .tmSubst t τ => .tmSubst (renameRawLocalOccurrences oldName newName t)
+      (renameRawLocalOccurrences oldName newName τ)
+  | .substId Γ => .substId (renameRawLocalOccurrences oldName newName Γ)
+  | .substMeta y => if y.eraseMacroScopes == oldName.eraseMacroScopes then
+      .substMeta newName.eraseMacroScopes else .substMeta y.eraseMacroScopes
+  | .substComp τ υ => .substComp (renameRawLocalOccurrences oldName newName τ)
+      (renameRawLocalOccurrences oldName newName υ)
+  | .substEmpty => .substEmpty
+  | .substExt τ t => .substExt (renameRawLocalOccurrences oldName newName τ)
+      (renameRawLocalOccurrences oldName newName t)
+  | .scopedBind zone cls y ty body =>
+      let y := y.eraseMacroScopes
+      let ty := renameRawLocalOccurrences oldName newName ty
+      if y == oldName.eraseMacroScopes then
+        .scopedBind zone cls y ty body
+      else
+        .scopedBind zone cls y ty (renameRawLocalOccurrences oldName newName body)
+  | .leanParam y => if y.eraseMacroScopes == oldName.eraseMacroScopes then
+      .leanParam newName.eraseMacroScopes else .leanParam y.eraseMacroScopes
+
+/-- Substitute a raw Lean-parameter placeholder by raw syntax, alpha-renaming binders as needed.
+
+The generic conversion-certificate beta engine uses this helper at a trust boundary, so it must not
+capture free raw locals from the substitution value under raw lambda or scoped binders. -/
+partial def substLeanParam (x : Name) (value : Raw) : Raw → Raw
+  | .ctxNil => .ctxNil
+  | .ctxMeta y => .ctxMeta y.eraseMacroScopes
+  | .ctxExt Γ A => .ctxExt (substLeanParam x value Γ) (substLeanParam x value A)
+  | .tyMeta y => .tyMeta y.eraseMacroScopes
+  | .tyConst c => .tyConst c
+  | .tyApp f args => .tyApp f (args.map (substLeanParam x value))
+  | .tySubst A τ => .tySubst (substLeanParam x value A) (substLeanParam x value τ)
+  | .tmVar i => .tmVar i
+  | .tmMeta y => .tmMeta y.eraseMacroScopes
+  | .tmConst c => .tmConst c
+  | .tmApp f args =>
+      if f == `lam then
+        match args.reverse with
+        | [] => .tmApp f []
+        | body :: revBinders =>
+            let binders := revBinders.reverse
+            if binders.all (fun | .leanParam _ => true | _ => false) then
+              let (cleanBinders, body) := Id.run do
+                let mut out := []
+                let mut body := body
+                for binder in binders do
+                  match binder with
+                  | .leanParam y =>
+                      let y := y.eraseMacroScopes
+                      if rawNameListContains [x.eraseMacroScopes] y then
+                        out := out ++ [.leanParam y]
+                      else if rawNameListContains value.localRefNames y &&
+                          rawNameListContains body.localRefNames x then
+                        let avoid := value.localRefNames ++ body.localRefNames ++ [x, y]
+                        let y' := freshRawLocalNameAvoiding y avoid
+                        body := renameRawLocalOccurrences y y' body
+                        out := out ++ [.leanParam y']
+                      else
+                        out := out ++ [.leanParam y]
+                  | other => out := out ++ [other]
+                return (out, body)
+              let binderNames := cleanBinders.filterMap fun
+                | .leanParam y => some y
+                | _ => none
+              if rawNameListContains binderNames x then
                 .tmApp f (cleanBinders ++ [body])
               else
                 .tmApp f (cleanBinders ++ [substLeanParam x value body])
@@ -417,16 +505,27 @@ partial def substLeanParam (x : Name) (value : Raw) : Raw → Raw
         .tmApp f (args.map (substLeanParam x value))
   | .tmSubst t τ => .tmSubst (substLeanParam x value t) (substLeanParam x value τ)
   | .substId Γ => .substId (substLeanParam x value Γ)
-  | .substMeta y => .substMeta y
+  | .substMeta y => .substMeta y.eraseMacroScopes
   | .substComp τ υ => .substComp (substLeanParam x value τ) (substLeanParam x value υ)
   | .substEmpty => .substEmpty
   | .substExt τ t => .substExt (substLeanParam x value τ) (substLeanParam x value t)
   | .scopedBind zone cls y ty body =>
+      let y := y.eraseMacroScopes
       let ty := substLeanParam x value ty
-      let body :=
-        if y.eraseMacroScopes == x.eraseMacroScopes then body else substLeanParam x value body
-      .scopedBind zone cls y ty body
-  | .leanParam y => if y.eraseMacroScopes == x.eraseMacroScopes then value else .leanParam y
+      if y == x.eraseMacroScopes then
+        .scopedBind zone cls y ty body
+      else
+        let (y, body) :=
+          if rawNameListContains value.localRefNames y && rawNameListContains body.localRefNames x
+          then
+            let avoid := value.localRefNames ++ body.localRefNames ++ [x, y]
+            let y' := freshRawLocalNameAvoiding y avoid
+            (y', renameRawLocalOccurrences y y' body)
+          else
+            (y, body)
+        .scopedBind zone cls y ty (substLeanParam x value body)
+  | .leanParam y =>
+      if y.eraseMacroScopes == x.eraseMacroScopes then value else .leanParam y.eraseMacroScopes
 
 /-- One-step β reduction for the raw convention emitted by `checkedLFExprToRaw`.
 
@@ -1652,7 +1751,7 @@ def validateExecutableStep (pluginName : Name) (stmt : ConversionStatement)
   | .beta =>
       match stmt.lhs.betaReduce? with
       | some rhs =>
-          unless rhs == stmt.rhs do
+          unless rhs.alphaEq stmt.rhs do
             throwFailure .malformedCertificate <|
               s!"checked conversion plugin '{pluginName}' beta step reduces lhs to " ++
               s!"'{reprStr rhs}', expected rhs '{reprStr stmt.rhs}'"

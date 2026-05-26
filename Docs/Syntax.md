@@ -75,9 +75,9 @@ lhs ≡ rhs
 Notes:
 
 - `Type`, `Type u`, and `Type max u v` are object-level universe expressions.
-- `→` is user-facing object/function-arrow notation. It requires the theory to provide the
-  `FunctionCore` fragment (`Fun`, `lam`, and `app`).
-- `⇒` is the framework structural arrow for LF arities and dependent rule parameters.
+- `→` is compatibility notation for the framework's structural/function-family arrow.
+- `⇒` is the explicit spelling of the same framework arrow for LF arities and dependent rule
+  parameters. Use it when you want to avoid suggesting an object-level function former.
 - `fun x => body` builds an object lambda.
 - `lhs ≡ rhs` is object-expression syntax for judgmental-equality-shaped expressions.
 - `{x := value}` is an explicit implicit-argument marker used by the LF elaborator.

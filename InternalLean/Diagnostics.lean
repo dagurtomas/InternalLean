@@ -77,8 +77,8 @@ def internalLeanSideConditionSummaryString (sig : HLSignature) : String := Id.ru
       count := count + 1
       let status := match classifySideConditionHook sc.solver with
         | .builtinTrivial =>
-          s!"checked certificate generated automatically as \
-            {lfSideConditionCertificateName r.name sc.name}"
+          s!"unconditional built-in hook: any validated input is accepted and a certificate is \
+            generated automatically as {lfSideConditionCertificateName r.name sc.name}"
         | .opaque =>
           "opaque solver: core object tactics cannot synthesize this certificate; model backends \
             may expose a theorem-local certificate parameter when renderable"

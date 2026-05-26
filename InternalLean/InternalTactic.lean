@@ -244,9 +244,9 @@ partial def objectExprEq (a b : ObjExpr) : Bool :=
   | .jeq l r, .jeq l' r' => objectExprEq l l' && objectExprEq r r'
   | _, _ => false
 
-/-- Substitute named object variables in an object expression. -/
+/-- Substitute named object variables in an object expression, alpha-renaming binders as needed. -/
 def substObjectVars (subst : NameMap ObjExpr) (e : ObjExpr) : ObjExpr :=
-  substObjectMacroParams subst e
+  substLFParams subst e
 
 /-- Match a pattern against an object expression, treating selected names as pattern variables. -/
 partial def matchObjectPattern (vars : NameSet) (pattern actual : ObjExpr)

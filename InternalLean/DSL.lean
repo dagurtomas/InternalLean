@@ -157,9 +157,8 @@ inductive ObjExpr where
   | app : ObjExpr → ObjExpr → ObjExpr
   /-- Structural/meta-level nondependent or dependent arrow. `none` means a nondependent arrow. -/
   | arrow : Option Name → ObjExpr → ObjExpr → ObjExpr
-  /-- Surface object-level function arrow, written `→`. This is elaborated through
-  `FunctionCore.Fun` when that fragment is available; otherwise it falls back to the
-  current structural arrow for compatibility. -/
+  /-- Surface compatibility spelling of the structural/function-family arrow, written `→`.
+  The explicit framework spelling is `⇒`; both currently share this representation. -/
   | funArrow : Option Name → ObjExpr → ObjExpr → ObjExpr
   /-- Lambda with one or more untyped binders. Types are supplied by checking against an arrow. -/
   | lam : Array Name → ObjExpr → ObjExpr

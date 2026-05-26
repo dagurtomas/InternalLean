@@ -1595,8 +1595,8 @@ declare_type_theory BadLFNestedConstructorApplicationSyntaxSortArgumentType wher
 
 /--
 error: lf_def 'Bad' in type theory 'BadLFConstructorInternalArgumentType' has type for syntax_sort
-'Shape' for constructor 'wrapOther' parameter 'x' argument 'mkObj' with type 'ObjCtx', expected
-'OtherCtx'
+'Shape' argument 'wrapOther mkObj' for constructor 'wrapOther' parameter 'x' with type 'ObjCtx',
+expected 'OtherCtx'
 -/
 #guard_msgs (whitespace := lax) in
 declare_type_theory BadLFConstructorInternalArgumentType where

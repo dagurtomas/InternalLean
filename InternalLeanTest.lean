@@ -1,9 +1,12 @@
 -- Root module for the Mathlib-style `InternalLeanTest` test library.
 import InternalLeanTest.TinyNat
 import InternalLeanTest.APIExtensionTest
+import InternalLeanTest.CheckerHardeningTest
+import InternalLeanTest.CheckerPerformanceSmokeTest
 import InternalLeanTest.DocLintTest
 import InternalLeanTest.EndToEndTinyNatTest
 import InternalLeanTest.FrontendMacroTest
+import InternalLeanTest.GenerationHygieneTest
 import InternalLeanTest.ImplicitVariablesTest
 import InternalLeanTest.InternalDefScalabilityTest
 import InternalLeanTest.InternalDefTest
@@ -12,6 +15,7 @@ import InternalLeanTest.LFModelStressTest
 import InternalLeanTest.LogicalFrameworkMetadataExamplesTest
 import InternalLeanTest.ModelWorkflowUXTest
 import InternalLeanTest.NaturalNumbersTest
+import InternalLeanTest.RawConversionCaptureTest
 import InternalLeanTest.RawConversionTest
 import InternalLeanTest.SoundnessRegressionTest
 import InternalLeanTest.TheoryAnchorTest

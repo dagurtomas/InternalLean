@@ -123,6 +123,46 @@ def typeSyntaxOfLevel (u : LevelExpr) : CommandElabM (TSyntax `term) := do
 
 abbrev LFLocalSyntaxCtx := List (Name × Ident)
 
+/-- Names reserved by Lean syntax or by generated model renderers for local binders. -/
+def lfReservedLeanLocalNames : NameSet :=
+  [`Type, `fun, `let, `match, `if, `then, `else, `by, `where, `do, `forall].foldl
+    (init := {}) fun acc n => acc.insert n.eraseMacroScopes
+
+/-- Whether a source name can be emitted directly as one Lean identifier token. -/
+def isAtomicLeanLocalName (n : Name) : Bool :=
+  match n.eraseMacroScopes with
+  | .str .anonymous s => !s.isEmpty
+  | _ => false
+
+/-- Sanitize a source LF local name into a simple Lean identifier base. -/
+def lfLeanLocalBaseName (n : Name) : Name :=
+  if isAtomicLeanLocalName n then n.eraseMacroScopes else Name.mkSimple (flatNameString n)
+
+/-- Lean local identifiers already chosen for a rendering context. -/
+def lfLocalSyntaxUsedNames (locals : LFLocalSyntaxCtx) : NameSet :=
+  locals.foldl (init := {}) fun used (_, id) => used.insert id.getId.eraseMacroScopes
+
+/-- Pick a deterministic Lean local name avoiding reserved and already-used names. -/
+def freshLFLeanLocalName (source : Name) (avoid : NameSet) : Name :=
+  let base := lfLeanLocalBaseName source
+  let avoid := avoid ++ lfReservedLeanLocalNames
+  let rec go : Nat → Nat → Name
+    | 0, n => Name.mkSimple s!"{flatNameString base}_hyg{n}"
+    | fuel + 1, n =>
+        let candidate := Name.mkSimple s!"{flatNameString base}_hyg{n}"
+        if avoid.contains candidate then go fuel (n + 1) else candidate
+  if avoid.contains base then go (avoid.size + 32) 0 else base
+
+/-- Fresh local identifier for generated LF code without a model-instance variable. -/
+def freshLFLocalIdent (source : Name) (locals : LFLocalSyntaxCtx)
+    (reserved : NameSet := {}) : Ident :=
+  mkIdent (freshLFLeanLocalName source (reserved ++ lfLocalSyntaxUsedNames locals))
+
+/-- Fresh local identifier for generated LF code projected from a model instance. -/
+def freshLFModelLocalIdent (source : Name) (modelIdent : Ident) (locals : LFLocalSyntaxCtx)
+    (reserved : NameSet := {}) : Ident :=
+  freshLFLocalIdent source locals (reserved.insert modelIdent.getId.eraseMacroScopes)
+
 /-- Source visibility of a callable LF head's parameter telescope, used when rendering Lean
 applications. -/
 abbrev LFParamVisibilityMap := NameMap (Array BinderVisibility)
@@ -331,14 +371,14 @@ partial def lfExprSyntax (locals : LFLocalSyntaxCtx) : CheckedLFExpr → Command
       `($A → $B)
   | .arrow (some x) A B => do
       let A ← lfExprSyntax locals A
-      let xId := mkIdent x
+      let xId := freshLFLocalIdent x locals
       let B ← lfExprSyntax ((x, xId) :: locals) B
       `(($xId:ident : $A) → $B)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
           let x := xs[i]
-          let xId := mkIdent x
+          let xId := freshLFLocalIdent x locals
           let body ← go (i + 1) ((x, xId) :: locals)
           `(fun $xId:ident => $body)
         else
@@ -369,14 +409,14 @@ partial def lfExprSyntaxInModel (defValues : NameMap CheckedLFExpr)
       `($A → $B)
   | .arrow (some x) A B => do
       let A ← lfExprSyntaxInModel defValues locals A
-      let xId := mkIdent x
+      let xId := freshLFLocalIdent x locals
       let B ← lfExprSyntaxInModel defValues ((x, xId) :: locals) B
       `(($xId:ident : $A) → $B)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
           let x := xs[i]
-          let xId := mkIdent x
+          let xId := freshLFLocalIdent x locals
           let body ← go (i + 1) ((x, xId) :: locals)
           `(fun $xId:ident => $body)
         else
@@ -412,14 +452,14 @@ partial def lfExprSyntaxInModelInstance (defValues : NameMap CheckedLFExpr)
       `($A → $B)
   | .arrow (some x) A B => do
       let A ← lfExprSyntaxInModelInstance defValues modelIdent locals A
-      let xId := mkIdent x
+      let xId := freshLFModelLocalIdent x modelIdent locals
       let B ← lfExprSyntaxInModelInstance defValues modelIdent ((x, xId) :: locals) B
       `(($xId:ident : $A) → $B)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
           let x := xs[i]
-          let xId := mkIdent x
+          let xId := freshLFModelLocalIdent x modelIdent locals
           let body ← go (i + 1) ((x, xId) :: locals)
           `(fun $xId:ident => $body)
         else
@@ -473,14 +513,14 @@ partial def lfObjExprSyntaxInModel (defValues : NameMap CheckedLFExpr)
   | .arrow (some x) A B | .funArrow (some x) A B => do
       let A ← lfObjExprSyntaxInModel defValues locals A
       let x := x.eraseMacroScopes
-      let xId := mkIdent x
+      let xId := freshLFLocalIdent x locals
       let B ← lfObjExprSyntaxInModel defValues ((x, xId) :: locals) B
       `(($xId:ident : $A) → $B)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if i < xs.size then
           let x := xs[i]!.eraseMacroScopes
-          let xId := mkIdent x
+          let xId := freshLFLocalIdent x locals
           let body ← go (i + 1) ((x, xId) :: locals)
           `(fun $xId:ident => $body)
         else
@@ -515,14 +555,14 @@ partial def lfObjExprSyntaxInModelInstance (defValues : NameMap CheckedLFExpr)
   | .arrow (some x) A B | .funArrow (some x) A B => do
       let A ← lfObjExprSyntaxInModelInstance defValues modelIdent locals A
       let x := x.eraseMacroScopes
-      let xId := mkIdent x
+      let xId := freshLFModelLocalIdent x modelIdent locals
       let B ← lfObjExprSyntaxInModelInstance defValues modelIdent ((x, xId) :: locals) B
       `(($xId:ident : $A) → $B)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if i < xs.size then
           let x := xs[i]!.eraseMacroScopes
-          let xId := mkIdent x
+          let xId := freshLFModelLocalIdent x modelIdent locals
           let body ← go (i + 1) ((x, xId) :: locals)
           `(fun $xId:ident => $body)
         else
@@ -567,9 +607,9 @@ partial def lfTelescopeSyntax (binders : Array CheckedLFBinding) (result : TSynt
   if h : i < binders.size then
     let b := binders[i]
     let ty ← lfExprSyntax locals b.checkedTypeExpr
-    let xId := mkIdent b.name
+    let xId := freshLFLocalIdent b.name locals
     let rest ← lfTelescopeSyntax binders result ((b.name, xId) :: locals) (i + 1)
-    let binder ← lfRenderedBinderSyntax { name := b.name, typeStx := ty, visibility :=
+    let binder ← lfRenderedBinderSyntax { name := xId.getId, typeStx := ty, visibility :=
       b.visibility }
     `($binder:bracketedBinder → $rest)
   else
@@ -588,9 +628,9 @@ partial def lfTelescopeSyntaxInModel (defValues : NameMap CheckedLFExpr)
   if h : i < binders.size then
     let b := binders[i]
     let ty ← lfExprSyntaxInModel defValues locals b.checkedTypeExpr
-    let xId := mkIdent b.name
+    let xId := freshLFLocalIdent b.name locals
     let rest ← lfTelescopeSyntaxInModel defValues binders result ((b.name, xId) :: locals) (i + 1)
-    let binder ← lfRenderedBinderSyntax { name := b.name, typeStx := ty, visibility :=
+    let binder ← lfRenderedBinderSyntax { name := xId.getId, typeStx := ty, visibility :=
       b.visibility }
     `($binder:bracketedBinder → $rest)
   else
@@ -658,8 +698,9 @@ def lfRuleFieldSyntax? (defValues : NameMap CheckedLFExpr) (blockingUntyped side
   let mut binders : Array LFRenderedBinder := #[]
   for p in r.params do
     let ty ← lfExprSyntaxInModel defValues locals p.checkedTypeExpr
-    binders := binders.push { name := p.name, typeStx := ty, visibility := p.visibility }
-    locals := (p.name, mkIdent p.name) :: locals
+    let id := freshLFLocalIdent p.name locals
+    binders := binders.push { name := id.getId, typeStx := ty, visibility := p.visibility }
+    locals := (p.name, id) :: locals
   for p in r.premises do
     let ty ← lfExprSyntaxInModel defValues locals p.checkedJudgmentExpr
     binders := binders.push { name := p.name, typeStx := ty }
@@ -1572,14 +1613,14 @@ partial def lfExprSyntaxInModelWithFields (fieldNames : NameMap Name)
       `($A → $B)
   | .arrow (some x) A B => do
       let A ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis A
-      let xId := mkIdent x
+      let xId := freshLFLocalIdent x locals
       let B ← lfExprSyntaxInModelWithFields fieldNames defValues ((x, xId) :: locals) paramVis B
       `(($xId:ident : $A) → $B)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
           let x := xs[i]
-          let xId := mkIdent x
+          let xId := freshLFLocalIdent x locals
           let body ← go (i + 1) ((x, xId) :: locals)
           `(fun $xId:ident => $body)
         else
@@ -1626,14 +1667,14 @@ partial def lfObjExprSyntaxInModelWithFields (fieldNames : NameMap Name)
   | .arrow (some x) A B | .funArrow (some x) A B => do
       let A ← lfObjExprSyntaxInModelWithFields fieldNames defValues locals paramVis A
       let x := x.eraseMacroScopes
-      let xId := mkIdent x
+      let xId := freshLFLocalIdent x locals
       let B ← lfObjExprSyntaxInModelWithFields fieldNames defValues ((x, xId) :: locals) paramVis B
       `(($xId:ident : $A) → $B)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if i < xs.size then
           let x := xs[i]!.eraseMacroScopes
-          let xId := mkIdent x
+          let xId := freshLFLocalIdent x locals
           let body ← go (i + 1) ((x, xId) :: locals)
           `(fun $xId:ident => $body)
         else
@@ -1691,7 +1732,7 @@ partial def lfExprSyntaxInModelInstanceWithFields (fieldNames : NameMap Name)
   | .arrow (some x) A B => do
       let A ←
         lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis A
-      let xId := mkIdent x
+      let xId := freshLFModelLocalIdent x modelIdent locals
       let B ← lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent ((x,
         xId) :: locals) paramVis B
       `(($xId:ident : $A) → $B)
@@ -1699,7 +1740,7 @@ partial def lfExprSyntaxInModelInstanceWithFields (fieldNames : NameMap Name)
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
           let x := xs[i]
-          let xId := mkIdent x
+          let xId := freshLFModelLocalIdent x modelIdent locals
           let body ← go (i + 1) ((x, xId) :: locals)
           `(fun $xId:ident => $body)
         else
@@ -1760,7 +1801,7 @@ partial def lfObjExprSyntaxInModelInstanceWithFields (fieldNames : NameMap Name)
       let A ←
         lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis A
       let x := x.eraseMacroScopes
-      let xId := mkIdent x
+      let xId := freshLFModelLocalIdent x modelIdent locals
       let B ← lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent ((x,
         xId) :: locals) paramVis B
       `(($xId:ident : $A) → $B)
@@ -1768,7 +1809,7 @@ partial def lfObjExprSyntaxInModelInstanceWithFields (fieldNames : NameMap Name)
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if i < xs.size then
           let x := xs[i]!.eraseMacroScopes
-          let xId := mkIdent x
+          let xId := freshLFModelLocalIdent x modelIdent locals
           let body ← go (i + 1) ((x, xId) :: locals)
           `(fun $xId:ident => $body)
         else
@@ -1790,10 +1831,10 @@ partial def lfTelescopeSyntaxInModelWithFields (fieldNames : NameMap Name)
   if h : i < binders.size then
     let b := binders[i]
     let ty ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis b.checkedTypeExpr
-    let xId := mkIdent b.name
+    let xId := freshLFLocalIdent b.name locals
     let rest ← lfTelescopeSyntaxInModelWithFields fieldNames defValues binders result ((b.name,
       xId) :: locals) (i + 1) paramVis
-    let binder ← lfRenderedBinderSyntax { name := b.name, typeStx := ty, visibility :=
+    let binder ← lfRenderedBinderSyntax { name := xId.getId, typeStx := ty, visibility :=
       b.visibility }
     `($binder:bracketedBinder → $rest)
   else
@@ -2001,14 +2042,14 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
         `($A → $B)
     | .arrow (some x) A B => do
         let A ← expr locals A
-        let xId := mkIdent x
+        let xId := freshLFLocalIdent x locals
         let B ← expr ((x, xId) :: locals) B
         `(($xId:ident : $A) → $B)
     | .lam xs body => do
         let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
           if h : i < xs.size then
             let x := xs[i]
-            let xId := mkIdent x
+            let xId := freshLFLocalIdent x locals
             let body ← go (i + 1) ((x, xId) :: locals)
             `(fun $xId:ident => $body)
           else
@@ -2050,14 +2091,14 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
     | .arrow (some x) A B | .funArrow (some x) A B => do
         let A ← obj locals A
         let x := x.eraseMacroScopes
-        let xId := mkIdent x
+        let xId := freshLFLocalIdent x locals
         let B ← obj ((x, xId) :: locals) B
         `(($xId:ident : $A) → $B)
     | .lam xs body => do
         let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
           if i < xs.size then
             let x := xs[i]!.eraseMacroScopes
-            let xId := mkIdent x
+            let xId := freshLFLocalIdent x locals
             let body ← go (i + 1) ((x, xId) :: locals)
             `(fun $xId:ident => $body)
           else
@@ -2072,9 +2113,9 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
     if h : i < binders.size then
       let b := binders[i]
       let ty ← expr locals b.checkedTypeExpr
-      let xId := mkIdent b.name
+      let xId := freshLFLocalIdent b.name locals
       let rest ← telescope binders result ((b.name, xId) :: locals) (i + 1)
-      let binder ← lfRenderedBinderSyntax { name := b.name, typeStx := ty, visibility :=
+      let binder ← lfRenderedBinderSyntax { name := xId.getId, typeStx := ty, visibility :=
         b.visibility }
       `($binder:bracketedBinder → $rest)
     else
@@ -2108,8 +2149,9 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
       let mut binders : Array LFRenderedBinder := #[]
       for p in o.params do
         let ty ← expr locals p.checkedTypeExpr
-        binders := binders.push { name := p.name, typeStx := ty, visibility := p.visibility }
-        locals := (p.name, mkIdent p.name) :: locals
+        let id := freshLFLocalIdent p.name locals
+        binders := binders.push { name := id.getId, typeStx := ty, visibility := p.visibility }
+        locals := (p.name, id) :: locals
       for p in o.premises do
         let ty ← expr locals p.checkedJudgmentExpr
         binders := binders.push { name := p.name, typeStx := ty }
@@ -2165,8 +2207,9 @@ def lfModelObligationFieldSyntax? (fieldNames : NameMap Name) (defValues : NameM
       for p in o.params do
         let ty ←
           lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis p.checkedTypeExpr
-        binders := binders.push { name := p.name, typeStx := ty, visibility := p.visibility }
-        locals := (p.name, mkIdent p.name) :: locals
+        let id := freshLFLocalIdent p.name locals
+        binders := binders.push { name := id.getId, typeStx := ty, visibility := p.visibility }
+        locals := (p.name, id) :: locals
       for p in o.premises do
         let ty ←
           lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis p.checkedJudgmentExpr
@@ -2231,8 +2274,9 @@ def lfModelDerivedStatementSummaries (checked : CheckedSignature) (structureName
               b.checkedTypeExpr
           let openDelim := if b.visibility == .implicit then "{" else "("
           let closeDelim := if b.visibility == .implicit then "}" else ")"
-          binderText := binderText.push m!" {openDelim}{mkIdent b.name} : {ty}{closeDelim}"
-          locals := (b.name, mkIdent b.name) :: locals
+          let id := freshLFModelLocalIdent b.name M locals
+          binderText := binderText.push m!" {openDelim}{id} : {ty}{closeDelim}"
+          locals := (b.name, id) :: locals
         let ty ←
           lfExprSyntaxInModelInstanceWithFields fieldNames defValues M locals paramVis statement
         let certParams := lfTheoremSideConditionFieldsForTheorem checked o.name
@@ -2909,22 +2953,24 @@ def lfJudgmentTheoremInterpretationSyntaxAs? (checked : CheckedSignature) (
     | return none
   let mut locals : LFLocalSyntaxCtx := []
   let mut localAssumptionNames : NameMap Name := {}
+  let reservedTheoremLocals : NameSet := certParamNames.toList.foldl (init := {}) fun names p =>
+    names.insert p.2.eraseMacroScopes
   let mut theoremBinders : Array (TSyntax ``Lean.Parser.Term.bracketedBinder) := #[]
   for b in t.binders do
     unless lfExprRenderableInModel defValues blockingUntyped sidePredicateNames b.checkedTypeExpr do
       return none
     let ty ←
       lfExprSyntaxInModelInstanceWithFields fieldNames defValues M locals paramVis b.checkedTypeExpr
-    let id := mkIdent b.name
+    let id := freshLFModelLocalIdent b.name M locals reservedTheoremLocals
     let binder ← lfRenderedBinderSyntax {
-      name := b.name
+      name := id.getId
       typeStx := ty
       visibility := b.visibility
     }
     theoremBinders := theoremBinders.push binder
     if let some head := b.head? then
       if head.kind == .judgment then
-        localAssumptionNames := localAssumptionNames.insert b.name.eraseMacroScopes b.name
+        localAssumptionNames := localAssumptionNames.insert b.name.eraseMacroScopes id.getId
     locals := (b.name, id) :: locals
   let some body ←
     lfDerivationTermSyntax? checked fieldNames defValues paramVis blockingUntyped
@@ -3049,8 +3095,10 @@ def admittedModelInterpretationSyntax (checked : CheckedSignature) (structureNam
               let ty ←
                 lfExprSyntaxInModelInstanceWithFields fieldNames defValues M locals paramVis
                   p.checkedTypeExpr
-              binders := binders.push { name := p.name, typeStx := ty, visibility := p.visibility }
-              locals := (p.name, mkIdent p.name) :: locals
+              let id := freshLFModelLocalIdent p.name M locals
+              binders := binders.push { name := id.getId, typeStx := ty, visibility :=
+                p.visibility }
+              locals := (p.name, id) :: locals
             let result ←
               lfExprSyntaxInModelInstanceWithFields fieldNames defValues M locals paramVis
                 checkedType
