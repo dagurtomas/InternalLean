@@ -75,9 +75,28 @@ syntax (name := internalDefLevelBinderBy)
     ppLine internalTactic* : command
 syntax (name := internalDefBinderUnsupported)
   docComment ? "internal " "def " ident ttBinder+ " : " ttExpr " := " ttExpr : command
+syntax (name := internalTheorem)
+  docComment ? "internal " "theorem " ident " : " ttExpr " := " ttExpr : command
+syntax (name := internalTheoremSorry)
+  docComment ? "internal " "theorem " ident " : " ttExpr " := " "sorry" : command
+syntax (name := internalTheoremBinder)
+  docComment ? "internal " "theorem " ident ttBinder+ " : " ttExpr " := " ttExpr : command
+syntax (name := internalTheoremBinderSorry)
+  docComment ? "internal " "theorem " ident ttBinder+ " : " ttExpr " := " "sorry" : command
 syntax (name := internalDefLevelBinderUnsupported)
   docComment ? "internal " "def " ident "{" ident,* "}" ttBinder+ " : " ttExpr " := " ttExpr :
     command
+
+declare_syntax_cat internalDefsDecl
+syntax (name := internalDefsDeclChecked)
+  docComment ? "def " ident " : " ttExpr " := " ttExpr : internalDefsDecl
+syntax (name := internalDefsDeclSorry)
+  docComment ? "def " ident " : " ttExpr " := " "sorry" : internalDefsDecl
+syntax (name := internalDefsDeclBinderChecked)
+  docComment ? "def " ident ttBinder+ " : " ttExpr " := " ttExpr : internalDefsDecl
+syntax (name := internalDefsDeclBinderSorry)
+  docComment ? "def " ident ttBinder+ " : " ttExpr " := " "sorry" : internalDefsDecl
+syntax (name := internalDefsBlock) "internal_defs" "where" ppLine internalDefsDecl* : command
 
 /-- Reject `internal def` binder sugar when no profile-specific elaborator accepts it. -/
 def throwInternalDefBinderUnsupported (declName : Name) : CommandElabM α :=
@@ -3103,6 +3122,53 @@ def elabInternalDefSorry (doc? : Option (TSyntax ``Parser.Command.docComment))
     (typeStx : TSyntax `ttExpr) : CommandElabM Unit := do
   elabInternalDefSorryWithBinders doc? declNameStx declName levels #[] typeStx
 
+/-- Register an explicit checked theorem-shaped internal declaration. -/
+def elabInternalTheoremCheckedWithBinders (doc? : Option (TSyntax ``Parser.Command.docComment))
+    (declNameStx : Syntax) (declName : Name) (levels : Array Name)
+    (binders : TSyntaxArray `ttBinder) (typeStx valueStx : TSyntax `ttExpr) :
+    CommandElabM Unit := do
+  let target ← resolveInternalDefTarget declName
+  ensureInternalDeclarationNamesAvailable target
+  let sourceDoc? ← optDocCommentString? doc?
+  if !levels.isEmpty then
+    throwError "internal LF theorem declarations do not support declaration-local universe \
+      parameters"
+  let params ← binders.mapM elabHLBinding
+  let typeExpr ← elabObjExpr typeStx
+  let valueExpr ← elabObjExpr valueStx
+  let lfTheorem : LFJudgmentTheoremDecl := {
+    name := target.localName
+    binders := params
+    judgmentExpr := typeExpr
+    proof := valueExpr }
+  liftCoreM <| registerLFJudgmentTheorem target.theoryName lfTheorem
+  if let some doc := sourceDoc? then
+    liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
+  addInternalDeclarationAnchor target (mkInternalDefFunctionType params typeExpr) false sourceDoc?
+    (← getRef) declNameStx
+
+/-- Register an explicit non-model-facing admitted internal theorem. -/
+def elabInternalTheoremSorryWithBinders (doc? : Option (TSyntax ``Parser.Command.docComment))
+    (declNameStx : Syntax) (declName : Name) (levels : Array Name)
+    (binders : TSyntaxArray `ttBinder) (typeStx : TSyntax `ttExpr) : CommandElabM Unit := do
+  let target ← resolveInternalDefTarget declName
+  ensureInternalDeclarationNamesAvailable target
+  let sourceDoc? ← optDocCommentString? doc?
+  if !levels.isEmpty then
+    throwError "internal LF theorem admissions do not support declaration-local universe \
+      parameters"
+  let params ← binders.mapM elabHLBinding
+  let typeExpr ← elabObjExpr typeStx
+  liftCoreM <| registerAdmittedInternalLFJudgmentTheorem target.theoryName target.anchorName
+    target.localName params typeExpr
+  if let some doc := sourceDoc? then
+    liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
+  addInternalDeclarationAnchor target (mkInternalDefFunctionType params typeExpr) true sourceDoc?
+    (← getRef) declNameStx
+  logWarning m!"internal theorem '{target.anchorName}' was admitted by `sorry`; the statement was \
+    checked in theory '{target.theoryName}', but the proof was not checked. Use \
+      `#lint_type_theory_sorries {target.theoryName}` to list current admissions."
+
 /-- Elaborate and register a top-level `internal def ... := by` object tactic script. -/
 def elabInternalDefBy (doc? : Option (TSyntax ``Parser.Command.docComment))
     (declNameStx : Syntax) (declName : Name) (levels : Array Name)
@@ -3153,7 +3219,46 @@ def isSorryObjExprSyntax (stx : Syntax) : Bool :=
   | .ident _ _ val _ => val.eraseMacroScopes == `sorry
   | _ => false
 
+/-- Elaborate one declaration in an `internal_defs where` batch. -/
+def elabInternalDefsDecl : TSyntax `internalDefsDecl → CommandElabM Unit
+  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr := sorry) =>
+      elabInternalDefSorry doc? declName declName.getId #[] typeStx
+  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := sorry) =>
+      elabInternalDefSorryWithBinders doc? declName declName.getId #[] binders typeStx
+  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr :=
+      $valueStx:ttExpr) =>
+      if isSorryObjExprSyntax valueStx.raw then
+        elabInternalDefSorry doc? declName declName.getId #[] typeStx
+      else
+        elabInternalDefChecked doc? declName declName.getId #[] typeStx valueStx
+  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := $valueStx:ttExpr) =>
+      if isSorryObjExprSyntax valueStx.raw then
+        elabInternalDefSorryWithBinders doc? declName declName.getId #[] binders typeStx
+      else
+        elabInternalDefCheckedWithBinders doc? declName declName.getId #[] binders typeStx valueStx
+  | stx => throwError "unsupported internal_defs declaration:{indentD stx}"
+
 elab_rules : command
+  | `(internal_defs where $decls:internalDefsDecl*) => do
+      for decl in decls do
+        elabInternalDefsDecl decl
+  | `($[$doc?:docComment]? internal theorem $declName:ident : $typeStx:ttExpr := sorry) =>
+      elabInternalTheoremSorryWithBinders doc? declName declName.getId #[] #[] typeStx
+  | `($[$doc?:docComment]? internal theorem $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := sorry) =>
+      elabInternalTheoremSorryWithBinders doc? declName declName.getId #[] binders typeStx
+  | `($[$doc?:docComment]? internal theorem $declName:ident : $typeStx:ttExpr :=
+      $valueStx:ttExpr) =>
+      elabInternalTheoremCheckedWithBinders doc? declName declName.getId #[] #[] typeStx valueStx
+  | `($[$doc?:docComment]? internal theorem $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := $valueStx:ttExpr) =>
+      if isSorryObjExprSyntax valueStx.raw then
+        elabInternalTheoremSorryWithBinders doc? declName declName.getId #[] binders typeStx
+      else
+        elabInternalTheoremCheckedWithBinders doc? declName declName.getId #[] binders typeStx
+          valueStx
   | `($[$doc?:docComment]? internal def $declName:ident : $typeStx:ttExpr := sorry) =>
       elabInternalDefSorry doc? declName declName.getId #[] typeStx
   | `($[$doc?:docComment]? internal def $declName:ident {$levels:ident,*} : $typeStx:ttExpr :=

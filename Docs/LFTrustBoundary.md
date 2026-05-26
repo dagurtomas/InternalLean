@@ -111,10 +111,12 @@ An admitted declaration can be written as:
 
 ```lean
 internal def admitted : J := sorry
+internal theorem admittedTheorem : J := sorry
 ```
 
 The annotation `J` is still checked as an object-theory judgment or type, but the body is not
-checked. The admission is stored explicitly and can be inspected with:
+checked. `internal theorem ... := sorry` records theorem-shaped debt without adding a model field.
+The admission is stored explicitly and can be inspected with:
 
 ```lean
 #lint_type_theory_sorries T
@@ -206,6 +208,7 @@ Theory and trust-boundary inspection:
 #print_type_theory T
 #print_type_theory_side_conditions T
 #lint_type_theory_sorries T
+#print_internal_registration_profile T
 ```
 
 Model-generation consistency checks:

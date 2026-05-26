@@ -105,10 +105,12 @@ A typical declaration moves through the system as follows:
 1. The user writes a `declare_type_theory` block or an `internal def`.
 2. The frontend parses the Lean syntax into high-level declaration data.
 3. Elaboration checks names, binders, premises, metadata, and local dependencies.
-4. The declaration is lowered to checked LF artifacts.
-5. The registry stores the checked theory data and creates Lean-visible anchors for navigation.
-6. Diagnostics, object tactics, and model commands consume the checked registry data.
-7. Model-interface and transport commands generate Lean code from the checked artifacts.
+4. Standalone and batched `internal def` declarations are checked incrementally against the stored
+   checked signature when possible.
+5. The declaration is lowered to checked LF artifacts.
+6. The registry stores the checked theory data and creates Lean-visible anchors for navigation.
+7. Diagnostics, object tactics, and model commands consume the checked registry data.
+8. Model-interface and transport commands generate Lean code from the checked artifacts.
 
 The important boundary is between high-level elaboration and checked LF artifacts. Parser traces and
 tactic scripts are conveniences. The checked LF artifacts are what later tools should rely on.

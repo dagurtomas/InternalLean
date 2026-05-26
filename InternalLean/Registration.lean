@@ -20,6 +20,21 @@ open Lean Elab Command
 
 namespace InternalLean
 
+register_option internalLean.profileInternalDef : Bool := {
+  defValue := false
+  descr := "log InternalLean internal-declaration registration profile entries as declarations \
+    are checked"
+}
+
+/-- Record and optionally print one internal-declaration registration profile. -/
+def recordInternalRegistrationProfile (p : InternalRegistrationProfile) : CoreM Unit := do
+  registerInternalRegistrationProfile p
+  if (← getBoolOption `internalLean.profileInternalDef) then
+    logInfo m!"internal registration profile {p.theoryName}.{p.declName}: strategy={p.strategy}, \
+      prior object defs={p.priorObjectDefs}, prior theorem(s)={p.priorJudgmentTheorems}, \
+      rechecked object defs={p.recheckedObjectDefs}, rechecked theorem(s)=\
+      {p.recheckedJudgmentTheorems}, incremental={p.incrementallyChecked}"
+
 /-- Render a compact summary for the generated Lean-visible theory anchor. -/
 def theoryAnchorSummaryString (sig : HLSignature) (sourceDoc? : Option String := none) : String :=
   let parentLine :=
@@ -253,6 +268,15 @@ def registerAdmittedInternalLFOpaque (theoryName anchorName localName : Name)
   let admission : InternalAdmission := {
     theoryName, declName := localName, anchorName, params := d.params,
     typeExpr := d.typeExpr?.getD resultTypeExpr }
+  recordInternalRegistrationProfile {
+    theoryName := theoryName
+    declName := localName.eraseMacroScopes
+    strategy := "full admitted LF opaque"
+    priorObjectDefs := checked.lfObjectDefs.size
+    priorJudgmentTheorems := checked.lfJudgmentTheorems.size
+    recheckedObjectDefs := checked.lfObjectDefs.size
+    recheckedJudgmentTheorems := checked.lfJudgmentTheorems.size
+    incrementallyChecked := 0 }
   modifyEnv fun env =>
     let env := theoryExt.addEntry env (.lfOpaqueConst theoryName d)
     let env := checkedTheoryExt.addEntry env (.sig checked)
@@ -261,8 +285,25 @@ def registerAdmittedInternalLFOpaque (theoryName anchorName localName : Name)
 /-- Previously checked LF definition result types, used as available local type information for
 validating an admitted custom-judgment statement. -/
 def checkedLFDefinitionTypeMap (checked : CheckedSignature) : LFLocalTypes :=
-  checked.lfObjectDefs.foldl (init := {}) fun m d =>
-    m.insert d.name.eraseMacroScopes (eraseObjExprScopes d.typeExpr)
+  checkedLFDefinitionTypeMapFromDefs checked.lfObjectDefs
+
+/-- Append one checked LF object definition to an already checked signature. -/
+def appendCheckedLFObjectDef (checked : CheckedSignature) (d : CheckedLFObjectDef) :
+    CheckedSignature :=
+  let objectDefs := checked.lfObjectDefs.push d
+  let defValues := checkedLFDefinitionValues objectDefs
+  { checked with
+    lfObjectDefs := objectDefs
+    lfKernelRuleSchemas := checkedLFRuleSchemasToKernel defValues checked.lfRuleSchemas
+    lfEnvironment := { checked.lfEnvironment with objectDefs := objectDefs } }
+
+/-- Append one checked LF judgment theorem to an already checked signature. -/
+def appendCheckedLFJudgmentTheorem (checked : CheckedSignature) (t : CheckedLFJudgmentTheorem) :
+    CheckedSignature :=
+  let judgmentTheorems := checked.lfJudgmentTheorems.push t
+  { checked with
+    lfJudgmentTheorems := judgmentTheorems
+    lfEnvironment := { checked.lfEnvironment with judgmentTheorems := judgmentTheorems } }
 
 /-- Register an explicitly admitted internal declaration whose annotation is a custom LF
 judgment statement.
@@ -334,6 +375,15 @@ def registerAdmittedInternalLFJudgmentTheorem (theoryName anchorName localName :
     params := params
     typeExpr := typeExpr
   }
+  recordInternalRegistrationProfile {
+    theoryName := theoryName
+    declName := localName.eraseMacroScopes
+    strategy := "incremental LF judgment admission"
+    priorObjectDefs := checked.lfObjectDefs.size
+    priorJudgmentTheorems := checked.lfJudgmentTheorems.size
+    recheckedObjectDefs := 0
+    recheckedJudgmentTheorems := 0
+    incrementallyChecked := 1 }
   modifyEnv fun env => internalAdmissionExt.addEntry env (.admission admission)
 
 /-- Register a top-level staged LF/object definition in an existing theory. -/
@@ -347,12 +397,35 @@ def registerLFObjectDef (theoryName : Name) (d : LFObjectDefDecl) : CoreM Unit :
   let some checked ← getCheckedTheory? theoryName
     | throwError "no checked artifact stored for type theory '{theoryName}'"
   let knownTypes := checkedLFDefinitionTypeMap checked
-  let flatSig := { flatSig with lfObjectDefs := flatSig.lfObjectDefs.push d }
-  let d ← elaborateImplicitAppsInLFObjectDef flatSig knownTypes d
-  let candidate := { sig with lfObjectDefs := sig.lfObjectDefs.push d }
-  let checked ← checkSignatureForRegistration candidate
+  let flatSigWithNew := { flatSig with lfObjectDefs := flatSig.lfObjectDefs.push d }
+  let dForRegistry ← elaborateImplicitAppsInLFObjectDef flatSigWithNew knownTypes d
+  let typeExpr ←
+    expandSyntaxAbbrevsInExpr flatSigWithNew "lf_def" dForRegistry.name "type" {}
+      (flatSigWithNew.syntaxAbbrevs.size + 1) dForRegistry.typeExpr
+  let value ←
+    expandSyntaxAbbrevsInExpr flatSigWithNew "lf_def" dForRegistry.name "value" {}
+      (flatSigWithNew.syntaxAbbrevs.size + 1) dForRegistry.value
+  let dForCheck := {
+    dForRegistry with
+    name := dForRegistry.name.eraseMacroScopes
+    typeExpr := typeExpr
+    value := value }
+  let flatForCheck := { flatSig with lfObjectDefs := flatSig.lfObjectDefs.push dForCheck }
+  let checkedDef ←
+    checkOneLFObjectDefArtifactInSignature flatForCheck dForCheck checked.lfObjectDefs
+  let checked' := appendCheckedLFObjectDef checked checkedDef
+  recordInternalRegistrationProfile {
+    theoryName := theoryName
+    declName := d.name.eraseMacroScopes
+    strategy := "incremental LF object definition"
+    priorObjectDefs := checked.lfObjectDefs.size
+    priorJudgmentTheorems := checked.lfJudgmentTheorems.size
+    recheckedObjectDefs := 0
+    recheckedJudgmentTheorems := 0
+    incrementallyChecked := 1 }
   modifyEnv fun env =>
-    checkedTheoryExt.addEntry (theoryExt.addEntry env (.lfObjectDef theoryName d)) (.sig checked)
+    checkedTheoryExt.addEntry (theoryExt.addEntry env (.lfObjectDef theoryName dForRegistry))
+      (.sig checked')
 
 /-- Register a top-level staged LF judgment theorem in an existing theory. -/
 def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : CoreM Unit := do
@@ -365,13 +438,43 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
   let some checked ← getCheckedTheory? theoryName
     | throwError "no checked artifact stored for type theory '{theoryName}'"
   let knownTypes := checkedLFDefinitionTypeMap checked
-  let flatSig := { flatSig with lfJudgmentTheorems := flatSig.lfJudgmentTheorems.push t }
-  let t ← elaborateImplicitAppsInLFJudgmentTheorem flatSig knownTypes t
-  let candidate := { sig with lfJudgmentTheorems := sig.lfJudgmentTheorems.push t }
-  let checked ← checkSignatureForRegistration candidate
+  let flatSigWithNew := { flatSig with lfJudgmentTheorems := flatSig.lfJudgmentTheorems.push t }
+  let tForRegistry ← elaborateImplicitAppsInLFJudgmentTheorem flatSigWithNew knownTypes t
+  let binders ← expandSyntaxAbbrevsInBindings flatSigWithNew "judgment_theorem" tForRegistry.name
+    tForRegistry.binders
+  let locals := binders.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
+  let judgmentExpr ←
+    expandSyntaxAbbrevsInExpr flatSigWithNew "judgment_theorem" tForRegistry.name "statement"
+      locals (flatSigWithNew.syntaxAbbrevs.size + 1) tForRegistry.judgmentExpr
+  let proof ←
+    expandSyntaxAbbrevsInExpr flatSigWithNew "judgment_theorem" tForRegistry.name "proof"
+      locals (flatSigWithNew.syntaxAbbrevs.size + 1) tForRegistry.proof
+  let tForCheck := {
+    tForRegistry with
+    name := tForRegistry.name.eraseMacroScopes
+    binders := binders
+    judgmentExpr := judgmentExpr
+    proof := proof }
+  let flatForCheck := {
+    flatSig with lfJudgmentTheorems := flatSig.lfJudgmentTheorems.push tForCheck }
+  let checkedTheoremRaw ←
+    checkOneLFJudgmentTheoremArtifactInSignature flatForCheck checked.lfRules tForCheck
+      checked.lfObjectDefs checked.lfJudgmentTheorems
+  let checkedTheorem ←
+    validateIncrementalLFTheoremKernelReplay flatForCheck checked checkedTheoremRaw
+  let checked' := appendCheckedLFJudgmentTheorem checked checkedTheorem
+  recordInternalRegistrationProfile {
+    theoryName := theoryName
+    declName := t.name.eraseMacroScopes
+    strategy := "incremental LF judgment theorem"
+    priorObjectDefs := checked.lfObjectDefs.size
+    priorJudgmentTheorems := checked.lfJudgmentTheorems.size
+    recheckedObjectDefs := 0
+    recheckedJudgmentTheorems := 0
+    incrementallyChecked := 1 }
   modifyEnv fun env =>
-    checkedTheoryExt.addEntry (theoryExt.addEntry env (.lfJudgmentTheorem theoryName t)) (
-      .sig checked)
+    checkedTheoryExt.addEntry (theoryExt.addEntry env (.lfJudgmentTheorem theoryName tForRegistry))
+      (.sig checked')
 
 /-- Register a theory-local ergonomic object macro. -/
 def registerObjectMacro (theoryName : Name) (mac : ObjectMacro) : CoreM Unit := do

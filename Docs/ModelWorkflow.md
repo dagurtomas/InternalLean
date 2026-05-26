@@ -247,13 +247,18 @@ A model workflow should distinguish:
 
 1. checked internal declarations and LF theorems;
 2. explicit admissions and opaque LF constants;
-3. generated transports derived from checked artifacts;
-4. model fields supplied by the user.
+3. theorem-shaped internal admissions, which are lint-visible but not model fields;
+4. generated transports derived from checked artifacts;
+5. model fields supplied by the user.
 
 ## Common troubleshooting
 
 If generation fails under a namespace, close the namespace and rerun the generation command at the
 root. Printing commands such as `#print_model_interface` remain useful for inspection.
+
+Use `#print_internal_registration_profile T` when many standalone `internal def` declarations are
+slow; it reports whether declarations were checked incrementally or rechecked through the full
+signature path.
 
 If a model obligation is missing, check whether the declaration was hidden by `model_internal` or
 `model_compat`.

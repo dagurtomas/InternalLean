@@ -230,6 +230,53 @@ initialize checkedTheoryExt :
           | .sig checked => m.insert checked.name checked
   }
 
+/-- Persistent profile record for internal-declaration registration. -/
+structure InternalRegistrationProfile where
+  /-- Owning object theory. -/
+  theoryName : Name
+  /-- Theory-local declaration name. -/
+  declName : Name
+  /-- Registration strategy used for this declaration. -/
+  strategy : String
+  /-- Existing checked object definitions before this declaration. -/
+  priorObjectDefs : Nat := 0
+  /-- Existing checked judgment theorems before this declaration. -/
+  priorJudgmentTheorems : Nat := 0
+  /-- Number of LF object definitions rechecked by this registration. -/
+  recheckedObjectDefs : Nat := 0
+  /-- Number of LF judgment theorems rechecked by this registration. -/
+  recheckedJudgmentTheorems : Nat := 0
+  /-- Number of new declarations checked incrementally. -/
+  incrementallyChecked : Nat := 0
+  deriving Inhabited, Repr, BEq
+
+/-- Persistent entries for internal-declaration registration profiles. -/
+inductive InternalRegistrationProfileEntry where
+  /-- Record one internal-declaration registration event. -/
+  | profile : InternalRegistrationProfile → InternalRegistrationProfileEntry
+  deriving Inhabited, Repr
+
+/-- Per-theory internal-declaration registration profiles. -/
+abbrev InternalRegistrationProfileState := NameMap (Array InternalRegistrationProfile)
+
+initialize internalRegistrationProfileExt : SimplePersistentEnvExtension
+    InternalRegistrationProfileEntry InternalRegistrationProfileState ←
+  registerSimplePersistentEnvExtension {
+    name := `InternalLean.internalRegistrationProfileExt
+    addEntryFn := fun m e =>
+      match e with
+      | .profile p =>
+          let xs := (m.find? p.theoryName).getD #[]
+          m.insert p.theoryName (xs.push p)
+    addImportedFn := fun entries =>
+      entries.foldl (init := {}) fun m es =>
+        es.foldl (init := m) fun m e =>
+          match e with
+          | .profile p =>
+              let xs := (m.find? p.theoryName).getD #[]
+              m.insert p.theoryName (xs.push p)
+  }
+
 /-- Persistent record for an internal declaration whose body was admitted by `sorry`. -/
 structure InternalAdmission where
   /-- Owning object theory. -/
@@ -443,6 +490,19 @@ def getCheckedTheory? (nm : Name) : CoreM (Option CheckedSignature) := do
 /-- Register or replace a checked theory artifact. -/
 def registerCheckedTheory (checked : CheckedSignature) : CoreM Unit := do
   modifyEnv fun env => checkedTheoryExt.addEntry env (.sig checked)
+
+/-- Return internal-declaration registration profile entries. -/
+def getInternalRegistrationProfiles : CoreM InternalRegistrationProfileState := do
+  return internalRegistrationProfileExt.getState (← getEnv)
+
+/-- Return internal-declaration registration profile entries for one theory. -/
+def getInternalRegistrationProfilesFor (theoryName : Name) :
+    CoreM (Array InternalRegistrationProfile) := do
+  return ((← getInternalRegistrationProfiles).find? theoryName).getD #[]
+
+/-- Record one internal-declaration registration profile entry. -/
+def registerInternalRegistrationProfile (p : InternalRegistrationProfile) : CoreM Unit := do
+  modifyEnv fun env => internalRegistrationProfileExt.addEntry env (.profile p)
 
 /-- Return all recorded internal `sorry` admissions. -/
 def getInternalAdmissions : CoreM InternalAdmissionState := do

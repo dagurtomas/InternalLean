@@ -281,14 +281,23 @@ def HLSignature.nameSet (sig : HLSignature) : NameSet := Id.run do
   for d in sig.lfJudgmentTheorems do out := out.insert d.name.eraseMacroScopes
   return out
 
+/-- Deduplicate model-section resume markers while preserving first declaration order. -/
+def dedupeModelSections (sections : Array ModelSectionDecl) : Array ModelSectionDecl := Id.run do
+  let mut seen : NameSet := {}
+  let mut out := #[]
+  for s in sections do
+    let n := s.name.eraseMacroScopes
+    unless seen.contains n do
+      seen := seen.insert n
+      out := out.push { s with name := n }
+  return out
+
 /-- Check that user-facing model-section metadata is coherent. -/
 def checkModelSectionMetadataInSignature (sig : HLSignature) : CoreM Unit := do
   let declNames := sig.nameSet
   let mut seenSections : NameSet := {}
   for s in sig.modelSections do
     let n := s.name.eraseMacroScopes
-    if seenSections.contains n then
-      throwError "duplicate model section '{n}' in type theory '{sig.name}'"
     seenSections := seenSections.insert n
   for m in sig.modelSectionMemberships do
     let sectionName := m.sectionName.eraseMacroScopes
@@ -3436,6 +3445,190 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
     availableLFTheoremNames := availableLFTheoremNames.insert t.name.eraseMacroScopes
   pure (checkedDefs, checkedTheorems)
 
+/-- Previously checked LF definition result types. -/
+def checkedLFDefinitionTypeMapFromDefs (defs : Array CheckedLFObjectDef) : LFLocalTypes :=
+  defs.foldl (init := {}) fun m d =>
+    m.insert d.name.eraseMacroScopes (eraseObjExprScopes d.typeExpr)
+
+/-- Previously checked LF definition values. -/
+def lfDefinitionValueMapFromCheckedDefs (defs : Array CheckedLFObjectDef) : LFDefinitionValueMap :=
+  defs.foldl (init := {}) fun m d =>
+    m.insert d.name.eraseMacroScopes (eraseObjExprScopes d.value)
+
+/-- Statements available for binder-free checked LF theorem references. -/
+def availableLFTheoremStatementsFromChecked (theorems : Array CheckedLFJudgmentTheorem) :
+    NameMap ObjExpr := Id.run do
+  let mut out : NameMap ObjExpr := {}
+  for t in theorems do
+    if t.binders.isEmpty then
+      let stmt := match t.derivation? with
+        | some (.localAssumption _ stmt) => stmt
+        | some (.theoremRef _ stmt _ _) => stmt
+        | some (.ruleApp _ stmt _ _ _) => stmt
+        | none => t.judgmentExpr
+      out := out.insert t.name.eraseMacroScopes (eraseObjExprScopes stmt)
+  return out
+
+/-- Names of checked LF theorems available for later theorem references. -/
+def availableLFTheoremNamesFromChecked (theorems : Array CheckedLFJudgmentTheorem) : NameSet :=
+  theorems.foldl (init := {}) fun names t => names.insert t.name.eraseMacroScopes
+
+/-- Incrementally check one LF object definition against existing checked definitions. -/
+def checkOneLFObjectDefArtifactInSignature (sig : HLSignature) (d : LFObjectDefDecl)
+    (priorDefs : Array CheckedLFObjectDef) : CoreM CheckedLFObjectDef := do
+  let lfGlobals := lfKnownGlobalNames sig
+  let opaqueArities := lfOpaqueArities sig
+  let globalHeads := lfGlobalHeadInfo sig
+  let knownLFDefTypes := checkedLFDefinitionTypeMapFromDefs priorDefs
+  checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "type" d.typeExpr
+  checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "type" d.typeExpr
+  checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "type"
+    (locals := {}) d.typeExpr
+  checkLFSyntaxSortArgumentsInExpr sig "lf_def" d.name "type" knownLFDefTypes d.typeExpr
+  checkLFInferableApplicationArguments sig "lf_def" d.name "type" knownLFDefTypes d.typeExpr
+  checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "value" d.value
+  checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "value" d.value
+  checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "value"
+    (locals := {}) d.value
+  checkLFSyntaxSortArgumentsInExpr sig "lf_def" d.name "value" knownLFDefTypes d.value
+  checkLFInferableApplicationArguments sig "lf_def" d.name "value" knownLFDefTypes d.value
+  checkLFExprHasType sig "lf_def" d.name "value" knownLFDefTypes d.value d.typeExpr
+  let checkedType ← resolveLFExpr sig globalHeads {} "lf_def" d.name "type" d.typeExpr
+  let checkedValue ← resolveLFExpr sig globalHeads {} "lf_def" d.name "value" d.value
+  let resultTypeExpr := lfFunctionTypeResult d.typeExpr
+  let some typeHead := checkedLFHead? globalHeads {} resultTypeExpr
+    | throwError "lf_def '{d.name}' in type theory '{sig.name}' has type not ending in a known \
+      LF identifier: {d.typeExpr}"
+  if typeHead.kind != .syntaxSort then
+    throwError "lf_def '{d.name}' in type theory '{sig.name}' has result type headed by \
+      {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-headed type"
+  let valueHead? := checkedLFHead? globalHeads {} d.value
+  if let some valueHead := valueHead? then
+    if valueHead.kind == .lfDefinition then
+      let valueName := valueHead.name.eraseMacroScopes
+      unless knownLFDefTypes.contains valueName do
+        throwError "lf_def '{d.name}' in type theory '{sig.name}' references LF definition \
+          '{valueName}' before it is available"
+      if let some actualType := inferKnownLFExprType? sig knownLFDefTypes d.value then
+        let expectedType := eraseObjExprScopes d.typeExpr
+        let normalizedActualType := normalizeLFExprForTypeComparison sig actualType
+        let normalizedExpectedType := normalizeLFExprForTypeComparison sig expectedType
+        if normalizedActualType != normalizedExpectedType then
+          throwError "lf_def '{d.name}' in type theory '{sig.name}' has value LF definition \
+            '{valueName}' with type '{diagnosticObjExprString normalizedActualType}', expected \
+            '{diagnosticObjExprString normalizedExpectedType}'"
+  pure {
+    name := d.name.eraseMacroScopes
+    typeExpr := d.typeExpr
+    checkedTypeExpr := checkedType
+    typeHead? := some typeHead
+    value := d.value
+    checkedValue := checkedValue
+    valueHead? := valueHead? }
+
+/-- Incrementally check one LF judgment theorem against existing checked artifacts. -/
+def checkOneLFJudgmentTheoremArtifactInSignature (sig : HLSignature) (rules : Array CheckedLFRule)
+    (t : LFJudgmentTheoremDecl) (priorDefs : Array CheckedLFObjectDef)
+    (priorTheorems : Array CheckedLFJudgmentTheorem) : CoreM CheckedLFJudgmentTheorem := do
+  let lfGlobals := lfKnownGlobalNames sig
+  let opaqueArities := lfOpaqueArities sig
+  let globalHeads := lfGlobalHeadInfo sig
+  let judgmentArities : NameMap Nat := sig.judgments.foldl (init := {}) fun acc j =>
+    acc.insert j.name.eraseMacroScopes j.params.size
+  let syntaxSortArities : NameMap Nat := sig.syntaxSorts.foldl (init := {}) fun acc s =>
+    acc.insert s.name.eraseMacroScopes s.params.size
+  let knownLFDefTypes := checkedLFDefinitionTypeMapFromDefs priorDefs
+  let knownLFDefValues := lfDefinitionValueMapFromCheckedDefs priorDefs
+  let availableTheoremStatements := availableLFTheoremStatementsFromChecked priorTheorems
+  let availableTheoremNames := availableLFTheoremNamesFromChecked priorTheorems
+  checkNoDuplicateMetadataBinders sig "judgment_theorem" t.name t.binders
+  let _ ← checkKnownNamesInMetadataBindings sig lfGlobals opaqueArities "judgment_theorem" t.name
+    t.binders
+  checkSyntaxSortApplicationsInBindings sig syntaxSortArities "judgment_theorem" t.name t.binders
+  let (checkedBinders, theoremLocals) ←
+    checkedLFBindings sig globalHeads "judgment_theorem" t.name t.binders
+  let mut theoremKnownTypes := knownLFDefTypes
+  let mut availableLocalStatements : NameMap ObjExpr := {}
+  let mut priorTheoremLocals : NameSet := {}
+  for b in t.binders do
+    let where_ := s!"parameter '{b.name.eraseMacroScopes}' type"
+    checkNoCaptureUnsafeBetaInLFExpr sig "judgment_theorem" t.name where_ b.typeExpr
+    checkLFSyntaxSortArgumentsInExpr sig "judgment_theorem" t.name where_ theoremKnownTypes
+      b.typeExpr
+    checkLFInferableApplicationArguments sig "judgment_theorem" t.name where_ theoremKnownTypes
+      b.typeExpr
+    let typeHead? := checkedLFHead? globalHeads priorTheoremLocals b.typeExpr
+    match typeHead? with
+    | some head =>
+        if head.kind == .judgment then
+          let (_, args) := splitObjApp b.typeExpr
+          checkLFJudgmentArgumentsWithKnownTypes sig "judgment_theorem" t.name where_
+            theoremKnownTypes head.name args
+          availableLocalStatements :=
+            availableLocalStatements.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
+        else if head.kind == .syntaxSort then
+          pure ()
+        else
+          throwError "judgment_theorem '{t.name}' in type theory '{sig.name}' has parameter \
+            '{b.name.eraseMacroScopes}' type headed by {head.kind.label} '{head.name}', \
+              expected a syntax_sort or judgment"
+    | none =>
+        throwError "judgment_theorem '{t.name}' in type theory '{sig.name}' has parameter \
+          '{b.name.eraseMacroScopes}' type not headed by a known LF identifier: {b.typeExpr}"
+    theoremKnownTypes :=
+      theoremKnownTypes.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
+    priorTheoremLocals := priorTheoremLocals.insert b.name.eraseMacroScopes
+  checkKnownNamesInLFExpr sig lfGlobals theoremLocals opaqueArities "judgment_theorem" t.name
+    "statement" t.judgmentExpr
+  checkNoCaptureUnsafeBetaInLFExpr sig "judgment_theorem" t.name "statement" t.judgmentExpr
+  checkLFSyntaxSortArgumentsInExpr sig "judgment_theorem" t.name "statement" theoremKnownTypes
+    t.judgmentExpr
+  checkLFInferableApplicationArguments sig "judgment_theorem" t.name "statement" theoremKnownTypes
+    t.judgmentExpr
+  checkKnownNamesInLFExpr sig lfGlobals theoremLocals opaqueArities "judgment_theorem" t.name
+    "proof" t.proof
+  checkNoCaptureUnsafeBetaInLFExpr sig "judgment_theorem" t.name "proof" t.proof
+  checkLFSyntaxSortArgumentsInExpr sig "judgment_theorem" t.name "proof" theoremKnownTypes t.proof
+  checkLFInferableApplicationArguments sig "judgment_theorem" t.name "proof" theoremKnownTypes
+    t.proof
+  let judgmentHead ← checkRuleJudgmentHead sig judgmentArities t.name "statement" t.judgmentExpr
+  let (_, judgmentArgs) := splitObjApp t.judgmentExpr
+  checkLFJudgmentArgumentsWithKnownTypes sig "judgment_theorem" t.name "statement"
+    theoremKnownTypes judgmentHead.name judgmentArgs
+  let checkedJudgment ←
+    resolveLFExpr sig globalHeads theoremLocals "judgment_theorem" t.name "statement"
+      t.judgmentExpr
+  let checkedProof ←
+    resolveLFExpr sig globalHeads theoremLocals "judgment_theorem" t.name "proof" t.proof
+  let proofHead? := checkedLFHead? globalHeads theoremLocals t.proof
+  let derivation? ←
+    checkLFJudgmentDerivation sig rules globalHeads theoremKnownTypes knownLFDefValues
+      theoremLocals availableLocalStatements availableTheoremStatements availableTheoremNames
+      t.name t.judgmentExpr t.proof
+  let some derivation := derivation?
+    | throwError "judgment_theorem '{t.name}' in type theory '{sig.name}' has unchecked proof \
+      '{diagnosticObjExprString t.proof}'; expected a local theorem assumption, checked \
+        judgment theorem, or LF rule application"
+  let kernelDerivation ←
+    lowerLFDerivationToKernel sig rules globalHeads theoremKnownTypes knownLFDefValues theoremLocals
+      t.name derivation
+  let ruleSummary := summarizeLFRuleApplication? derivation
+  pure {
+    name := t.name.eraseMacroScopes
+    binders := checkedBinders
+    judgmentExpr := t.judgmentExpr
+    checkedJudgmentExpr := checkedJudgment
+    judgmentHead := judgmentHead
+    proof := t.proof
+    checkedProof := checkedProof
+    proofHead? := proofHead?
+    proofRule? := ruleSummary.proofRule?
+    proofRuleArgs := ruleSummary.proofRuleArgs
+    premiseTheorems := ruleSummary.premiseTheorems
+    sideConditionCertificateNames := ruleSummary.sideConditionCertificateNames
+    derivation? := some derivation
+    kernelDerivation? := some kernelDerivation }
+
 /-- Lightweight high-level LF occurrence check used for ordered metadata validation. -/
 partial def lfExprContainsIdent (needle : Name) : ObjExpr → Bool
   | .ident n => n.eraseMacroScopes == needle.eraseMacroScopes
@@ -4394,6 +4587,41 @@ def kernelLFCertificateEntriesOfTheorems (theorems : Array CheckedLFJudgmentTheo
         some { name := name, statement := stmt, certificateName := certificateName }
     | _ => none
 
+/-- Add checked kernel replay validation to one incrementally checked LF theorem. -/
+def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : CheckedSignature)
+    (t : CheckedLFJudgmentTheorem) : CoreM CheckedLFJudgmentTheorem := do
+  let some kernelDeriv := t.kernelDerivation?
+    | pure t
+  let lfCheckedDefValues := checkedLFDefinitionValues checked.lfObjectDefs
+  let kernelSig : Signature := {
+    name := sig.name.eraseMacroScopes
+    constants := (checkedLFConstantsToKernel lfCheckedDefValues checked.lfOpaqueConsts
+      checked.lfObjectDefs).toList
+    contextZones := checked.lfContextZones.toList.map checkedLFContextZoneToKernel
+    binderClasses := checked.lfBinderClasses.toList.map checkedLFBinderClassToKernel
+    conversionPlugins := checked.lfConversionPlugins.toList.map checkedLFConversionPluginToKernel
+    rules := (checkedLFRuleSchemasToKernel lfCheckedDefValues checked.lfRuleSchemas ++
+      kernelLFRuleSchemasOfTheorems lfCheckedDefValues checked.lfJudgmentTheorems).toList }
+  let mut replayCtx : KernelLFCheckContext := {
+    certificates := kernelLFCertificateEntriesOfTheorems checked.lfJudgmentTheorems }
+  for prior in checked.lfJudgmentTheorems do
+    if prior.binders.isEmpty then
+      if let some priorKernel := prior.kernelDerivation? then
+        replayCtx := replayCtx.addTheorem prior.name (KernelLFDerivation.statement priorKernel)
+  let lfKernelGlobalHeads := lfGlobalHeadInfo sig
+  let lfKernelDefValues := lfDefinitionValueMapFromCheckedDefs checked.lfObjectDefs
+  let assumptions ← kernelLFLocalAssumptionEntriesOfTheoremNormalized sig lfKernelGlobalHeads
+    lfKernelDefValues t
+  let localReplayCtx := { replayCtx with
+    localParameters := t.binders.toList.map (fun b => b.name)
+    assumptions := assumptions }
+  match CheckedKernelLFDerivation.ofReplay kernelSig localReplayCtx
+      (KernelLFDerivation.statement kernelDeriv) kernelDeriv with
+  | .ok checkedReplay => pure { t with checkedKernelDerivation? := some checkedReplay }
+  | .error err =>
+      throwError "kernel-facing replay check failed for judgment_theorem '{t.name}' in type theory \
+        '{sig.name}': {err}"
+
 /-- Check a candidate signature with the direct-LF checker and report command errors. -/
 def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature := do
   let flat ← flattenSignature sig
@@ -4518,7 +4746,7 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
     lfOpaqueConsts := lfOpaqueConsts
     modelVisibilities := flat.modelVisibilities.map (fun v =>
       { v with declName := v.declName.eraseMacroScopes })
-    modelSections := flat.modelSections.map (fun s => { s with name := s.name.eraseMacroScopes })
+    modelSections := dedupeModelSections flat.modelSections
     modelSectionMemberships := flat.modelSectionMemberships.map (fun m =>
       { m with
         sectionName := m.sectionName.eraseMacroScopes

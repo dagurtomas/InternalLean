@@ -5,6 +5,7 @@ import InternalLeanTest.DocLintTest
 import InternalLeanTest.EndToEndTinyNatTest
 import InternalLeanTest.FrontendMacroTest
 import InternalLeanTest.ImplicitVariablesTest
+import InternalLeanTest.InternalDefScalabilityTest
 import InternalLeanTest.InternalDefTest
 import InternalLeanTest.InternalTacticTest
 import InternalLeanTest.LFModelStressTest

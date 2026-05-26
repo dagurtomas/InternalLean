@@ -258,6 +258,27 @@ elab "#lint_type_theory_docs" theory:ident : command => do
   let (ok, text) ← liftCoreM <| lintInternalLeanDocsString sig
   if ok then logInfo m!"{text}" else logWarning m!"{text}"
 
+/-- Print accumulated internal-declaration registration profile entries. -/
+elab "#print_internal_registration_profile " theory:ident : command => do
+  liftCoreM <| requireTheoryAnchor theory.getId
+  let profiles ← liftCoreM <| getInternalRegistrationProfilesFor theory.getId
+  if profiles.isEmpty then
+    logInfo m!"type theory '{theory.getId}' has no internal-declaration registration profile \
+      entries"
+  else
+    let totals := profiles.foldl
+      (init := (0, 0, 0))
+      (fun (objs, thms, inc) p =>
+        (objs + p.recheckedObjectDefs, thms + p.recheckedJudgmentTheorems,
+          inc + p.incrementallyChecked))
+    let lines := profiles.map fun p =>
+      s!"{p.declName.eraseMacroScopes}: {p.strategy}; prior={p.priorObjectDefs} object def(s), \
+        {p.priorJudgmentTheorems} theorem(s); rechecked={p.recheckedObjectDefs} object def(s), \
+        {p.recheckedJudgmentTheorems} theorem(s); incremental={p.incrementallyChecked}"
+    logInfo m!"internal-declaration registration profile for {theory.getId}: {profiles.size} \
+      event(s); total rechecked={totals.1} object def(s), {totals.2.1} theorem(s); \
+      incrementally checked={totals.2.2}\n{String.intercalate "\n" lines.toList}"
+
 /-- Report internal declarations admitted by `sorry` for a type theory. -/
 elab "#lint_type_theory_sorries" theory:ident : command => do
   liftCoreM <| requireTheoryAnchor theory.getId

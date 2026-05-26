@@ -150,7 +150,10 @@ internal def f (x : A) : B := body
 
 The generic LF frontend lowers this syntax to an explicit object function type and object lambda.
 It still relies on the declared theory having suitable function/lambda LF structure for the result
-to check.
+to check. Large files can group declarations with `internal_defs where`; standalone and batched
+internal declarations use incremental registration instead of rechecking all previous internal
+definitions. Use `internal theorem name : J := sorry` for theorem-shaped admissions that remain
+lint-visible without becoming model fields.
 
 ## Common commands
 
@@ -162,6 +165,7 @@ Theory, navigation, and docs:
 #print_type_theory_anchor T
 #lint_type_theory_docs T
 #lint_type_theory_sorries T
+#print_internal_registration_profile T
 ```
 
 Object tactics and side conditions:

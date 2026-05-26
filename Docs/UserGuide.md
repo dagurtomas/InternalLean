@@ -157,6 +157,22 @@ end T
 This syntax lowers to an explicit object function type and object lambda. It still relies on the
 object theory having suitable function/lambda LF structure for the result to check.
 
+For large chapters, `internal_defs where` registers many internal declarations in source order
+through the same incremental path:
+
+```lean
+namespace T
+
+internal_defs where
+  def f : A := value
+  def g : B f := value'
+
+end T
+```
+
+Use `internal theorem th : J := sorry` for theorem-shaped formalization debt that should be
+reported by `#lint_type_theory_sorries` without becoming a model field.
+
 ## Object tactic mode
 
 `internal def` also supports a small object tactic mode:
@@ -199,10 +215,11 @@ internal def admittedFact : wfNat zero := sorry
 end TinyNat
 ```
 
-Admissions are explicit and can be inspected with:
+Admissions and registration profiles can be inspected with:
 
 ```lean
 #lint_type_theory_sorries TinyNat
+#print_internal_registration_profile TinyNat
 ```
 
 Side-condition and certificate obligations can be inspected with:

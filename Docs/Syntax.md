@@ -352,7 +352,8 @@ model_section SectionName
 ```
 
 A model section marker groups following LF declarations into a named model-interface section until
-another `model_section` marker appears.
+another `model_section` marker appears. Repeating an existing section name resumes that section;
+the first occurrence determines section-order diagnostics.
 
 ### Checked LF definitions and theorems
 
@@ -384,6 +385,10 @@ internal def g : J := by
 
 internal def h : J := sorry
 
+internal theorem th : J := proof
+
+internal theorem admittedTh : J := sorry
+
 end T
 ```
 
@@ -392,6 +397,23 @@ A qualified name can also select the target theory:
 ```lean
 internal def T.f : J := value
 ```
+
+Many declarations can be grouped in an incremental batch:
+
+```lean
+namespace T
+
+internal_defs where
+  def f : A := value
+  def g : B f := value'
+  def admitted : J := sorry
+
+end T
+```
+
+Declarations in the batch are registered in source order; later declarations may refer to earlier
+ones. `internal theorem ... := sorry` records theorem-shaped formalization debt without adding a
+model field.
 
 Declaration-local object universe parameters are supported:
 
@@ -467,6 +489,7 @@ Theory and declaration diagnostics:
 #print_type_theories
 #lint_type_theory_docs T
 #lint_type_theory_sorries T
+#print_internal_registration_profile T
 #print_type_theory_side_conditions T
 #expand_object T expr
 ```
