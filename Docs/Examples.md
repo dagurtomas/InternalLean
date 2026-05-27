@@ -12,10 +12,23 @@ Most examples use:
 import InternalLean.Command
 ```
 
-or a module-style public import. They declare an object theory with `declare_type_theory`, add
+or a module-style public import. They declare a type theory with `declare_type_theory`, add
 internal declarations with `internal def`, and sometimes generate model interfaces or transports.
 
 Start with TinyNat, then use the focused regression files when changing a particular subsystem.
+
+## Intro exercises
+
+File:
+
+- `Examples/IntroExercises.lean`
+- `Examples/IntroExercisesHints.lean`
+- `Examples/IntroExercisesSolutions.lean`
+
+A standalone exercise sheet for first-time users. It declares a tiny reachability type theory,
+asks the reader to fill `internal def` proofs, and separates hints and worked solutions. The
+solutions file also shows the generated model-interface and transport workflow on a trivial Lean
+model.
 
 ## TinyNat
 
@@ -43,9 +56,9 @@ File:
 
 - `InternalLeanTest/InternalTacticTest.lean`
 
-This is the best place to see small object-tactic examples. It contains focused tests for `exact`,
-`apply`, `assumption`, `show`, `change`, `rw`, `simp`, conversion plugins, fuel diagnostics, and
-generated model transports for tactic-proved declarations.
+This is the best place to see small internal tactic examples. It contains focused tests for
+`exact`, `apply`, `assumption`, `show`, `change`, `rw`, `simp`, conversion plugins, fuel
+diagnostics, and generated model transports for tactic-proved declarations.
 
 ## API and metadata tests
 

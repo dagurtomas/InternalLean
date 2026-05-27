@@ -11,6 +11,7 @@ import InternalLeanTest.ImplicitVariablesTest
 import InternalLeanTest.InternalDefScalabilityTest
 import InternalLeanTest.InternalDefTest
 import InternalLeanTest.InternalTacticTest
+import InternalLeanTest.IntroUXTest
 import InternalLeanTest.LFModelStressTest
 import InternalLeanTest.LogicalFrameworkMetadataExamplesTest
 import InternalLeanTest.ModelWorkflowUXTest

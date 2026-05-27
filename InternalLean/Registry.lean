@@ -50,6 +50,12 @@ public inductive InternalObjectGoalView (theory : String) (context : String) (ta
   /-- Marker constructor; generated infoview metavariables are never solved through this value. -/
   | marker : InternalObjectGoalView theory context target
 
+/-- Lean-visible marker proposition used for hover text on names in internal tactic scripts. -/
+public inductive InternalHoverView (theory : String) (kind : String) (name : String)
+    (typeOrStatement : String) : Prop where
+  /-- Marker constructor; generated hover metavariables are never solved through this value. -/
+  | marker : InternalHoverView theory kind name typeOrStatement
+
 end InternalLean
 
 @[expose] public meta section
@@ -64,12 +70,15 @@ syntax (name := internalObjectGoalViewPrettyWithContext)
 syntax (name := internalObjectGoalViewPrettyRaw) "object_goal_raw" ident " : " str : «term»
 syntax (name := internalObjectGoalViewPrettyWithContextRaw)
   "object_goal_context_raw" ident str " : " str : «term»
+syntax (name := internalHoverViewPretty)
+  "internal_hover" ident str str " : " str : «term»
 
 macro_rules
   | `(object_goal $_:ident : $_:ttExpr) => `(True)
   | `(object_goal_context $_:ident $_:str : $_:ttExpr) => `(True)
   | `(object_goal_raw $_:ident : $_:str) => `(True)
   | `(object_goal_context_raw $_:ident $_:str : $_:str) => `(True)
+  | `(internal_hover $_:ident $_:str $_:str : $_:str) => `(True)
 
 /-- Parse object-theory text back through the object-expression grammar for display when possible.
 This is editor metadata only: failed parses fall back to a raw string literal rather than affecting
@@ -103,6 +112,24 @@ string literal. -/
     match targetStx? with
     | some targetStx => `(object_goal_context $theoryStx:ident $contextStx:str : $targetStx:ttExpr)
     | none => `(object_goal_context_raw $theoryStx:ident $contextStx:str : $targetRawStx:str)
+
+/-- Delaborate an internal hover marker into compact source-like text. -/
+@[app_delab InternalHoverView] def delabInternalHoverView :
+  Lean.PrettyPrinter.Delaborator.Delab := do
+  let args := (← Lean.PrettyPrinter.Delaborator.SubExpr.getExpr).getAppArgs
+  let (theory, kind, name, typeOrStatement) ←
+    match args with
+    | #[Lean.Expr.lit (Lean.Literal.strVal theory),
+        Lean.Expr.lit (Lean.Literal.strVal kind),
+        Lean.Expr.lit (Lean.Literal.strVal name),
+        Lean.Expr.lit (Lean.Literal.strVal typeOrStatement)] =>
+        pure (theory, kind, name, typeOrStatement)
+    | _ => Lean.PrettyPrinter.Delaborator.failure
+  let theoryStx := mkIdent (Name.mkSimple theory)
+  let kindStx : TSyntax `str := ⟨Syntax.mkStrLit kind⟩
+  let nameStx : TSyntax `str := ⟨Syntax.mkStrLit name⟩
+  let typeStx : TSyntax `str := ⟨Syntax.mkStrLit typeOrStatement⟩
+  `(internal_hover $theoryStx:ident $kindStx:str $nameStx:str : $typeStx:str)
 
 /-- Append declaration-block metadata to a high-level signature while preserving source order within
 all declaration classes. -/

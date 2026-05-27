@@ -1656,6 +1656,7 @@ syntax "Type" : ttExpr
 syntax:90 "Type" "max" ttLevel ttLevel : ttExpr
 syntax:90 "Type" ttLevel : ttExpr
 syntax ident : ttExpr
+syntax "_" : ttExpr
 syntax "(" ttExpr ")" : ttExpr
 syntax "{" ident " := " ttExpr "}" : ttExpr
 syntax:45 ttExpr:46 " ≡ " ttExpr:45 : ttExpr
@@ -1833,6 +1834,7 @@ meta partial def elabObjExpr : TSyntax `ttExpr → CommandElabM ObjExpr
       | .zero => pure .sort
       | u => pure (.univ u)
   | `(ttExpr| $x:ident) => pure (.ident x.getId)
+  | `(ttExpr| _) => pure (.ident `_)
   | `(ttExpr| ($e:ttExpr)) => elabObjExpr e
   | `(ttExpr| {$x:ident := $value:ttExpr}) => do
       return .app (.app (.ident `__implicitArg) (.ident x.getId)) (← elabObjExpr value)

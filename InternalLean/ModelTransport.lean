@@ -519,15 +519,22 @@ def generateSelectedLFModelMethods (theoryName structureName : Name) (checked : 
   let mut generated : NameSet := {}
   for a in admissions do
     if wanted a.declName then
-      if (← generateLFAdmissionModelMethod theoryName structureName checked a) then
+      if (← getEnv).contains (theoryName ++ structureName ++ a.declName) then
+        generated := generated.insert a.declName.eraseMacroScopes
+      else if (← generateLFAdmissionModelMethod theoryName structureName checked a) then
         generated := generated.insert a.declName.eraseMacroScopes
   for d in checked.lfObjectDefs do
     if wanted d.name then
-      if (← generateLFObjectDefModelMethod theoryName structureName checked d admittedNames) then
+      if (← getEnv).contains (theoryName ++ structureName ++ d.name) then
+        generated := generated.insert d.name.eraseMacroScopes
+      else if (←
+          generateLFObjectDefModelMethod theoryName structureName checked d admittedNames) then
         generated := generated.insert d.name.eraseMacroScopes
   for t in checked.lfJudgmentTheorems do
     if wanted t.name then
-      if (← generateLFTheoremModelMethod theoryName structureName checked t admittedNames) then
+      if (← getEnv).contains (theoryName ++ structureName ++ t.name) then
+        generated := generated.insert t.name.eraseMacroScopes
+      else if (← generateLFTheoremModelMethod theoryName structureName checked t admittedNames) then
         generated := generated.insert t.name.eraseMacroScopes
   if let some selected := selected? then
     let missing := selected.toList.filter (fun n => !generated.contains n.eraseMacroScopes)

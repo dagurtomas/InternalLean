@@ -48,6 +48,9 @@ syntax (name := internalTacticSimpOnly) "simp " "only " "[" ident,* "]" : intern
 syntax (name := internalTacticIntros) "intros " ident+ : internalTactic
 syntax (name := internalTacticHave) "have " ident " : " ttExpr " := " "by" ppLine
   internalTactic* "end" : internalTactic
+syntax (name := internalTacticHaveTerm) "have " ident " : " ttExpr " := " ttExpr : internalTactic
+syntax (name := internalTacticHaveMissingEnd) "have " ident " : " ttExpr " := " "by" ppLine
+  internalTactic* : internalTactic
 syntax (name := internalTacticRefineApp) "refine " ident internalTacticArg* : internalTactic
 syntax (name := internalTacticRefine) "refine " ttExpr : internalTactic
 syntax (name := internalTacticFocus) "·" : internalTactic
@@ -96,6 +99,11 @@ syntax (name := internalDefsDeclBinderChecked)
   docComment ? "def " ident ttBinder+ " : " ttExpr " := " ttExpr : internalDefsDecl
 syntax (name := internalDefsDeclBinderSorry)
   docComment ? "def " ident ttBinder+ " : " ttExpr " := " "sorry" : internalDefsDecl
+syntax (name := internalDefsDeclBy)
+  docComment ? "def " ident " : " ttExpr " := " "by" ppLine internalTactic* : internalDefsDecl
+syntax (name := internalDefsDeclBinderBy)
+  docComment ? "def " ident ttBinder+ " : " ttExpr " := " "by" ppLine internalTactic* :
+    internalDefsDecl
 syntax (name := internalDefsBlock) "internal_defs" "where" ppLine internalDefsDecl* : command
 
 /-- Reject `internal def` binder sugar when no profile-specific elaborator accepts it. -/
@@ -144,6 +152,8 @@ inductive InternalTacticStep where
   | intro : Name → InternalTacticStep
   | intros : Array Name → InternalTacticStep
   | haveDecl : Name → ObjExpr → Array InternalTacticStep → InternalTacticStep
+  | haveTerm : Name → ObjExpr → ObjExpr → InternalTacticStep
+  | haveMissingEnd : Name → InternalTacticStep
   | sorry : InternalTacticStep
   deriving Inhabited, Repr
 
@@ -216,6 +226,12 @@ partial def elabInternalTacticStep : TSyntax `internalTactic → CommandElabM In
         | `(internalTactic| intros $ns:ident*) => pure <| .intros (ns.map (·.getId))
         | `(internalTactic| have $n:ident : $type:ttExpr := by $body:internalTactic* end) => do
             pure <| .haveDecl n.getId (← elabObjExpr type) (← body.mapM elabInternalTacticStep)
+        | `(internalTactic| have $n:ident : $type:ttExpr := $proof:ttExpr) => do
+            pure <| .haveTerm n.getId (← elabObjExpr type) (← elabObjExpr proof)
+        | `(internalTactic| have $n:ident : $type:ttExpr := by $body:internalTactic*) => do
+            let _ := type
+            let _ := body
+            pure <| .haveMissingEnd n.getId
         | `(internalTactic| ·) => pure .focusBullet
         | `(internalTactic| $kw:ident $n:ident) =>
             if kw.getId.eraseMacroScopes == `intro then
@@ -1522,6 +1538,7 @@ partial def internalTacticStepsContainSorry (steps : Array InternalTacticStep) :
   steps.any fun
     | .sorry => true
     | .haveDecl _ _ body => internalTacticStepsContainSorry body
+    | .haveTerm _ _ _ => false
     | _ => false
 
 /-- Whether an object tactic step is a focus bullet. -/
@@ -1831,6 +1848,44 @@ mutual
     pure (mkObjectApps (.ident cand.name) outArgs)
 end
 
+/-- Convert a direct internal term with `_` placeholders into tactic-argument syntax. -/
+partial def internalDirectTermTacticArg (e : ObjExpr) : InternalTacticArg :=
+  let e := eraseObjExprScopes e
+  match e with
+  | .ident n =>
+      if n.eraseMacroScopes == `_ then .inferPlaceholder else .expr e
+  | _ =>
+      let (head, args) := splitObjApp e
+      match head with
+      | .ident n =>
+          if args.any (internalObjExprMentionsName `_) then
+            .app n (args.map internalDirectTermTacticArg)
+          else
+            .expr e
+      | _ => .expr e
+
+/-- Elaborate `_` placeholders in a direct internal term against a known expected type. -/
+def elaborateInternalDirectTermPlaceholders (target : InternalDefTarget) (sig : HLSignature)
+    (ctx : Array HLBinding) (expected value : ObjExpr) : Except String ObjExpr := do
+  let value := eraseObjExprScopes value
+  unless internalObjExprMentionsName `_ value do
+    return value
+  let (head, args) := splitObjApp value
+  match head with
+  | .ident n =>
+      if n.eraseMacroScopes == `_ && args.isEmpty then
+        throw s!"cannot infer direct internal placeholder `_` for expected type\n  \
+          {diagnosticObjExprString expected}"
+      else
+        compileInternalCompleteCandidateArg target sig { ctx := ctx, target := expected } n
+          (args.map internalDirectTermTacticArg) "direct term"
+  | _ =>
+      throw <| String.intercalate "\n" [
+        s!"unsupported direct internal placeholder in term\n  {diagnosticObjExprString value}",
+        "",
+        "Placeholders are currently supported in applications headed by a rule, theorem, or \
+          internal declaration." ]
+
 mutual
   /-- Diagnostic elaboration of a nested tactic argument, replacing each `?_` by a stable
   placeholder and returning the object subgoals that the real `refine` compiler will consume. -/
@@ -2131,12 +2186,15 @@ def stepInternalObjectTacticInfoState (target : InternalDefTarget) (sig : HLSign
       pure (#[← introObjectGoal goal n] ++ rest)
   | .intros ns =>
       pure (#[← introsObjectGoal goal ns] ++ rest)
-  | .haveDecl n type _ =>
+  | .haveDecl n type _ | .haveTerm n type _ =>
       if internalObjectContextHasName goal.ctx n then
         throw s!"object tactic `have {n}` failed: local name '{n}' is already in the object context"
       let nextGoal := {
         goal with ctx := goal.ctx.push { name := n, typeExpr := type, visibility := .explicit } }
       pure (#[nextGoal] ++ rest)
+  | .haveMissingEnd n =>
+      throw s!"object tactic `have {n}` is missing `end`; write `have {n} : ... := by ... end` \
+        or use term-mode `have {n} : ... := proof`"
   | .sorry =>
       pure rest
 
@@ -2318,6 +2376,17 @@ mutual
         let (tail, nextIdx) :=
           collectInternalObjectTacticGoalInfo target sig levels steps stepStxs (idx + 1) nextGoal
         return (head ++ subInfos ++ tail, nextIdx)
+    | .haveTerm n type _ =>
+        if internalObjectContextHasName goal.ctx n then
+          return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
+        let nextGoal := {
+          goal with ctx := goal.ctx.push { name := n, typeExpr := type, visibility := .explicit } }
+        let head := pushInternalObjectTacticInfo #[] stepStxs idx before #[nextGoal]
+        let (tail, nextIdx) :=
+          collectInternalObjectTacticGoalInfo target sig levels steps stepStxs (idx + 1) nextGoal
+        return (head ++ tail, nextIdx)
+    | .haveMissingEnd _ =>
+        return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
 
   /-- Collect snapshots for subgoals produced by an `apply`, honoring Lean-style focus bullets. -/
   partial def collectInternalObjectTacticSubgoalsInfo (target : InternalDefTarget) (sig :
@@ -2365,10 +2434,105 @@ def mkInternalObjectGoalMVars (target : InternalDefTarget) (goals : Array Intern
     let mvar ← Meta.mkFreshExprMVar (some (internalObjectGoalViewType target goal)) .natural `object
     pure mvar.mvarId!
 
+/-- Description shown when hovering over a name in an internal tactic script. -/
+structure InternalObjectHover where
+  kind : String
+  name : Name
+  typeOrStatement : String
+  deriving Inhabited, Repr, BEq
+
+/-- Resolve a tactic identifier to a small hover payload. -/
+def internalObjectHover? (target : InternalDefTarget) (sig : HLSignature) (goal :
+    InternalObjectGoal) (rawName : Name) : Option InternalObjectHover := Id.run do
+  let n := internalTacticObjectName target rawName
+  if let some h := goal.ctx.find? (fun h => sameObjectName h.name n) then
+    return some {
+      kind := "local assumption"
+      name := n
+      typeOrStatement := diagnosticObjExprString h.typeExpr }
+  if let some d := sig.lfObjectDefs.find? (fun d => sameObjectName d.name n) then
+    return some {
+      kind := "internal definition"
+      name := n
+      typeOrStatement := diagnosticObjExprString d.typeExpr }
+  if let some c := sig.lfOpaqueConsts.find? (fun c => sameObjectName c.name n) then
+    let ty? := c.typeExpr?.map fun ty =>
+      if c.params.isEmpty then ty else objectArrowTelescope c.params ty
+    return some {
+      kind := "LF constant"
+      name := n
+      typeOrStatement := (ty?.map diagnosticObjExprString).getD "untyped" }
+  if let some t := sig.lfJudgmentTheorems.find? (fun t => sameObjectName t.name n) then
+    let statement :=
+      if t.binders.isEmpty then t.judgmentExpr else objectArrowTelescope t.binders t.judgmentExpr
+    return some {
+      kind := "theorem"
+      name := n
+      typeOrStatement := diagnosticObjExprString statement }
+  if let some r := sig.rules.find? (fun r => sameObjectName r.name n) then
+    let premiseBinders := r.premises.map fun p => {
+      name := p.name, typeExpr := p.judgmentExpr, visibility := BinderVisibility.explicit }
+    let statement := objectArrowTelescope (r.params ++ premiseBinders) r.conclusionExpr
+    return some {
+      kind := "rule"
+      name := n
+      typeOrStatement := diagnosticObjExprString statement }
+  if let some s := sig.syntaxSorts.find? (fun s => sameObjectName s.name n) then
+    let ty := diagnosticObjExprString <|
+      if s.params.isEmpty then .sort else objectArrowTelescope s.params .sort
+    return some { kind := "syntax sort", name := n, typeOrStatement := ty }
+  if let some j := sig.judgments.find? (fun j => sameObjectName j.name n) then
+    let ty := diagnosticObjExprString <|
+      if j.params.isEmpty then .sort else objectArrowTelescope j.params .sort
+    return some { kind := "judgment", name := n, typeOrStatement := ty }
+  return none
+
+/-- Extract the resolved name from identifier syntax. -/
+def internalSyntaxIdentName? : Syntax → Option Name
+  | .ident _ _ val _ => some val
+  | _ => none
+
+/-- Collect identifier syntax nodes below a tactic syntax node. -/
+partial def collectInternalIdentSyntaxes (stx : Syntax) : Array Syntax :=
+  match stx with
+  | .ident .. => #[stx]
+  | _ =>
+      stx.getArgs.foldl (init := #[]) fun acc child => acc ++ collectInternalIdentSyntaxes child
+
+/-- Build the Lean marker type used for hover text. -/
+def internalHoverViewType (target : InternalDefTarget) (hover : InternalObjectHover) : Expr :=
+  mkApp4 (mkConst ``InternalHoverView)
+    (mkStrLit target.theoryName.eraseMacroScopes.toString)
+    (mkStrLit hover.kind)
+    (mkStrLit hover.name.eraseMacroScopes.toString)
+    (mkStrLit hover.typeOrStatement)
+
+/-- Save hover term-info nodes for recognized names in one internal tactic step. -/
+def saveInternalObjectHoverInfo (target : InternalDefTarget) (sig : HLSignature)
+    (info : InternalObjectTacticInfo) : CommandElabM Unit := do
+  let some goal := info.goalsBefore[0]?
+    | return ()
+  for stx in collectInternalIdentSyntaxes info.stx do
+    let some rawName := internalSyntaxIdentName? stx
+      | pure ()
+    if let some hover := internalObjectHover? target sig goal rawName then
+      liftTermElabM do
+        let expr ← Meta.mkFreshExprMVar (some (internalHoverViewType target hover)) .natural
+          `internal_hover
+        pushInfoLeaf <| .ofTermInfo {
+          elaborator := `InternalLean.internalObjectHoverInfo
+          stx := stx
+          lctx := (← getLCtx)
+          expectedType? := none
+          expr := expr
+          isBinder := false
+          isDisplayableTerm := true
+        }
+
 /-- Save ordinary Lean `TacticInfo` nodes for object-theory tactic steps, so VS Code/infoview
 can show the current object context and target while editing `internal def ... := by`. -/
-def saveInternalObjectTacticInfo (target : InternalDefTarget) (infos :
-  Array InternalObjectTacticInfo) : CommandElabM Unit := do
+def saveInternalObjectTacticInfo (target : InternalDefTarget) (sig : HLSignature)
+    (infos : Array InternalObjectTacticInfo) : CommandElabM Unit := do
   for info in infos do
     liftTermElabM do
       let goalsBefore ← mkInternalObjectGoalMVars target info.goalsBefore
@@ -2383,6 +2547,27 @@ def saveInternalObjectTacticInfo (target : InternalDefTarget) (infos :
         mctxAfter := mctxAfter
         goalsAfter := goalsAfter
       }
+    saveInternalObjectHoverInfo target sig info
+
+/-- Prefix used internally to carry the source tactic index through recursive compilation. -/
+def internalStepErrorPrefix : String := "__internal_object_tactic_step__"
+
+/-- Encode a tactic-step index in an error without changing the user-facing message after decoding.
+-/
+def encodeInternalStepError (idx : Nat) (err : String) : String :=
+  s!"{internalStepErrorPrefix}{idx}\n{err}"
+
+/-- Decode an internally tagged tactic-step error. -/
+def decodeInternalStepError? (err : String) : Option (Nat × String) :=
+  if err.startsWith internalStepErrorPrefix then
+    let rest := (err.drop internalStepErrorPrefix.length).toString
+    match rest.splitOn "\n" with
+    | idx :: msgLines => do
+        let idx ← idx.toNat?
+        some (idx, String.intercalate "\n" msgLines)
+    | [] => none
+  else
+    none
 
 mutual
   /-- Compile one object tactic goal, returning the synthesized term and next unconsumed step index.
@@ -2398,10 +2583,11 @@ mutual
           "",
           "Remaining goal context:",
           renderInternalObjectContext goal.ctx]
-    match step with
+    try match step with
     | .focusBullet =>
         compileInternalObjectGoal target sig levels steps (idx + 1) goal
     | .exactTerm e =>
+        let e ← elaborateInternalDirectTermPlaceholders target sig goal.ctx goal.target e
         pure (e, idx + 1)
     | .exactApp n args =>
         let (introNames, innerGoal) := autoIntroGoal goal
@@ -2410,9 +2596,7 @@ mutual
             "exact"
         pure (wrapObjectLambdas introNames termExpr, nextIdx)
     | .refineTerm e =>
-        if internalObjExprMentionsName `_ e then
-          throw s!"unsupported object `refine` holes in `internal def {target.anchorName}`; \
-            provide explicit subterms or use `apply`"
+        let e ← elaborateInternalDirectTermPlaceholders target sig goal.ctx goal.target e
         pure (e, idx + 1)
     | .refineApp n args =>
         let (introNames, innerGoal) := autoIntroGoal goal
@@ -2512,9 +2696,27 @@ mutual
           nextGoal
         let subst := ({} : NameMap ObjExpr).insert n.eraseMacroScopes proofExpr
         pure (substObjectVars subst termExpr, nextIdx)
+    | .haveTerm n type proof =>
+        if internalObjectContextHasName goal.ctx n then
+          throw <| s!"object tactic `have {n}` failed: local name '{n}' is already " ++
+            "in the object context"
+        let proofExpr ← elaborateInternalDirectTermPlaceholders target sig goal.ctx type proof
+        let nextGoal := {
+          goal with ctx := goal.ctx.push { name := n, typeExpr := type, visibility := .explicit } }
+        let (termExpr, nextIdx) ← compileInternalObjectGoal target sig levels steps (idx + 1)
+          nextGoal
+        let subst := ({} : NameMap ObjExpr).insert n.eraseMacroScopes proofExpr
+        pure (substObjectVars subst termExpr, nextIdx)
+    | .haveMissingEnd n =>
+        throw s!"object tactic `have {n}` is missing `end`; write `have {n} : ... := by ... end` \
+          or use term-mode `have {n} : ... := proof`"
     | .sorry =>
         throw s!"internal object tactic `sorry` is handled as a declaration-wide admission before \
           tactic compilation"
+    catch err =>
+      match decodeInternalStepError? err with
+      | some _ => throw err
+      | none => throw (encodeInternalStepError idx err)
 
   /-- Compile after one `rw` and wrap the resulting proof if transport is needed. -/
   partial def compileInternalObjectRwStep (target : InternalDefTarget) (sig : HLSignature)
@@ -2947,7 +3149,12 @@ def compileInternalObjectTacticsWithGoal (target : InternalDefTarget) (sig : HLS
     throwError "empty object tactic script in `internal def {target.anchorName}`"
   let errorRef := stepStxs[0]?.getD (← getRef)
   match compileInternalObjectGoal target sig levels steps 0 goal with
-  | .error err => withRef errorRef <| throwError err
+  | .error err =>
+      match decodeInternalStepError? err with
+      | some (idx, msg) =>
+          let errorRef := stepStxs[idx]?.getD errorRef
+          withRef errorRef <| throwError msg
+      | none => withRef errorRef <| throwError err
   | .ok (termExpr, nextIdx) =>
       if nextIdx != steps.size then
         let errorRef := stepStxs[nextIdx]?.getD errorRef
@@ -2971,6 +3178,13 @@ def elabInternalDefCheckedExpr (doc? : Option (TSyntax ``Parser.Command.docComme
   let sourceDoc? ← optDocCommentString? doc?
   if !levels.isEmpty then
     throwError "internal LF declarations do not support declaration-local universe parameters"
+  let some sig ← liftCoreM <| getTheory? target.theoryName
+    | throwError "unknown type theory '{target.theoryName}'"
+  let flatSig ← liftCoreM <| flattenSignature sig
+  let valueExpr ←
+    match elaborateInternalDirectTermPlaceholders target flatSig #[] typeExpr valueExpr with
+    | .ok valueExpr => pure valueExpr
+    | .error err => throwError err
   let lfDef : LFObjectDefDecl := { name := target.localName, typeExpr, value := valueExpr }
   try
     liftCoreM <| registerLFObjectDef target.theoryName lfDef
@@ -3010,6 +3224,13 @@ def elabInternalDefCheckedWithBindersExpr (doc? : Option (TSyntax ``Parser.Comma
   let sourceDoc? ← optDocCommentString? doc?
   if !levels.isEmpty then
     throwError "internal LF declarations do not support declaration-local universe parameters"
+  let some sig ← liftCoreM <| getTheory? target.theoryName
+    | throwError "unknown type theory '{target.theoryName}'"
+  let flatSig ← liftCoreM <| flattenSignature sig
+  let valueExpr ←
+    match elaborateInternalDirectTermPlaceholders target flatSig params typeExpr valueExpr with
+    | .ok valueExpr => pure valueExpr
+    | .error err => throwError err
   let fullType := mkInternalDefFunctionType params typeExpr
   let fullValue := mkInternalDefLambda params valueExpr
   try
@@ -3096,6 +3317,13 @@ def elabInternalTheoremCheckedWithBinders (doc? : Option (TSyntax ``Parser.Comma
   let params ← binders.mapM elabHLBinding
   let typeExpr ← elabObjExpr typeStx
   let valueExpr ← elabObjExpr valueStx
+  let some sig ← liftCoreM <| getTheory? target.theoryName
+    | throwError "unknown type theory '{target.theoryName}'"
+  let flatSig ← liftCoreM <| flattenSignature sig
+  let valueExpr ←
+    match elaborateInternalDirectTermPlaceholders target flatSig params typeExpr valueExpr with
+    | .ok valueExpr => pure valueExpr
+    | .error err => throwError err
   let lfTheorem : LFJudgmentTheoremDecl := {
     name := target.localName
     binders := params
@@ -3141,7 +3369,7 @@ def elabInternalDefBy (doc? : Option (TSyntax ``Parser.Command.docComment))
   let typeExpr ← elabObjExpr typeStx
   let infos :=
     collectInternalObjectTacticInfo target flatSig levels typeExpr steps (tactics.map (·.raw))
-  saveInternalObjectTacticInfo target infos
+  saveInternalObjectTacticInfo target flatSig infos
   if internalTacticStepsContainSorry steps then
     elabInternalDefSorry doc? declNameStx declName levels typeStx
   else
@@ -3164,7 +3392,7 @@ def elabInternalDefByWithBinders (doc? : Option (TSyntax ``Parser.Command.docCom
   let fullType := mkInternalDefFunctionType params typeExpr
   let infos :=
     collectInternalObjectTacticInfo target flatSig levels fullType steps (tactics.map (·.raw))
-  saveInternalObjectTacticInfo target infos
+  saveInternalObjectTacticInfo target flatSig infos
   if internalTacticStepsContainSorry steps then
     elabInternalDefSorryWithBinders doc? declNameStx declName levels binders typeStx
   else
@@ -3281,6 +3509,12 @@ def tryElabInternalDefsSorryOpaqueBatch (decls : Array (TSyntax `internalDefsDec
 
 /-- Elaborate one declaration in an `internal_defs where` batch. -/
 def elabInternalDefsDecl : TSyntax `internalDefsDecl → CommandElabM Unit
+  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr := by
+      $tactics:internalTactic*) =>
+      elabInternalDefBy doc? declName declName.getId #[] typeStx tactics
+  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := by $tactics:internalTactic*) =>
+      elabInternalDefByWithBinders doc? declName declName.getId #[] binders typeStx tactics
   | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr := sorry) =>
       elabInternalDefSorry doc? declName declName.getId #[] typeStx
   | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :

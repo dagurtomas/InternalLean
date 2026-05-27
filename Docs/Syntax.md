@@ -60,6 +60,7 @@ Type
 Type u
 Type max u v
 x
+_
 (f x)
 f x y
 A → B
@@ -75,6 +76,8 @@ lhs ≡ rhs
 Notes:
 
 - `Type`, `Type u`, and `Type max u v` are object-level universe expressions.
+- `_` is an inferable placeholder in direct `internal def` terms when the surrounding expected
+  type determines the omitted argument.
 - `→` is compatibility notation for the framework's structural/function-family arrow.
 - `⇒` is the explicit spelling of the same framework arrow for LF arities and dependent rule
   parameters. Use it when you want to avoid suggesting an object-level function former.
@@ -406,14 +409,17 @@ namespace T
 internal_defs where
   def f : A := value
   def g : B f := value'
+  def h : J := by
+    exact proof
   def admitted : J := sorry
 
 end T
 ```
 
 Declarations in the batch are registered in source order; later declarations may refer to earlier
-ones. `internal theorem ... := sorry` records theorem-shaped formalization debt without adding a
-model field.
+ones. Batched definitions support both direct terms and internal tactic scripts.
+`internal theorem ... := sorry` records theorem-shaped formalization debt without adding a model
+field.
 
 Declaration-local object universe parameters are supported:
 
@@ -455,6 +461,7 @@ simp
 simp [rule₁, rule₂]
 simp only [rule₁, rule₂]
 intros x y
+have h : J := proof
 have h : J := by
   ...
 end

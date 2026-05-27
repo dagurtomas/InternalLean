@@ -3068,8 +3068,18 @@ def admittedLFJudgmentTypeSyntax? (checked : CheckedSignature) (modelIdent : Ide
   let fieldNames := lfModelFieldNameMap obs
   let paramVis := lfParamVisibilityMapOfObligations obs
   let defValues := lfDefinitionValueMap checked
-  some <$> lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent [] paramVis
-    a.typeExpr
+  let mut locals : LFLocalSyntaxCtx := []
+  let mut binders : Array LFRenderedBinder := #[]
+  for p in a.params do
+    let ty ←
+      lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis
+        p.typeExpr
+    let id := freshLFModelLocalIdent p.name modelIdent locals
+    binders := binders.push { name := id.getId, typeStx := ty, visibility := p.visibility }
+    locals := (p.name, id) :: locals
+  let result ← lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals
+    paramVis a.typeExpr
+  some <$> lfRenderedTelescopeSyntax binders result
 
 /-- Syntax-level model declaration for an admitted internal declaration. The statement is
 rendered in the chosen model backend, while the body intentionally uses Lean `sorry`, making
