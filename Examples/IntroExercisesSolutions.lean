@@ -77,7 +77,7 @@ data for the node sort, the judgments, and the primitive rules. The transport co
 replay selected checked internal declarations over any Lean model.
 -/
 
-generate_lf_model_transports IntroReach only
+generate_model_transports IntroReach only
   solution02_mid_reaches_finish
   solution03_start_reaches_finish
   solution04_refl_function

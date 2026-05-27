@@ -188,10 +188,15 @@ generate_model_interface T as M
 #print_model_transport_status T for M
 #print_model_transport_signature T f for M
 generate_model_transport T f for M
+#print_model_transports T for M
+generate_model_transports T for M
+generate_model_transports T only f g h for M
 ```
 
-Run model-generation commands at the root namespace. Selected LF transport generation includes
-checked theorem dependencies before selected theorem transports.
+Run model-generation commands at the root namespace. `generate_model_interface` also emits a
+nested `M.StructuralEquiv` structure for strict structure-preserving comparisons between completed
+models. Selected model transport generation includes checked theorem dependencies before selected
+theorem transports.
 
 Longer `#check_default_profile_lf_*`, `#print_default_profile_*`, `#print_lean_type_*`, and
 `#print_lf_model_*` commands are developer diagnostics for inspecting replay/model internals.

@@ -85,9 +85,9 @@ A model interface can be generated as soon as the theory exists. The solutions f
 checked internal declarations over this interface.
 -/
 
-generate_lf_model_structure IntroReach as IntroReachModel
+generate_model_interface IntroReach as IntroReachModel
 
-generate_lf_model_derived_theorems IntroReach for IntroReachModel
+generate_model_transport IntroReach reach_start_mid for IntroReachModel
 
 namespace IntroReach
 
@@ -227,7 +227,7 @@ over the model.
 For a single declaration, use `generate_model_transport IntroReach declaration for IntroReachModel`.
 -/
 
-generate_lf_model_transports IntroReach only
+generate_model_transports IntroReach only
   exercise02_mid_reaches_finish
   exercise03_start_reaches_finish
   exercise04_refl_function
@@ -237,7 +237,7 @@ generate_lf_model_transports IntroReach only
   exercise10_compose_parameterized
 for IntroReachModel
 
--- `generate_lf_model_transports IntroReach for IntroReachModel` transports everything
+-- `generate_model_transports IntroReach for IntroReachModel` transports everything
 
 namespace IntroReachExercises
 

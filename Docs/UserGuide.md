@@ -309,10 +309,15 @@ those declarations to the environment.
 generate_model_interface TinyNat as TinyNatModel
 ```
 
-Generates the Lean model-interface structure and inherited projection exports. Run generation
-commands at the root namespace; InternalLean rejects generation under wrapper namespaces to keep
-Lean names deterministic. After this command, `TinyNatModel` is available as a Lean structure to
-instantiate.
+Generates the Lean model-interface structure, inherited projection exports, and a nested strict
+structural-equivalence structure. Run generation commands at the root namespace; InternalLean
+rejects generation under wrapper namespaces to keep Lean names deterministic. After this command,
+`TinyNatModel` is available as a Lean structure to instantiate.
+
+The generated structural equivalence is available as
+`TinyNat.TinyNatModel.StructuralEquiv`. A value of this type between two completed models contains
+`InternalLean.TypeEquiv` fields for generated type families and `HEq` preservation fields for
+operations and rules. It is a strict structure-preserving comparison of generated model fields.
 
 ```lean
 #print_model_template TinyNat as TinyNatModel
@@ -349,6 +354,16 @@ generate_model_transport TinyNat myZero for TinyNatModel
 ```
 
 Generates the Lean declaration specializing `TinyNat.myZero` to a model `TinyNatModel`.
+
+`generate_model_interface` does not generate these transports. Use transport commands after the
+interface exists. For bulk generation, use `#print_model_transports T for M` and then
+`generate_model_transports T for M`, or the selected form
+`generate_model_transports T only f g h for M`.
+
+The older `generate_lf_model_derived_theorems T for M` command generates only checked LF
+`judgment_theorem` methods and compatible admitted LF methods; new workflows should prefer
+`generate_model_transport` or `generate_model_transports`. The older
+`generate_lf_model_transports` spelling remains as a compatibility alias.
 
 ## Extending a theory
 

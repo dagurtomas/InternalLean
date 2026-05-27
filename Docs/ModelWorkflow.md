@@ -40,6 +40,13 @@ A small command sequence looks like this:
 #check_model_obligations TinyNat
 #print_model_interface TinyNat as TinyNatModel
 generate_model_interface TinyNat as TinyNatModel
+
+#print_model_transport_status TinyNat for TinyNatModel
+#print_model_transport_signature TinyNat someTheorem for TinyNatModel
+generate_model_transport TinyNat someTheorem for TinyNatModel
+-- or, for several declarations:
+#print_model_transports TinyNat for TinyNatModel
+generate_model_transports TinyNat only someTheorem anotherTheorem for TinyNatModel
 ```
 
 Generation commands must be run at the root namespace so generated declarations have deterministic
@@ -87,6 +94,15 @@ generate_model_interface T as M
 Generates the model interface as Lean code. Run generation commands at the root namespace; if the
 current namespace is non-root, InternalLean reports an error before emitting declarations.
 
+The generated interface includes the main structure `T.M`, inherited projection exports, and a
+nested strict structural-equivalence structure `T.M.StructuralEquiv` for comparing two completed
+models.
+
+`generate_lf_model_structure T as M` is the older direct-LF spelling used by low-level tests and
+diagnostics. It currently emits the same flat model structure, projection exports, docstrings, and
+`StructuralEquiv` as `generate_model_interface`. Prefer `generate_model_interface` in user-facing
+code.
+
 Public/minimal variants:
 
 ```lean
@@ -114,6 +130,41 @@ Prints the corresponding template for the public/minimal interface.
 
 Templates are for authoring convenience. They do not generate declarations by themselves.
 
+## Structural equivalences between models
+
+Every generated model interface also gets a nested strict structural-equivalence structure:
+
+```lean
+generate_model_interface T as M
+
+#check T.M.StructuralEquiv
+```
+
+A value `e : T.M.StructuralEquiv A B` records structure-preserving data between completed models
+`A B : T.M`. Syntax-sort and judgment-family fields become generated equivalence fields using
+`InternalLean.TypeEquiv`; operation and rule fields become heterogeneous preservation clauses using
+`HEq`.
+
+For example, if the theory has a syntax sort `Obj`, a constant `a : Obj`, a judgment
+`Rel (x : Obj)`, and a rule `rel_intro (x : Obj) : Rel x`, the generated structural equivalence has
+fields with this shape:
+
+```lean
+Obj_equiv : InternalLean.TypeEquiv A.Obj B.Obj
+a_preserve : HEq (Obj_equiv A.a) B.a
+Rel_equiv (x : A.Obj) (x_target : B.Obj)
+    (x_rel : HEq (Obj_equiv x) x_target) :
+  InternalLean.TypeEquiv (A.Rel x) (B.Rel x_target)
+rel_intro_preserve (x : A.Obj) (x_target : B.Obj)
+    (x_rel : HEq (Obj_equiv x) x_target) :
+  HEq ((Rel_equiv x x_target x_rel) (A.rel_intro x)) (B.rel_intro x_target)
+```
+
+The structure is strict and syntactic: it preserves the generated model fields. It does not try to
+infer theory-specific weaker notions such as categorical equivalence. For complex dependent fields
+that the generic renderer cannot express yet, generation skips the affected structural-equivalence
+field and emits a warning; the model interface itself is still generated.
+
 ## Model visibility metadata
 
 Inside a `declare_type_theory` or `extend_type_theory` block, model visibility can be controlled
@@ -134,9 +185,10 @@ Meanings:
 Visibility metadata does not change object-theory checking. It only affects generated model
 interfaces and templates.
 
-## Model sections
+## Advanced: model sections
 
-Large theories can group model obligations into sections:
+Most users should start with the flat `generate_model_interface` workflow. Large theories can group
+model obligations into sections when a flat interface becomes hard to navigate:
 
 ```lean
 model_section SectionName
@@ -182,7 +234,7 @@ generate_model_section_bundles T as Bundle adapting Flat
 generate_public_model_section_bundles T as Bundle adapting Flat
 ```
 
-For small theories, the flat `generate_model_interface` workflow is usually enough.
+If you do not need section bundles, stay with the flat `generate_model_interface` workflow.
 
 ## What is a model transport?
 
@@ -216,17 +268,34 @@ generate_model_transport T f for M
 
 Generates the transport for one declaration.
 
-For direct LF workflows, selected and bulk transport commands are also available:
+The transport commands are separate from `generate_model_interface`: the interface command creates
+semantic fields and structural-equivalence data, while transport commands add derived methods or
+theorems over an already generated model interface.
+
+For bulk or selected transport generation, use:
 
 ```lean
-#print_lf_model_transports T for M
-generate_lf_model_transports T for M
-generate_lf_model_transports T only f g h for M
+#print_model_transports T for M
+generate_model_transports T for M
+generate_model_transports T only f g h for M
 ```
 
 Use the selected form when you only want a small subset of declarations or when debugging one
-transport at a time. Selected LF transports automatically include transitive checked theorem
+transport at a time. Selected model transports automatically include transitive checked theorem
 references needed by the selected declarations, and dependencies are emitted before dependents.
+
+The older command
+
+```lean
+generate_lf_model_derived_theorems T for M
+```
+
+generates model-interface methods for checked LF `judgment_theorem`s, plus compatible admitted LF
+methods. It is not part of `generate_model_interface`, and it is narrower than
+`generate_model_transports T for M`, which also handles renderable checked `lf_def` transports and
+supports selected generation. Prefer `generate_model_transport` or `generate_model_transports` for
+new user-facing workflows. The older `generate_lf_model_transports` spelling remains as a
+compatibility alias.
 
 ## Admissions and generated transports
 

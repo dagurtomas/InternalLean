@@ -1605,9 +1605,9 @@ def lfModelInterfaceGuideString (theoryName structureName : Name) (checked : Che
       lines.push "after filling the structure, no checked LF methods are currently generated."
   else
     lines :=
-      lines.push s!"after filling the structure, run `#print_lf_model_transports \
+      lines.push s!"after filling the structure, run `#print_model_transports \
         {nameString theoryName} for {nameString structureName}` and then \
-          `generate_lf_model_transports {nameString theoryName} for {nameString structureName}`."
+          `generate_model_transports {nameString theoryName} for {nameString structureName}`."
   let templateCmd := if mode == .publicMode then "#print_public_model_template" else
     "#print_model_template"
   lines :=
@@ -4011,7 +4011,8 @@ def theoryWorkflowSummaryString (sig : HLSignature) (checked : CheckedSignature)
       s!"{lfTheorems} checked judgment theorem(s)",
     s!"generated admitted transports recorded: {transports}",
     "user workflow: `#print_model_obligations`, `generate_model_interface`, \
-      `#print_model_template`, `#print_model_transport_status`, `generate_model_transport`"
+      `#print_model_template`, `#print_model_transport_status`, `generate_model_transport`, \
+        `generate_model_transports`"
   ].toList
 
 /-- User-facing name for the model backend used by short UX commands. -/
@@ -4043,11 +4044,11 @@ def modelObligationsUXString (checked : CheckedSignature) (admittedNames : NameS
     else if mode == .publicMode then
       s!"next action: run `{interfaceCmd} {nameString checked.name} as <Name>`, then fill the \
         {fields.size} user field(s); checked LF definitions/theorems can be generated afterward \
-          when their dependencies remain public with `#print_lf_model_transports`."
+          when their dependencies remain public with `#print_model_transports`."
     else
       s!"next action: run `#print_model_interface {nameString checked.name} as <Name>`, then fill \
         the {fields.size} user field(s); checked LF definitions/theorems can be generated \
-          afterward with `#print_lf_model_transports`."
+          afterward with `#print_model_transports`."
   let modeText := if mode == .full then uxModelBackendLabel else
     s!"{uxModelBackendLabel}, {mode.label} mode"
   let warningLines :=
@@ -4171,7 +4172,7 @@ def modelTemplateString (theoryName structureName : Name) (checked : CheckedSign
   if !nonFields.isEmpty then
     lines := lines.push "  -- generated/non-field items; not fields to fill by hand"
     lines :=
-      lines.push "  -- run `#print_lf_model_transports` / `generate_lf_model_transports` after \
+      lines.push "  -- run `#print_model_transports` / `generate_model_transports` after \
         filling required fields"
     let mut lastNonFieldRole? : Option LFModelGeneratedRole := none
     for o in nonFields do
@@ -4198,10 +4199,10 @@ def modelTemplateString (theoryName structureName : Name) (checked : CheckedSign
     lines.push s!"--   #print_model_transport_status {nameString theoryName} for \
       {nameString structureName.eraseMacroScopes}"
   lines :=
-    lines.push s!"--   #print_lf_model_transports {nameString theoryName} for \
+    lines.push s!"--   #print_model_transports {nameString theoryName} for \
       {nameString structureName.eraseMacroScopes}"
   lines :=
-    lines.push s!"--   generate_lf_model_transports {nameString theoryName} for \
+    lines.push s!"--   generate_model_transports {nameString theoryName} for \
       {nameString structureName.eraseMacroScopes}"
   pure <| String.intercalate "\n" lines.toList
 

@@ -86,7 +86,7 @@ method/declaration(s), 0 theorem-local certificate parameter(s), 0 replay artifa
 expansion(s), 0 blocked/omitted obligation(s)
 field breakdown: 1 syntax_sort, 1 judgment, 1 typed lf_opaque, 1 rule
 next action: run `#print_model_interface ModelWorkflowLF as <Name>`, then fill the 4 user field(s);
-checked LF definitions/theorems can be generated afterward with `#print_lf_model_transports`.
+checked LF definitions/theorems can be generated afterward with `#print_model_transports`.
 fields to provide:
   Obj ← syntax_sort Obj: ready
   a ← typed lf_opaque a: ready
@@ -142,10 +142,10 @@ checked LF theorem methods:
   judgment_theorem relUnaryAdmitted → ModelWorkflowLF.LFUXModel.relUnaryAdmitted; dot:
   M.relUnaryAdmitted
 skipped items: none
-next action: run `generate_lf_model_transports ModelWorkflowLF for LFUXModel` after
+next action: run `generate_model_transports ModelWorkflowLF for LFUXModel` after
 `generate_model_interface` and after checking name-collision notes above -/
 #guard_msgs (whitespace := lax) in
-#print_lf_model_transports ModelWorkflowLF for LFUXModel
+#print_model_transports ModelWorkflowLF for LFUXModel
 
 #print_model_transport_signature ModelWorkflowLF objAlias for LFUXModel
 generate_model_transport ModelWorkflowLF objAlias for LFUXModel
@@ -370,7 +370,7 @@ extend_type_theory LayeredLF where
 
 generate_model_interface LayeredLF as LayeredModel
 generate_model_interface LayeredLF as LayeredSelectedModel
-generate_lf_model_transports LayeredLF only good_standard_checked for LayeredSelectedModel
+generate_model_transports LayeredLF only good_standard_checked for LayeredSelectedModel
 #check LayeredLF.LayeredSelectedModel.good_standard_checked
 #print_model_transport_status LayeredLF for LayeredModel
 
@@ -386,7 +386,7 @@ def layeredModelInstance : LayeredLF.LayeredModel where
 #check LayeredLF.LayeredModel.Good
 #check layeredModelInstance.good_standard
 
-generate_lf_model_transports LayeredLF for LayeredModel
+generate_model_transports LayeredLF for LayeredModel
 #check LayeredLF.LayeredModel.standardObj
 #check LayeredLF.LayeredModel.good_standard_checked
 #check layeredModelInstance.standardObj

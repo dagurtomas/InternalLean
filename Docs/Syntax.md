@@ -517,7 +517,11 @@ generate_public_model_interface T as M
 ```
 
 Generation commands must be run at the root namespace. Printing and checking commands are safe to
-use for inspection before generation.
+use for inspection before generation. Generated interfaces include a nested `M.StructuralEquiv`
+structure for strict structure-preserving comparisons between completed models.
+
+`generate_lf_model_structure T as M` is the older direct-LF spelling for the same flat interface
+generation path. Prefer `generate_model_interface T as M` in user-facing code.
 
 Model sections:
 
@@ -542,10 +546,16 @@ Model transports:
 #print_model_transport_status T for M
 #print_model_transport_signature T f for M
 generate_model_transport T f for M
-#print_lf_model_transports T for M
-generate_lf_model_transports T for M
-generate_lf_model_transports T only f g h for M
+#print_model_transports T for M
+generate_model_transports T for M
+generate_model_transports T only f g h for M
+generate_lf_model_derived_theorems T for M
 ```
+
+`generate_lf_model_derived_theorems` is an older theorem-only LF model method command. Prefer
+`generate_model_transport` or `generate_model_transports` in new user-facing workflows. The older
+`#print_lf_model_transports` and `generate_lf_model_transports` spellings remain as compatibility
+aliases.
 
 Developer diagnostics with names such as `#print_lf_model_*`, `#check_default_profile_lf_*`, and
 `#print_checked_logical_framework_*` expose lower-level internals. Prefer the commands above in
