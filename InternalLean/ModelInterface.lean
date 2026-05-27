@@ -331,6 +331,12 @@ def lfBindingMentionsAny (names : NameSet) (b : CheckedLFBinding) : Bool :=
 def lfDefinitionValueMap (checked : CheckedSignature) : NameMap CheckedLFExpr :=
   checked.lfObjectDefs.foldl (init := {}) fun acc d => acc.insert d.name d.checkedValue
 
+/-- Lookup an LF definition value, tolerating harmless macro-scope differences in the key. -/
+def lfDefinitionValue? (defValues : NameMap CheckedLFExpr) (n : Name) : Option CheckedLFExpr :=
+  match defValues.find? n with
+  | some value => some value
+  | none => defValues.find? n.eraseMacroScopes
+
 /-- Whether a checked LF expression can currently be rendered in an LF-model field type.
 The first LF-model backend has fields for locals, syntax sorts, judgments, typed opaque
 constants, inferred side-condition predicates, and rules. Staged LF object definitions are
@@ -1495,32 +1501,148 @@ def validateLFModelObligationArray (theoryName : Name) (obs : Array LFModelOblig
           seenDerivedParams := seenDerivedParams.insert n
   return .ok ()
 
-/-- Global declaration names mentioned by an LF model obligation's rendered type data. -/
-def lfModelObligationGlobalHeadNames (o : LFModelObligation) : NameSet := Id.run do
+/-- Dependency singleton for a rendered LF-model field source name. -/
+def lfModelRenderedFieldDependency (fieldSourceNames : NameSet) (n : Name) : NameSet :=
+  let n := n.eraseMacroScopes
+  if fieldSourceNames.contains n then ({n} : NameSet) else {}
+
+/-- Field dependencies introduced by rendering a checked LF expression in a model structure.
+
+This mirrors `lfExprSyntaxInModelWithFields`: checked LF definitions are expanded before syntax is
+produced, so their generated-field dependencies must be attributed to the field being rendered. -/
+partial def lfExprRenderedFieldDependencies (defValues : NameMap CheckedLFExpr)
+    (fieldSourceNames locals visitedDefs : NameSet) : CheckedLFExpr → NameSet
+  | .ident h =>
+      let n := h.name.eraseMacroScopes
+      if h.kind == .local || locals.contains n then
+        {}
+      else if h.kind == .lfDefinition then
+        match lfDefinitionValue? defValues n with
+        | some value =>
+            if visitedDefs.contains n then {}
+            else lfExprRenderedFieldDependencies defValues fieldSourceNames locals
+              (visitedDefs.insert n) value
+        | none => lfModelRenderedFieldDependency fieldSourceNames n
+      else
+        lfModelRenderedFieldDependency fieldSourceNames n
+  | .sort => {}
+  | .univ _ => {}
+  | .app f a =>
+      insertNameSet
+        (lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs f)
+        (lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs a)
+  | .arrow none A B =>
+      insertNameSet
+        (lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs A)
+        (lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs B)
+  | .arrow (some x) A B =>
+      let depsA := lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs A
+      let locals := locals.insert x.eraseMacroScopes
+      insertNameSet depsA
+        (lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs B)
+  | .lam xs body =>
+      let locals := xs.foldl (fun acc x => acc.insert x.eraseMacroScopes) locals
+      lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs body
+  | .jeq lhs rhs =>
+      insertNameSet
+        (lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs lhs)
+        (lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs rhs)
+
+/-- Field dependencies introduced by rendering a source LF expression in a model structure. -/
+partial def lfObjExprRenderedFieldDependencies (defValues : NameMap CheckedLFExpr)
+    (fieldSourceNames locals visitedDefs : NameSet) : ObjExpr → NameSet
+  | .ident n =>
+      let n := n.eraseMacroScopes
+      if locals.contains n then
+        {}
+      else
+        match lfDefinitionValue? defValues n with
+        | some value =>
+            if visitedDefs.contains n then {}
+            else lfExprRenderedFieldDependencies defValues fieldSourceNames locals
+              (visitedDefs.insert n) value
+        | none => lfModelRenderedFieldDependency fieldSourceNames n
+  | .sort => {}
+  | .univ _ => {}
+  | .app f a =>
+      insertNameSet
+        (lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs f)
+        (lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs a)
+  | .arrow none A B | .funArrow none A B =>
+      insertNameSet
+        (lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs A)
+        (lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs B)
+  | .arrow (some x) A B | .funArrow (some x) A B =>
+      let depsA :=
+        lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs A
+      let locals := locals.insert x.eraseMacroScopes
+      insertNameSet depsA
+        (lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs B)
+  | .lam xs body =>
+      let locals := xs.foldl (fun acc x => acc.insert x.eraseMacroScopes) locals
+      lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs body
+  | .jeq lhs rhs =>
+      insertNameSet
+        (lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs lhs)
+        (lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs rhs)
+
+/-- Global field names mentioned by an LF model obligation after renderer-style expansion. -/
+def lfModelObligationRenderedFieldDependencies (defValues : NameMap CheckedLFExpr)
+    (fieldSourceNames : NameSet) (o : LFModelObligation) : NameSet := Id.run do
   let mut out : NameSet := {}
+  let mut locals : NameSet := {}
   for p in o.params do
-    out := insertNameSet out (lfExprGlobalHeadNames p.checkedTypeExpr)
+    out := insertNameSet out <|
+      lfExprRenderedFieldDependencies defValues fieldSourceNames locals {} p.checkedTypeExpr
+    locals := locals.insert p.name.eraseMacroScopes
   if let some e := o.typeExpr? then
-    out := insertNameSet out (lfExprGlobalHeadNames e)
+    out := insertNameSet out <| lfExprRenderedFieldDependencies defValues fieldSourceNames
+      locals {} e
   for e in o.extraStatements do
-    out := insertNameSet out (lfExprGlobalHeadNames e)
+    out := insertNameSet out <| lfExprRenderedFieldDependencies defValues fieldSourceNames
+      locals {} e
   if let some e := o.sourceObjExpr? then
-    out := insertNameSet out (objExprGlobalHeadNames e)
+    out := insertNameSet out <| lfObjExprRenderedFieldDependencies defValues fieldSourceNames
+      locals {} e
   for p in o.premises do
-    out := insertNameSet out (lfExprGlobalHeadNames p.checkedJudgmentExpr)
+    out := insertNameSet out <| lfExprRenderedFieldDependencies defValues fieldSourceNames
+      locals {} p.checkedJudgmentExpr
   for e in o.paramEvidences do
-    out := insertNameSet out (lfExprGlobalHeadNames e.checkedJudgmentExpr)
+    out := insertNameSet out <| lfExprRenderedFieldDependencies defValues fieldSourceNames
+      locals {} e.checkedJudgmentExpr
   for s in o.sideConditions do
-    out := insertNameSet out (lfExprGlobalHeadNames s.checkedInput)
+    out := insertNameSet out <| lfExprRenderedFieldDependencies defValues fieldSourceNames
+      locals {} s.checkedInput
   return out
 
+/-- Unemitted generated fields that a field still depends on. -/
+def unresolvedLFModelFieldDependencies (defValues : NameMap CheckedLFExpr)
+    (fieldSourceNames emitted : NameSet) (o : LFModelObligation) : List Name :=
+  (lfModelObligationRenderedFieldDependencies defValues fieldSourceNames o).toList.filter fun n =>
+    fieldSourceNames.contains n && n != o.name.eraseMacroScopes && !emitted.contains n
+
+/-- Diagnostic for a dependency cycle among generated model fields. -/
+def lfModelFieldDependencyCycleMessage (defValues : NameMap CheckedLFExpr)
+    (fieldSourceNames emitted : NameSet) (remaining : Array LFModelObligation) : String :=
+  let lines := remaining.toList.take 10 |>.map fun o =>
+    let deps := unresolvedLFModelFieldDependencies defValues fieldSourceNames emitted o
+    let depText := String.intercalate ", " (deps.map nameString)
+    let generated := nameString ((o.generatedName?).getD o.name)
+    s!"  {generated} depends on not-yet-generated field(s): {depText}"
+  String.intercalate "\n" <|
+    ["generated LF model fields have a dependency cycle or an unsatisfied rendered dependency",
+     "The model interface backend will not emit malformed Lean structure fields.",
+     "Blocked fields:"] ++ lines
+
 /-- Field obligations ordered so each generated structure field appears after generated fields
-mentioned by its type, preserving the original order whenever there is no dependency pressure. -/
-def orderLFModelFieldObligations (obs : Array LFModelObligation) : Array LFModelObligation :=
-  Id.run do
+mentioned by its rendered type, preserving the original order whenever there is no dependency
+pressure. -/
+def orderLFModelFieldObligations (checked : CheckedSignature) (obs : Array LFModelObligation) :
+    Except String (Array LFModelObligation) := do
+  let defValues := lfDefinitionValueMap checked
   let fields := obs.filter (fun o => o.generatedRole == .field && o.renderable)
   let nonFields := obs.filter (fun o => !(o.generatedRole == .field && o.renderable))
-  let fieldNames : NameSet := fields.foldl (init := {}) fun acc o =>
+  let fieldSourceNames : NameSet := fields.foldl (init := {}) fun acc o =>
     acc.insert o.name.eraseMacroScopes
   let mut emitted : NameSet := {}
   let mut remaining := fields
@@ -1529,23 +1651,17 @@ def orderLFModelFieldObligations (obs : Array LFModelObligation) : Array LFModel
     let mut progress := false
     let mut next := #[]
     for o in remaining do
-      let deps := lfModelObligationGlobalHeadNames o
-      let blocked := deps.any fun n => fieldNames.contains n && n != o.name.eraseMacroScopes
-        && !emitted.contains n
-      if blocked then
-        next := next.push o
-      else
+      let deps := unresolvedLFModelFieldDependencies defValues fieldSourceNames emitted o
+      if deps.isEmpty then
         ordered := ordered.push o
         emitted := emitted.insert o.name.eraseMacroScopes
         progress := true
+      else
+        next := next.push o
     if progress then
       remaining := next
     else
-      -- Cycles should have been rejected or will fail during Lean elaboration. Preserve source
-      -- order
-      -- rather than hiding the underlying diagnostic behind the sorter.
-      ordered := ordered ++ remaining
-      remaining := #[]
+      throw <| lfModelFieldDependencyCycleMessage defValues fieldSourceNames emitted remaining
   return ordered ++ nonFields
 
 /-- Validate structural consistency of the generic LF model-obligation IR. -/
@@ -1553,8 +1669,11 @@ def validateLFModelObligations (checked : CheckedSignature) (admittedNames : Nam
     (mode : LFModelInterfaceMode := .full) : CommandElabM (Array LFModelObligation) := do
   let obs := lfModelObligationsForMode checked mode (lfModelObligations checked admittedNames)
   match validateLFModelObligationArray checked.name obs with
-  | .ok () => pure (orderLFModelFieldObligations obs)
   | .error msg => throwError msg
+  | .ok () =>
+      match orderLFModelFieldObligations checked obs with
+      | .ok obs => pure obs
+      | .error msg => throwError msg
 
 /-- Generated field-name map induced by renderable field obligations. -/
 def lfModelFieldNameMap (obs : Array LFModelObligation) : NameMap Name := Id.run do
@@ -2420,7 +2539,9 @@ def lfModelStructureCommandSyntax (checked : CheckedSignature) (structureName : 
               obligations. -/
               structure $structId:ident.{$[$levelIds:ident],*} where
                 $[$fields:structSimpleBinder]*)
-      pure cmd.raw
+      let autoImplicitOpt := mkIdent `autoImplicit
+      let wrapped ← `(command| set_option $autoImplicitOpt:ident false in $cmd:command)
+      pure wrapped.raw
   | some parent =>
       let parentId := mkIdent parent
       let cmd ←
@@ -2446,7 +2567,9 @@ def lfModelStructureCommandSyntax (checked : CheckedSignature) (structureName : 
               structure $structId:ident.{$[$levelIds:ident],*} extends
                 $parentId:ident.{$[$levelIds:ident],*} where
                 $[$fields:structSimpleBinder]*)
-      pure cmd.raw
+      let autoImplicitOpt := mkIdent `autoImplicit
+      let wrapped ← `(command| set_option $autoImplicitOpt:ident false in $cmd:command)
+      pure wrapped.raw
 
 /-- Syntax-level generated LF model structures from the generic LF model-obligation IR.
 
