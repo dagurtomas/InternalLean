@@ -363,7 +363,7 @@ def findInternalApplyCandidate? (target : InternalDefTarget) (sig : HLSignature)
       let (params, conclusionResult) := splitObjectTelescope typeExpr
       return some { name := n, params, conclusionExpr := conclusionResult }
   if let some thm := sig.lfJudgmentTheorems.find? (fun t => sameObjectName t.name n) then
-    return some { name := n, conclusionExpr := thm.judgmentExpr }
+    return some { name := n, params := thm.binders, conclusionExpr := thm.judgmentExpr }
   if let some ruleDecl := sig.rules.find? (fun r => sameObjectName r.name n) then
     let subgoals := ruleDecl.premises.map (fun prem => prem.judgmentExpr)
     let sideConditions := ruleDecl.sideConditions.map fun sc =>
@@ -1848,6 +1848,18 @@ mutual
     pure (mkObjectApps (.ident cand.name) outArgs)
 end
 
+/-- Compute a candidate's conclusion after the compiled application has supplied its parameters. -/
+def internalCandidateConclusionFromCompiledApp? (cand : InternalApplyCandidate) (value : ObjExpr) :
+    Option ObjExpr :=
+  let args := (splitObjApp value).2
+  if args.size < cand.params.size then
+    none
+  else Id.run do
+    let mut subst : NameMap ObjExpr := {}
+    for param in cand.params, arg in args.extract 0 cand.params.size do
+      subst := subst.insert param.name.eraseMacroScopes (eraseObjExprScopes arg)
+    some (substObjectVars subst cand.conclusionExpr)
+
 /-- Convert a direct internal term with `_` placeholders into tactic-argument syntax. -/
 partial def internalDirectTermTacticArg (e : ObjExpr) : InternalTacticArg :=
   let e := eraseObjExprScopes e
@@ -1870,21 +1882,55 @@ def elaborateInternalDirectTermPlaceholders (target : InternalDefTarget) (sig : 
   let value := eraseObjExprScopes value
   unless internalObjExprMentionsName `_ value do
     return value
+  let contextMsg :=
+    if ctx.isEmpty then "" else s!"\n\nInternal context:\n{renderInternalObjectContext ctx}"
   let (head, args) := splitObjApp value
   match head with
   | .ident n =>
       if n.eraseMacroScopes == `_ && args.isEmpty then
         throw s!"cannot infer direct internal placeholder `_` for expected type\n  \
-          {diagnosticObjExprString expected}"
+          {diagnosticObjExprString expected}{contextMsg}"
       else
-        compileInternalCompleteCandidateArg target sig { ctx := ctx, target := expected } n
-          (args.map internalDirectTermTacticArg) "direct term"
+        match compileInternalCompleteCandidateArg target sig { ctx := ctx, target := expected } n
+            (args.map internalDirectTermTacticArg) "direct term" with
+        | .ok value => pure value
+        | .error err =>
+            throw <| String.intercalate "\n" [
+              err,
+              "",
+              s!"Expected internal type:\n  {diagnosticObjExprString expected}" ++ contextMsg]
   | _ =>
       throw <| String.intercalate "\n" [
         s!"unsupported direct internal placeholder in term\n  {diagnosticObjExprString value}",
         "",
         "Placeholders are currently supported in applications headed by a rule, theorem, or \
           internal declaration." ]
+
+/-- Elaborate and check a term-mode `have` proof against its annotated internal type. -/
+def elaborateInternalHaveTermProof (target : InternalDefTarget) (sig : HLSignature)
+    (levels : Array Name) (ctx : Array HLBinding) (expected proof : ObjExpr) (haveName : Name) :
+    Except String ObjExpr := do
+  let proof ← elaborateInternalDirectTermPlaceholders target sig ctx expected proof
+  let (head, args) := splitObjApp proof
+  match head with
+  | .ident n =>
+      if let some cand := findInternalApplyCandidate? target sig n then
+        let proof ←
+          compileInternalCompleteCandidateArg target sig { ctx := ctx, target := expected } n
+            (args.map fun arg => InternalTacticArg.expr arg) "have"
+        if let some actual := internalCandidateConclusionFromCompiledApp? cand proof then
+          unless objectGoalsConvertible sig levels ctx actual expected do
+            throw <| String.intercalate "\n" [
+              s!"object tactic `have {haveName}` supplied proof '{n}'",
+              s!"with statement\n  {diagnosticObjExprString actual}",
+              s!"for annotated type\n  {diagnosticObjExprString expected}",
+              "",
+              objectGoalNormalizationMismatchString sig ctx actual expected]
+        pure proof
+      else
+        checkInternalPremiseProofExpr target sig levels ctx proof expected "have" haveName
+        pure proof
+  | _ => pure proof
 
 mutual
   /-- Diagnostic elaboration of a nested tactic argument, replacing each `?_` by a stable
@@ -2700,7 +2746,7 @@ mutual
         if internalObjectContextHasName goal.ctx n then
           throw <| s!"object tactic `have {n}` failed: local name '{n}' is already " ++
             "in the object context"
-        let proofExpr ← elaborateInternalDirectTermPlaceholders target sig goal.ctx type proof
+        let proofExpr ← elaborateInternalHaveTermProof target sig levels goal.ctx type proof n
         let nextGoal := {
           goal with ctx := goal.ctx.push { name := n, typeExpr := type, visibility := .explicit } }
         let (termExpr, nextIdx) ← compileInternalObjectGoal target sig levels steps (idx + 1)

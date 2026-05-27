@@ -21,13 +21,23 @@ open Lean
 namespace InternalLeanTest.IntroUXTest
 
 #guard
+  let app2 (f a b : Name) : InternalLean.ObjExpr :=
+    .app (.app (.ident f) (.ident a)) (.ident b)
   let sig : InternalLean.HLSignature := {
     name := `HoverSmoke,
-    rules := #[{ name := `reach_refl, conclusionExpr := .app (.ident `Reach) (.ident `x) }] }
+    rules := #[{
+      name := `reach_of_step,
+      params := #[
+        { name := `src, typeExpr := .ident `Node },
+        { name := `tgt, typeExpr := .ident `Node }],
+      premises := #[{ name := `edge, judgmentExpr := app2 `Step `src `tgt }],
+      conclusionExpr := app2 `Reach `src `tgt }] }
   let target : InternalLean.InternalDefTarget := {
     theoryName := `HoverSmoke, localName := `demo, anchorName := `demo }
-  match InternalLean.internalObjectHover? target sig { target := .ident `Goal } `reach_refl with
-  | some hover => hover.kind == "rule" && hover.name == `reach_refl
+  match InternalLean.internalObjectHover? target sig { target := .ident `Goal } `reach_of_step with
+  | some hover =>
+      hover.kind == "rule" && hover.name == `reach_of_step &&
+        hover.typeOrStatement.contains "src" && hover.typeOrStatement.contains "edge"
   | none => false
 
 end InternalLeanTest.IntroUXTest
@@ -64,10 +74,29 @@ internal def direct_placeholder : Reach mid finish :=
 internal def direct_placeholder_nested : Reach start finish :=
   reach_trans _ mid _ reach_start_mid direct_placeholder
 
+/-- error: cannot infer direct internal placeholder `_` for expected type
+  Node -/
+#guard_msgs in
+internal def bad_direct_placeholder : Node := _
+
 internal def have_term_mode : Reach start finish := by
   have left : Reach start mid := reach_start_mid
   have right : Reach mid finish := reach_of_step mid finish step_mid_finish
   exact reach_trans start mid finish left right
+
+/-- error: object tactic `have` failed to elaborate nested application `reach_refl`: conclusion
+  Reach x x
+does not match current goal
+  Reach start mid
+
+normalized actual: Reach x x
+normalized expected: Reach start mid
+LF definitions mentioned before unfolding: none
+LF definitions unfolded: none -/
+#guard_msgs in
+internal def bad_have_term_type : Reach start start := by
+  have h : Reach start mid := reach_refl start
+  exact reach_refl start
 
 /-- error: object tactic `have h` is missing `end`; write `have h : ... := by ... end` or use
 term-mode `have h : ... := proof` -/
