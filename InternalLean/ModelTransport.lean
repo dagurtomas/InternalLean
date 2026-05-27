@@ -214,10 +214,7 @@ elab "#print_lf_model_skeleton " theory:ident : command => do
   let exportCmds ←
     LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxes checked structureName
       admittedNames
-  let equivCmd ←
-    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName admittedNames
-  let parts ← (cmds ++ exportCmds ++ #[equivCmd]).mapM
-    LeanTypeModelGeneration.ppCommandSyntaxString
+  let parts ← (cmds ++ exportCmds).mapM LeanTypeModelGeneration.ppCommandSyntaxString
   logInfo m!"{String.intercalate "\n" parts.toList}"
 
 /-- Print derived LF theorem statements over a model, computed from derived-declaration obligations.
@@ -271,12 +268,31 @@ elab "generate_lf_model_structure " theory:ident " as " structureName:ident : co
       admittedNames
   for cmd in exportCmds do
     elabGeneratedCommandSyntaxInModelNamespace theory.getId structureName.getId cmd
+  LeanTypeModelGeneration.addLFModelStructureFieldDocStrings theory.getId structureName.getId
+    checked admittedNames
+
+/-- Print the strict structural-equivalence structure for an LF-model interface. -/
+elab "#print_lf_model_structural_equiv " theory:ident " for " structureName:ident : command => do
+  let some checked ← liftCoreM <| getCheckedTheory? theory.getId
+    | throwError "no checked artifact stored for type theory '{theory.getId}'"
+  let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
+  let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
   let equivCmd ←
     LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName.getId
       admittedNames
-  elabGeneratedCommandSyntaxInModelNamespace theory.getId structureName.getId equivCmd
-  LeanTypeModelGeneration.addLFModelStructureFieldDocStrings theory.getId structureName.getId
-    checked admittedNames
+  logInfo m!"{← LeanTypeModelGeneration.ppCommandSyntaxString equivCmd}"
+
+/-- Generate the strict structural-equivalence structure for an LF-model interface. -/
+elab "generate_lf_model_structural_equiv " theory:ident " for " structureName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_lf_model_structural_equiv"
+  let some checked ← liftCoreM <| getCheckedTheory? theory.getId
+    | throwError "no checked artifact stored for type theory '{theory.getId}'"
+  let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
+  let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  let equivCmd ←
+    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName.getId
+      admittedNames
+  elabGeneratedCommandSyntaxInModelNamespaceNoHeartbeats theory.getId structureName.getId equivCmd
 
 /-- Check that every checked LF theorem derivation has a generated derived theorem term. -/
 elab "#check_lf_model_derived_theorems " theory:ident " for " structureName:ident : command => do
@@ -761,11 +777,7 @@ elab "#print_model_interface " theory:ident " as " structureName:ident : command
   let exportCmds ←
     LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxes checked structureName.getId
       admittedNames
-  let equivCmd ←
-    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName.getId
-      admittedNames
-  let parts ← (cmds ++ exportCmds ++ #[equivCmd]).mapM
-    LeanTypeModelGeneration.ppCommandSyntaxString
+  let parts ← (cmds ++ exportCmds).mapM LeanTypeModelGeneration.ppCommandSyntaxString
   let guide ←
     LeanTypeModelGeneration.lfModelInterfaceGuideString theory.getId structureName.getId checked
       admittedNames
@@ -783,15 +795,59 @@ elab "#print_public_model_interface " theory:ident " as " structureName:ident : 
   let exportCmds ←
     LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxes checked structureName.getId
       admittedNames .publicMode
-  let equivCmd ←
-    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName.getId
-      admittedNames .publicMode
-  let parts ← (cmds ++ exportCmds ++ #[equivCmd]).mapM
-    LeanTypeModelGeneration.ppCommandSyntaxString
+  let parts ← (cmds ++ exportCmds).mapM LeanTypeModelGeneration.ppCommandSyntaxString
   let guide ←
     LeanTypeModelGeneration.lfModelInterfaceGuideString theory.getId structureName.getId checked
       admittedNames .publicMode
   logInfo m!"{guide}\n\n{String.intercalate "\n" parts.toList}"
+
+/-- Print the optional strict structural-equivalence structure for a model interface. -/
+elab "#print_model_structural_equiv " theory:ident " for " structureName:ident : command => do
+  let some checked ← liftCoreM <| getCheckedTheory? theory.getId
+    | throwError "no checked artifact stored for type theory '{theory.getId}'"
+  let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
+  let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  let equivCmd ←
+    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName.getId
+      admittedNames
+  logInfo m!"{← LeanTypeModelGeneration.ppCommandSyntaxString equivCmd}"
+
+/-- Print the optional public/minimal strict structural-equivalence structure. -/
+elab "#print_public_model_structural_equiv \
+  " theory:ident " for " structureName:ident : command => do
+  let some checked ← liftCoreM <| getCheckedTheory? theory.getId
+    | throwError "no checked artifact stored for type theory '{theory.getId}'"
+  let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
+  let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  let equivCmd ←
+    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName.getId
+      admittedNames .publicMode
+  logInfo m!"{← LeanTypeModelGeneration.ppCommandSyntaxString equivCmd}"
+
+/-- Generate the optional strict structural-equivalence structure for a model interface. -/
+elab "generate_model_structural_equiv " theory:ident " for " structureName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_model_structural_equiv"
+  let some checked ← liftCoreM <| getCheckedTheory? theory.getId
+    | throwError "no checked artifact stored for type theory '{theory.getId}'"
+  let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
+  let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  let equivCmd ←
+    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName.getId
+      admittedNames
+  elabGeneratedCommandSyntaxInModelNamespaceNoHeartbeats theory.getId structureName.getId equivCmd
+
+/-- Generate the optional public/minimal strict structural-equivalence structure. -/
+elab "generate_public_model_structural_equiv \
+  " theory:ident " for " structureName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_public_model_structural_equiv"
+  let some checked ← liftCoreM <| getCheckedTheory? theory.getId
+    | throwError "no checked artifact stored for type theory '{theory.getId}'"
+  let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
+  let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  let equivCmd ←
+    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName.getId
+      admittedNames .publicMode
+  elabGeneratedCommandSyntaxInModelNamespaceNoHeartbeats theory.getId structureName.getId equivCmd
 
 /-- Generate a model interface using the LF workflow backend. -/
 elab "generate_model_interface " theory:ident " as " structureName:ident : command => do
@@ -811,10 +867,6 @@ elab "generate_model_interface " theory:ident " as " structureName:ident : comma
       admittedNames
   for cmd in exportCmds do
     elabGeneratedCommandSyntaxInModelNamespace theory.getId structureName.getId cmd
-  let equivCmd ←
-    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName.getId
-      admittedNames
-  elabGeneratedCommandSyntaxInModelNamespace theory.getId structureName.getId equivCmd
   LeanTypeModelGeneration.addLFModelStructureFieldDocStrings theory.getId structureName.getId
     checked admittedNames
 
@@ -837,10 +889,6 @@ elab "generate_public_model_interface " theory:ident " as " structureName:ident 
       admittedNames .publicMode
   for cmd in exportCmds do
     elabGeneratedCommandSyntaxInModelNamespace theory.getId structureName.getId cmd
-  let equivCmd ←
-    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName.getId
-      admittedNames .publicMode
-  elabGeneratedCommandSyntaxInModelNamespace theory.getId structureName.getId equivCmd
   LeanTypeModelGeneration.addLFModelStructureFieldDocStrings theory.getId structureName.getId
     checked admittedNames .publicMode
 
@@ -858,10 +906,6 @@ elab "generate_model_section_interface " theory:ident " as " structureName:ident
   LeanTypeModelGeneration.addLFModelInterfaceNamesLibrarySuggestionDenyList generatedNames
   for cmd in cmds do
     elabGeneratedCommandSyntaxInTheoryNamespace theory.getId cmd
-  let equivCmd ←
-    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName.getId
-      admittedNames
-  elabGeneratedCommandSyntaxInModelNamespace theory.getId structureName.getId equivCmd
 
 /-- Generate a public/minimal sectioned model interface from theory-local `model_section` metadata.
 -/
@@ -879,10 +923,6 @@ elab "generate_public_model_section_interface " theory:ident " as " structureNam
   LeanTypeModelGeneration.addLFModelInterfaceNamesLibrarySuggestionDenyList generatedNames
   for cmd in cmds do
     elabGeneratedCommandSyntaxInTheoryNamespace theory.getId cmd
-  let equivCmd ←
-    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName.getId
-      admittedNames .publicMode
-  elabGeneratedCommandSyntaxInModelNamespace theory.getId structureName.getId equivCmd
 
 /-- Generate a fast sectioned model-interface wrapper over an existing flat interface.
 
@@ -901,10 +941,6 @@ elab "generate_model_sections \
   let cmd ←
     LeanTypeModelGeneration.lfModelSectionWrapperCommandSyntax structureName.getId flatName.getId
   elabGeneratedCommandSyntaxInTheoryNamespace theory.getId cmd
-  let equivCmd ←
-    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName.getId
-      admittedNames
-  elabGeneratedCommandSyntaxInModelNamespace theory.getId structureName.getId equivCmd
 
 /-- Generate a fast public/minimal sectioned model-interface wrapper over an existing flat
 interface. -/
@@ -920,10 +956,6 @@ elab "generate_public_model_sections \
   let cmd ←
     LeanTypeModelGeneration.lfModelSectionWrapperCommandSyntax structureName.getId flatName.getId
   elabGeneratedCommandSyntaxInTheoryNamespace theory.getId cmd
-  let equivCmd ←
-    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked structureName.getId
-      admittedNames .publicMode
-  elabGeneratedCommandSyntaxInModelNamespace theory.getId structureName.getId equivCmd
 
 /-- Print true model-section bundle structures plus an adapter to an existing flat interface. -/
 elab "#print_model_section_bundles \
@@ -935,11 +967,7 @@ elab "#print_model_section_bundles \
   let (cmds, adapterCmd, _) ←
     LeanTypeModelGeneration.lfModelSectionBundleSyntaxes checked bundleName.getId flatName.getId
       admittedNames
-  let equivCmd ←
-    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked bundleName.getId
-      admittedNames
-  let parts ← ((cmds.push adapterCmd).push equivCmd).mapM
-    LeanTypeModelGeneration.ppCommandSyntaxString
+  let parts ← (cmds.push adapterCmd).mapM LeanTypeModelGeneration.ppCommandSyntaxString
   let guide ←
     LeanTypeModelGeneration.modelSectionBundleGuideString checked bundleName.getId flatName.getId
       admittedNames
@@ -956,11 +984,7 @@ elab "#print_public_model_section_bundles \
   let (cmds, adapterCmd, _) ←
     LeanTypeModelGeneration.lfModelSectionBundleSyntaxes checked bundleName.getId flatName.getId
       admittedNames .publicMode
-  let equivCmd ←
-    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked bundleName.getId
-      admittedNames .publicMode
-  let parts ← ((cmds.push adapterCmd).push equivCmd).mapM
-    LeanTypeModelGeneration.ppCommandSyntaxString
+  let parts ← (cmds.push adapterCmd).mapM LeanTypeModelGeneration.ppCommandSyntaxString
   let guide ←
     LeanTypeModelGeneration.modelSectionBundleGuideString checked bundleName.getId flatName.getId
       admittedNames .publicMode
@@ -982,10 +1006,6 @@ elab "generate_model_section_bundles \
   for cmd in cmds do
     elabGeneratedCommandSyntaxInTheoryNamespaceNoHeartbeats theory.getId cmd
   elabGeneratedCommandSyntaxInModelNamespaceNoHeartbeats theory.getId bundleName.getId adapterCmd
-  let equivCmd ←
-    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked bundleName.getId
-      admittedNames
-  elabGeneratedCommandSyntaxInModelNamespaceNoHeartbeats theory.getId bundleName.getId equivCmd
 
 /-- Generate true public/minimal model-section bundle structures plus an adapter to an existing flat
 interface. -/
@@ -1004,10 +1024,6 @@ elab "generate_public_model_section_bundles \
   for cmd in cmds do
     elabGeneratedCommandSyntaxInTheoryNamespaceNoHeartbeats theory.getId cmd
   elabGeneratedCommandSyntaxInModelNamespaceNoHeartbeats theory.getId bundleName.getId adapterCmd
-  let equivCmd ←
-    LeanTypeModelGeneration.lfModelStructuralEquivCommandSyntax checked bundleName.getId
-      admittedNames .publicMode
-  elabGeneratedCommandSyntaxInModelNamespaceNoHeartbeats theory.getId bundleName.getId equivCmd
 
 /-- Print a fillable LF model template with grouped holes and source documentation hints. -/
 elab "#print_model_template " theory:ident " as " structureName:ident : command => do

@@ -33,6 +33,7 @@ declare_type_theory LargeSortUniverse{u} where
   syntax_sort S : Type u
 
 generate_model_interface LargeSortUniverse as LargeSortUniverseModel
+generate_model_structural_equiv LargeSortUniverse for LargeSortUniverseModel
 
 /-- info: LargeSortUniverse.LargeSortUniverseModel.S.{u}
   (self : LargeSortUniverse.LargeSortUniverseModel) : Type u -/

@@ -1735,6 +1735,14 @@ def lfModelInterfaceGuideString (theoryName structureName : Name) (checked : Che
   lines :=
     lines.push s!"template command: `{templateCmd} {nameString theoryName} as \
       {nameString structureName}`"
+  let structuralPrintCmd := if mode == .publicMode then "#print_public_model_structural_equiv"
+    else "#print_model_structural_equiv"
+  let structuralGenerateCmd := if mode == .publicMode then "generate_public_model_structural_equiv"
+    else "generate_model_structural_equiv"
+  lines :=
+    lines.push s!"optional strict structural equivalence: `{structuralPrintCmd} \
+      {nameString theoryName} for {nameString structureName}` or `{structuralGenerateCmd} \
+        {nameString theoryName} for {nameString structureName}`"
   pure <| String.intercalate "\n" lines.toList
 
 /-- Human-readable contract for the generic LF model-obligation roles. -/

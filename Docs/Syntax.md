@@ -520,13 +520,18 @@ generate_model_interface T as M
 generate_public_model_interface T as M
 #print_model_template T as M
 #print_public_model_template T as M
+#print_model_structural_equiv T for M
+#print_public_model_structural_equiv T for M
+generate_model_structural_equiv T for M
+generate_public_model_structural_equiv T for M
 ```
 
 Generation commands must be run at the root namespace. Printing and checking commands are safe to
-use for inspection before generation. Generated interfaces include a nested `M.StructuralEquiv`
-structure for strict structure-preserving comparisons between completed models. Syntax-sort fields
-use the declared result universe: unannotated sorts generate `S : Type`, while
-`syntax_sort S : Type u` generates `S : Type u`.
+use for inspection before generation. Model interfaces do not include structural equivalences by
+default; use `generate_model_structural_equiv T for M` when strict structure-preserving
+comparisons between completed models are useful. Syntax-sort fields use the declared result
+universe: unannotated sorts generate `S : Type`, while `syntax_sort S : Type u` generates
+`S : Type u`.
 
 `generate_lf_model_structure T as M` is the older direct-LF spelling for the same flat interface
 generation path. Prefer `generate_model_interface T as M` in user-facing code.

@@ -111,10 +111,14 @@ blocked/omitted: none -/
 #print_model_section_template ModelWorkflowLF Core as BundledLFUXPreview
 #print_model_section_template ModelWorkflowLF Rules as BundledLFUXPreview
 #print_model_section_bundles ModelWorkflowLF as BundledLFUXPreview adapting LFUXModel
+#print_model_structural_equiv ModelWorkflowLF for LFUXModel
 
 generate_model_interface ModelWorkflowLF as LFUXModel
+generate_model_structural_equiv ModelWorkflowLF for LFUXModel
 generate_model_sections ModelWorkflowLF as SectionedLFUXModel adapting LFUXModel
 generate_model_section_bundles ModelWorkflowLF as BundledLFUXModel adapting LFUXModel
+
+#check ModelWorkflowLF.LFUXModel.StructuralEquiv
 
 /-- Concrete tiny LF model used to check generated dot-notation transports. -/
 def lfUXModelInstance : ModelWorkflowLF.LFUXModel where
@@ -294,10 +298,12 @@ declare_type_theory VisibilityLF where
 #check_public_model_obligations VisibilityLF
 #print_public_model_obligations VisibilityLF
 #print_public_model_interface VisibilityLF as PublicVisibilityModel
+#print_public_model_structural_equiv VisibilityLF for PublicVisibilityModel
 #print_public_model_template VisibilityLF as PublicVisibilityModel
 #print_public_model_section_template VisibilityLF Other as PublicVisibilityBundle
 
 generate_public_model_interface VisibilityLF as PublicVisibilityModel
+generate_public_model_structural_equiv VisibilityLF for PublicVisibilityModel
 generate_public_model_sections VisibilityLF as SectionedPublicVisibilityModel adapting
   PublicVisibilityModel
 
@@ -310,6 +316,7 @@ def publicVisibilityModelInstance : VisibilityLF.PublicVisibilityModel where
   good_intro := fun _ => ()
 
 #check VisibilityLF.PublicVisibilityModel.Pub
+#check VisibilityLF.PublicVisibilityModel.StructuralEquiv
 #check VisibilityLF.PublicVisibilityModel.Good
 #check VisibilityLF.PublicVisibilityModel.pub
 #check publicVisibilityModelInstance.good_intro

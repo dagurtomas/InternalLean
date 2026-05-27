@@ -319,15 +319,22 @@ those declarations to the environment.
 generate_model_interface TinyNat as TinyNatModel
 ```
 
-Generates the Lean model-interface structure, inherited projection exports, and a nested strict
-structural-equivalence structure. Run generation commands at the root namespace; InternalLean
-rejects generation under wrapper namespaces to keep Lean names deterministic. After this command,
-`TinyNatModel` is available as a Lean structure to instantiate.
+Generates the Lean model-interface structure and inherited projection exports. Run generation
+commands at the root namespace; InternalLean rejects generation under wrapper namespaces to keep
+Lean names deterministic. After this command, `TinyNatModel` is available as a Lean structure to
+instantiate.
 
-The generated structural equivalence is available as
-`TinyNat.TinyNatModel.StructuralEquiv`. A value of this type between two completed models contains
-`InternalLean.TypeEquiv` fields for generated type families and `HEq` preservation fields for
-operations and rules. It is a strict structure-preserving comparison of generated model fields.
+Strict structural equivalences are optional. To inspect or generate one, use:
+
+```lean
+#print_model_structural_equiv TinyNat for TinyNatModel
+generate_model_structural_equiv TinyNat for TinyNatModel
+```
+
+The generated structural equivalence is available as `TinyNat.TinyNatModel.StructuralEquiv`. A
+value of this type between two completed models contains `InternalLean.TypeEquiv` fields for
+generated type families and `HEq` preservation fields for operations and rules. It is a strict
+structure-preserving comparison of generated model fields.
 
 ```lean
 #print_model_template TinyNat as TinyNatModel

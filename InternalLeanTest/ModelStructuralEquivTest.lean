@@ -10,8 +10,8 @@ public import InternalLean.Command
 /-!
 # Generated structural model equivalence tests
 
-These tests check that model-interface generation also emits a strict structural-equivalence
-structure and that downstream code can use its generated fields to transport model data.
+These tests check that strict structural-equivalence generation is an explicit opt-in command and
+that downstream code can use its generated fields to transport model data.
 -/
 
 @[expose] public section
@@ -28,6 +28,12 @@ declare_type_theory ModelStructuralEquivBasic where
   rule rel_intro (x : Obj) : Rel x
 
 generate_model_interface ModelStructuralEquivBasic as StructuralEquivBasicModel
+
+/-- error: Unknown constant `ModelStructuralEquivBasic.StructuralEquivBasicModel.StructuralEquiv` -/
+#guard_msgs in
+#check ModelStructuralEquivBasic.StructuralEquivBasicModel.StructuralEquiv
+
+generate_model_structural_equiv ModelStructuralEquivBasic for StructuralEquivBasicModel
 
 #check ModelStructuralEquivBasic.StructuralEquivBasicModel.StructuralEquiv
 #check ModelStructuralEquivBasic.StructuralEquivBasicModel.StructuralEquiv.Obj_equiv
@@ -90,6 +96,7 @@ declare_type_theory ModelStructuralEquivDependent where
   lf_opaque mkTm (x : Obj) : Tm x
 
 generate_model_interface ModelStructuralEquivDependent as StructuralEquivDependentModel
+generate_model_structural_equiv ModelStructuralEquivDependent for StructuralEquivDependentModel
 
 #check ModelStructuralEquivDependent.StructuralEquivDependentModel.StructuralEquiv.Tm_equiv
 #check ModelStructuralEquivDependent.StructuralEquivDependentModel.StructuralEquiv.mkTm_preserve
@@ -131,6 +138,8 @@ declare_type_theory ModelStructuralEquivNameCollision where
   syntax_sort StructuralEquiv
 
 generate_model_interface ModelStructuralEquivNameCollision as StructuralEquivNameCollisionModel
+generate_model_structural_equiv ModelStructuralEquivNameCollision for
+  StructuralEquivNameCollisionModel
 
 #check ModelStructuralEquivNameCollision.StructuralEquivNameCollisionModel.StructuralEquiv
 #check ModelStructuralEquivNameCollision.StructuralEquivNameCollisionModel.StructuralEquiv1
