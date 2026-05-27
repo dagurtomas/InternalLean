@@ -827,6 +827,12 @@ def sourceDocRoleAndNameOfTTDecl? (decl : TSyntax `ttDecl) :
   | `(ttDecl| $doc:docComment syntax_sort $n:ident $bs:ttBinder*) =>
       let _ := doc.raw; let _ := bs.size
       pure <| some (.syntaxSort, n.getId)
+  | `(ttDecl| syntax_sort $n:ident $bs:ttBinder* : $result:ttExpr) =>
+      let _ := bs.size; let _ := result.raw
+      pure <| some (.syntaxSort, n.getId)
+  | `(ttDecl| $doc:docComment syntax_sort $n:ident $bs:ttBinder* : $result:ttExpr) =>
+      let _ := doc.raw; let _ := bs.size; let _ := result.raw
+      pure <| some (.syntaxSort, n.getId)
   | `(ttDecl| syntax_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) =>
       let _ := bs.size; let _ := value.raw
       pure <| some (.syntaxAbbrev, n.getId)

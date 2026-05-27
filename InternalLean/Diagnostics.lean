@@ -368,7 +368,8 @@ elab "#print_checked_type_theory " nm:ident : command => do
     | throwError "no checked artifact stored for type theory '{nm.getId}'"
   logInfo m!"checked type theory {checked.name}: {checked.summary}"
   for s in checked.lfSyntaxSorts do
-    logInfo m!"LF syntax_sort {s.name}: {s.arity} parameter(s)"
+    let result := if LevelExpr.equal s.resultLevel .zero then "Type" else s!"Type {s.resultLevel}"
+    logInfo m!"LF syntax_sort {s.name}: {s.arity} parameter(s), result {result}"
   for a in checked.lfSyntaxAbbrevs do
     logInfo m!"LF syntax_abbrev {a.name}: {a.params.size} parameter(s), expands to {a.value}"
   for role in checked.lfSyntaxSortRoles do

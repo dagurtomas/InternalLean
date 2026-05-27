@@ -209,6 +209,10 @@ partial def levelParams : ObjExpr → Array Name
 
 end ObjExpr
 
+/-- Object-expression universe/type expression for a normalized level. -/
+def objExprTypeOfLevel (u : LevelExpr) : ObjExpr :=
+  if LevelExpr.equal u .zero then .sort else .univ (LevelExpr.normalize u)
+
 /-- Internal marker used only while elaborating named implicit arguments like `{x := t}`. -/
 def implicitNamedArgHeadName : Name := `__implicitArg
 
@@ -348,6 +352,8 @@ structure SyntaxSortDecl where
   name : Name
   /-- Optional object-expression parameters indexing the syntactic category. -/
   params : Array HLBinding := #[]
+  /-- Result universe for the semantic carrier of this syntax sort in generated models. -/
+  resultLevel : LevelExpr := .zero
   deriving Inhabited, Repr, BEq
 
 /-- User-facing abbreviation for a syntax-sort-shaped LF expression.
@@ -696,6 +702,10 @@ structure CheckedLFBinding where
   head? : Option CheckedLFHead := none
   deriving Inhabited, Repr, BEq
 
+/-- Checked LF universe/type expression for a normalized level. -/
+def checkedLFTypeOfLevel (u : LevelExpr) : CheckedLFExpr :=
+  if LevelExpr.equal u .zero then .sort else .univ (LevelExpr.normalize u)
+
 /-- A checked LF parameter-evidence artifact. -/
 structure CheckedLFRuleParamEvidence where
   /-- Evidence premise name, with macro scopes erased. -/
@@ -744,6 +754,8 @@ structure CheckedLFSyntaxSort where
   params : Array CheckedLFBinding := #[]
   /-- Declared arity. -/
   arity : Nat := 0
+  /-- Result universe for the semantic carrier of this syntax sort in generated models. -/
+  resultLevel : LevelExpr := .zero
   deriving Inhabited, Repr, BEq
 
 /-- A checked syntax-sort-shaped abbreviation artifact. -/
@@ -1676,6 +1688,9 @@ syntax (name := ttBinderStx) "(" ident " : " ttExpr ")" : ttBinder
 syntax (name := ttImplicitBinderStx) "{" ident " : " ttExpr "}" : ttBinder
 syntax (name := ttSyntaxSortDeclStx) "syntax_sort" ident ttBinder* : ttDecl
 syntax (name := ttSyntaxSortDocDeclStx) atomic(docComment "syntax_sort") ident ttBinder* : ttDecl
+syntax (name := ttSyntaxSortTypedDeclStx) "syntax_sort" ident ttBinder* " : " ttExpr : ttDecl
+syntax (name := ttSyntaxSortTypedDocDeclStx)
+  atomic(docComment "syntax_sort") ident ttBinder* " : " ttExpr : ttDecl
 syntax (name := ttSyntaxAbbrevDeclStx) "syntax_abbrev" ident ttBinder* " := " ttExpr : ttDecl
 syntax (name := ttSyntaxAbbrevDocDeclStx)
   atomic(docComment "syntax_abbrev") ident ttBinder* " := " ttExpr : ttDecl
@@ -1873,6 +1888,16 @@ meta def elabHLBinding : TSyntax `ttBinder → CommandElabM HLBinding
       return { name := x.getId, typeExpr := (← elabObjExpr ty), visibility := .implicit }
   | stx => throwError "unsupported type-theory binder syntax:{indentD stx}"
 
+/-- Parse and validate a syntax-sort result universe annotation. -/
+meta def elabSyntaxSortResultLevel (sortName : Name) (tyStx : TSyntax `ttExpr) :
+    CommandElabM LevelExpr := do
+  match ← elabObjExpr tyStx with
+  | .sort => pure .zero
+  | .univ u => pure u
+  | _ =>
+      throwErrorAt tyStx "syntax_sort '{sortName}' result annotation must be an object universe \
+        (`Type`, `Type u`, `Type (u+1)`, ...)"
+
 /-- Parsed item in a future multi-premise rule declaration. -/
 inductive ParsedRuleItem where
   /-- A derivation premise. -/
@@ -1953,6 +1978,19 @@ meta def elabHLTheoryItem : TSyntax `ttDecl → CommandElabM HLTheoryItem
       let _ := doc.raw
       let bs ← bs.mapM elabHLBinding
       pure <| .syntaxSort { name := n.getId, params := bs }
+  | `(ttDecl| syntax_sort $n:ident $bs:ttBinder* : $result:ttExpr) => do
+      let bs ← bs.mapM elabHLBinding
+      pure <| .syntaxSort {
+        name := n.getId
+        params := bs
+        resultLevel := (← elabSyntaxSortResultLevel n.getId result) }
+  | `(ttDecl| $doc:docComment syntax_sort $n:ident $bs:ttBinder* : $result:ttExpr) => do
+      let _ := doc.raw
+      let bs ← bs.mapM elabHLBinding
+      pure <| .syntaxSort {
+        name := n.getId
+        params := bs
+        resultLevel := (← elabSyntaxSortResultLevel n.getId result) }
   | `(ttDecl| syntax_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
       let bs ← bs.mapM elabHLBinding
       pure <| .syntaxAbbrev { name := n.getId, params := bs, value := (← elabObjExpr value) }
@@ -2330,7 +2368,10 @@ namespace SyntaxSortDecl
 /-- Render a syntactic-sort declaration. -/
 def summary (d : SyntaxSortDecl) : MessageData :=
   let params := String.intercalate " " (d.params.toList.map HLBinding.summary)
-  m!"syntax_sort {d.name} {params}"
+  let paramText := if params.isEmpty then "" else s!" {params}"
+  let resultText :=
+    if LevelExpr.equal d.resultLevel .zero then "" else s!" : Type {d.resultLevel}"
+  m!"syntax_sort {d.name}{paramText}{resultText}"
 
 end SyntaxSortDecl
 

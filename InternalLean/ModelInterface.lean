@@ -112,11 +112,27 @@ def binderUsedAfter (binders : Array HLBinding) (result : ObjExpr) (i : Nat) : B
 def generatedInTheoryName (theoryName localName : Name) : Name :=
   theoryName ++ localName
 
+/-- Render an object universe expression as Lean universe syntax. -/
+partial def levelExprLeanSyntaxString : LevelExpr → String
+  | .zero => "0"
+  | .lit n => s!"{n}"
+  | .param n => s!"{n.eraseMacroScopes}"
+  | .succ u => s!"({levelExprLeanSyntaxString u} + 1)"
+  | .max u v => s!"max {atomString u} {atomString v}"
+where
+  atomString : LevelExpr → String
+    | .zero => "0"
+    | .lit n => s!"{n}"
+    | .param n => s!"{n.eraseMacroScopes}"
+    | u => s!"({levelExprLeanSyntaxString u})"
+
 /-- Interpret an object universe annotation as a Lean type universe in generated models.
 Direct-LF model interfaces are universe-polymorphic through their fields; this renderer preserves
 explicit LF universe parameters as Lean universe levels. -/
 def typeSyntaxOfLevel (u : LevelExpr) : CommandElabM (TSyntax `term) := do
-  let source := if LevelExpr.equal u .zero then "Type" else s!"Type {u}"
+  let u := LevelExpr.normalize u
+  let source := if LevelExpr.equal u .zero then "Type" else
+    s!"Type {levelExprLeanSyntaxString u}"
   match Lean.Parser.runParserCategory (← getEnv) `term source with
   | .ok stx => pure ⟨stx⟩
   | .error err => throwError "failed to render generated universe syntax '{source}': {err}"
@@ -659,7 +675,7 @@ def lfFieldSyntax (doc : String) (name : Name) (typeStx : TSyntax `term) :
 /-- Field for a checked LF syntax sort, interpreted as a Lean type family. -/
 def lfSyntaxSortFieldSyntax (defValues : NameMap CheckedLFExpr) (s : CheckedLFSyntaxSort) :
     CommandElabM (TSyntax `Lean.Parser.Command.structSimpleBinder) := do
-  let result ← `(Type)
+  let result ← typeSyntaxOfLevel s.resultLevel
   let ty ← lfTelescopeSyntaxInModel defValues s.params result
   lfFieldSyntax "syntax sort" s.name ty
 
@@ -1233,6 +1249,112 @@ def lfModelObligationRenderedFieldDependencies (defValues : NameMap CheckedLFExp
       lfExprRenderedFieldDependencies defValues targetNames locals {} s.checkedInput
   return out
 
+/-- Universe-level parameters occurring in one object-level universe expression. -/
+def levelExprParamSet (u : LevelExpr) : NameSet :=
+  u.params.foldl (fun acc n => acc.insert n.eraseMacroScopes) {}
+
+/-- Universe parameters introduced by rendering a checked LF expression in a model structure.
+
+This mirrors field rendering: checked LF definitions are expanded before syntax is produced. -/
+partial def lfExprRenderedLevelParams (defValues : NameMap CheckedLFExpr)
+    (locals visitedDefs : NameSet) : CheckedLFExpr → NameSet
+  | .ident h =>
+      let n := h.name.eraseMacroScopes
+      if h.kind == .local || locals.contains n then
+        {}
+      else if h.kind == .lfDefinition then
+        match lfDefinitionValue? defValues n with
+        | some value =>
+            if visitedDefs.contains n then {}
+            else lfExprRenderedLevelParams defValues locals (visitedDefs.insert n) value
+        | none => {}
+      else
+        {}
+  | .sort => {}
+  | .univ u => levelExprParamSet u
+  | .app f a =>
+      insertNameSet (lfExprRenderedLevelParams defValues locals visitedDefs f)
+        (lfExprRenderedLevelParams defValues locals visitedDefs a)
+  | .arrow none A B =>
+      insertNameSet (lfExprRenderedLevelParams defValues locals visitedDefs A)
+        (lfExprRenderedLevelParams defValues locals visitedDefs B)
+  | .arrow (some x) A B =>
+      let paramsA := lfExprRenderedLevelParams defValues locals visitedDefs A
+      let locals := locals.insert x.eraseMacroScopes
+      insertNameSet paramsA (lfExprRenderedLevelParams defValues locals visitedDefs B)
+  | .lam xs body =>
+      let locals := xs.foldl (fun acc x => acc.insert x.eraseMacroScopes) locals
+      lfExprRenderedLevelParams defValues locals visitedDefs body
+  | .jeq lhs rhs =>
+      insertNameSet (lfExprRenderedLevelParams defValues locals visitedDefs lhs)
+        (lfExprRenderedLevelParams defValues locals visitedDefs rhs)
+
+/-- Universe parameters introduced by rendering a source LF expression in a model structure. -/
+partial def lfObjExprRenderedLevelParams (defValues : NameMap CheckedLFExpr)
+    (locals visitedDefs : NameSet) : ObjExpr → NameSet
+  | .ident n =>
+      let n := n.eraseMacroScopes
+      if locals.contains n then
+        {}
+      else
+        match lfDefinitionValue? defValues n with
+        | some value =>
+            if visitedDefs.contains n then {}
+            else lfExprRenderedLevelParams defValues locals (visitedDefs.insert n) value
+        | none => {}
+  | .sort => {}
+  | .univ u => levelExprParamSet u
+  | .app f a =>
+      insertNameSet (lfObjExprRenderedLevelParams defValues locals visitedDefs f)
+        (lfObjExprRenderedLevelParams defValues locals visitedDefs a)
+  | .arrow none A B | .funArrow none A B =>
+      insertNameSet (lfObjExprRenderedLevelParams defValues locals visitedDefs A)
+        (lfObjExprRenderedLevelParams defValues locals visitedDefs B)
+  | .arrow (some x) A B | .funArrow (some x) A B =>
+      let paramsA := lfObjExprRenderedLevelParams defValues locals visitedDefs A
+      let locals := locals.insert x.eraseMacroScopes
+      insertNameSet paramsA (lfObjExprRenderedLevelParams defValues locals visitedDefs B)
+  | .lam xs body =>
+      let locals := xs.foldl (fun acc x => acc.insert x.eraseMacroScopes) locals
+      lfObjExprRenderedLevelParams defValues locals visitedDefs body
+  | .jeq lhs rhs =>
+      insertNameSet (lfObjExprRenderedLevelParams defValues locals visitedDefs lhs)
+        (lfObjExprRenderedLevelParams defValues locals visitedDefs rhs)
+
+/-- Universe parameters that can occur in the rendered type of one model-interface field. -/
+def lfModelObligationRenderedLevelParams (defValues : NameMap CheckedLFExpr)
+    (blockingUntyped sidePredicateNames : NameSet) (o : LFModelObligation) : NameSet := Id.run do
+  let mut out : NameSet := {}
+  let mut locals : NameSet := {}
+  for p in o.params do
+    out := insertNameSet out <| lfExprRenderedLevelParams defValues locals {} p.checkedTypeExpr
+    locals := locals.insert p.name.eraseMacroScopes
+  if let some e := o.typeExpr? then
+    out := insertNameSet out <| lfExprRenderedLevelParams defValues locals {} e
+  if let some e := o.sourceObjExpr? then
+    out := insertNameSet out <| lfObjExprRenderedLevelParams defValues locals {} e
+  for p in o.premises do
+    out := insertNameSet out <| lfExprRenderedLevelParams defValues locals {}
+      p.checkedJudgmentExpr
+  for e in o.paramEvidences do
+    out := insertNameSet out <| lfExprRenderedLevelParams defValues locals {}
+      e.checkedJudgmentExpr
+  for s in o.sideConditions do
+    if lfExprRenderableInModel defValues blockingUntyped sidePredicateNames s.checkedInput then
+      out := insertNameSet out <| lfExprRenderedLevelParams defValues locals {} s.checkedInput
+  return out
+
+/-- Keep level parameters in the order declared by the checked theory. -/
+def orderedModelLevelParams (checked : CheckedSignature) (used : NameSet) : Array Name :=
+  checked.levelParams.filter (fun u => used.contains u.eraseMacroScopes)
+
+/-- Ordered union of several generated structure universe-parameter lists. -/
+def orderedModelLevelParamUnion (checked : CheckedSignature) (levelSets : Array (Array Name)) :
+    Array Name :=
+  let used := levelSets.foldl (init := {}) fun acc levels =>
+    levels.foldl (fun acc u => acc.insert u.eraseMacroScopes) acc
+  orderedModelLevelParams checked used
+
 /-- Typed admitted opaque obligations, i.e. admissions that can become temporary model fields. -/
 def lfModelTypedAdmittedObligationNames (obs : Array LFModelObligation) : NameSet :=
   obs.foldl (init := {}) fun acc o =>
@@ -1342,7 +1464,7 @@ def lfModelObligations (checked : CheckedSignature) (admittedNames : NameSet := 
     out := out.push {
       name := s.name, source := .syntaxSort, generatedRole := .field,
       generatedName? := some s.name, params := s.params, paramCount := s.params.size,
-      typeExpr? := some .sort }
+      typeExpr? := some (checkedLFTypeOfLevel s.resultLevel) }
   for c in checked.lfOpaqueConsts do
     match c.checkedTypeExpr? with
     | some ty =>
@@ -1643,8 +1765,8 @@ def lfModelContractString (checked : CheckedSignature) : String :=
       generated upstream",
     "  field names are checked for duplicates and field/derived-declaration collisions",
     "  derived theorem parameter names are checked for duplicates and model-field collisions",
-    "  generic LF-model structure fields currently render LF universes as Lean Type / explicit \
-      Type levels from LF syntax"]
+    "  generic LF-model structure fields render unannotated syntax sorts as Lean Type and \
+      preserve explicit LF universe levels from LF syntax"]
 
 /-- Whether a generated Lean model field/declaration name is a safe simple identifier. -/
 def isSafeGeneratedLFModelName (n : Name) : Bool :=
@@ -1782,6 +1904,20 @@ def validateLFModelObligations (checked : CheckedSignature) (admittedNames : Nam
       match orderLFModelFieldObligations checked obs with
       | .ok obs => pure obs
       | .error msg => throwError msg
+
+/-- Universe parameters used by all renderable model fields in one generated interface mode. -/
+def lfModelInterfaceLevelParams (checked : CheckedSignature) (admittedNames : NameSet := {})
+    (mode : LFModelInterfaceMode := .full) : CommandElabM (Array Name) := do
+  let obs ← validateLFModelObligations checked admittedNames mode
+  let defValues := lfDefinitionValueMap checked
+  let blockingUntyped := blockingUntypedLFOpaqueNames checked
+  let sidePredicateNames := lfSideConditionPredicateNames checked
+  let mut used : NameSet := {}
+  for o in obs do
+    if o.generatedRole == .field && o.renderable then
+      used := insertNameSet used <|
+        lfModelObligationRenderedLevelParams defValues blockingUntyped sidePredicateNames o
+  pure (orderedModelLevelParams checked used)
 
 /-- Emit the default warning for temporary admitted-definition model fields, if any. -/
 def warnTemporaryAdmissionFieldsIfAny (checked : CheckedSignature)
@@ -2241,7 +2377,7 @@ def lfStructuralFieldBindersAndResult? (defValues : NameMap CheckedLFExpr)
       Option (Array LFStructuralBinder × CheckedLFExpr) :=
   match o.source with
   | .syntaxSort | .judgment | .sideConditionPredicate =>
-      some (o.params.map LFStructuralBinder.ofChecked, .sort)
+      some (o.params.map LFStructuralBinder.ofChecked, o.typeExpr?.getD .sort)
   | .typedOpaque | .admittedOpaque => do
       let typeExpr ← o.typeExpr?
       let (arrowBinders, result) :=
@@ -2677,7 +2813,8 @@ def lfModelStructuralEquivCommandSyntax (checked : CheckedSignature) (structureN
   let modelId := mkIdent structureName
   let M := mkIdent `M
   let N := mkIdent `N
-  let levelIds := checked.levelParams.map (mkIdent ·.eraseMacroScopes)
+  let levelParams ← lfModelInterfaceLevelParams checked admittedNames mode
+  let levelIds := levelParams.map (mkIdent ·.eraseMacroScopes)
   let cmd ←
     if levelIds.isEmpty then
       `(command| /-- Strict structural equivalence between generated LF model instances. -/
@@ -2989,7 +3126,9 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
       name"
   match o.source with
   | .syntaxSort | .judgment | .sideConditionPredicate =>
-      let result ← `(Type)
+      let some typeExpr := o.typeExpr?
+        | throwError "LF model field obligation '{o.name}' has no checked type expression"
+      let result ← expr [] typeExpr
       let ty ← telescope o.params result
       some <$> lfFieldSyntax o.source.label generatedName ty
   | .typedOpaque | .admittedOpaque =>
@@ -3046,7 +3185,9 @@ def lfModelObligationFieldSyntax? (fieldNames : NameMap Name) (defValues : NameM
       name"
   match o.source with
   | .syntaxSort | .judgment | .sideConditionPredicate =>
-      let result ← `(Type)
+      let some typeExpr := o.typeExpr?
+        | throwError "LF model field obligation '{o.name}' has no checked type expression"
+      let result ← lfExprSyntaxInModelWithFields fieldNames defValues [] paramVis typeExpr
       let ty ← lfTelescopeSyntaxInModelWithFields fieldNames defValues o.params result [] 0 paramVis
       some <$> lfFieldSyntax o.source.label generatedName ty
   | .typedOpaque | .admittedOpaque =>
@@ -3236,10 +3377,32 @@ def chunkLFModelStructureFields (fields : Array (TSyntax `Lean.Parser.Command.st
     chunks := chunks.push current
   return chunks
 
+/-- Rendered model field together with the universe parameters needed by its type. -/
+structure LFRenderedModelField where
+  obligation : LFModelObligation
+  fieldSyntax : TSyntax `Lean.Parser.Command.structSimpleBinder
+  levelParams : Array Name
+
+/-- Split rendered generated structure fields into nonempty chunks, preserving order. -/
+def chunkLFRenderedModelFields (fields : Array LFRenderedModelField)
+    (chunkSize : Nat := lfModelStructureChunkSize) : Array (Array LFRenderedModelField) := Id.run do
+  if fields.isEmpty then
+    return #[#[]]
+  let chunkSize := if chunkSize == 0 then fields.size else chunkSize
+  let mut chunks := #[]
+  let mut current := #[]
+  for field in fields do
+    current := current.push field
+    if current.size == chunkSize then
+      chunks := chunks.push current
+      current := #[]
+  unless current.isEmpty do
+    chunks := chunks.push current
+  return chunks
+
 /-- Render all generated LF-model fields from the generic model-obligation IR. -/
-def lfModelStructureFieldSyntaxes (checked : CheckedSignature) (admittedNames : NameSet := {})
-    (mode : LFModelInterfaceMode := .full) :
-    CommandElabM (Array (TSyntax `Lean.Parser.Command.structSimpleBinder)) := do
+def lfModelStructureRenderedFields (checked : CheckedSignature) (admittedNames : NameSet := {})
+    (mode : LFModelInterfaceMode := .full) : CommandElabM (Array LFRenderedModelField) := do
   let obs ← validateLFModelObligations checked admittedNames mode
   let fieldNames := lfModelFieldNameMap obs
   let paramVis := lfParamVisibilityMapOfObligations obs
@@ -3251,19 +3414,31 @@ def lfModelStructureFieldSyntaxes (checked : CheckedSignature) (admittedNames : 
     if let some field ←
       lfModelObligationFieldSyntax? fieldNames defValues paramVis blockingUntyped
         sidePredicateNames o then
-      fields := fields.push field
+      let used :=
+        lfModelObligationRenderedLevelParams defValues blockingUntyped sidePredicateNames o
+      fields := fields.push {
+        obligation := o
+        fieldSyntax := field
+        levelParams := orderedModelLevelParams checked used }
   pure fields
 
+/-- Render all generated LF-model field syntaxes from the generic model-obligation IR. -/
+def lfModelStructureFieldSyntaxes (checked : CheckedSignature) (admittedNames : NameSet := {})
+    (mode : LFModelInterfaceMode := .full) :
+    CommandElabM (Array (TSyntax `Lean.Parser.Command.structSimpleBinder)) := do
+  let fields ← lfModelStructureRenderedFields checked admittedNames mode
+  pure (fields.map (·.fieldSyntax))
+
 /-- Syntax for one generated LF-model structure or internal structure chunk. -/
-def lfModelStructureCommandSyntax (checked : CheckedSignature) (structureName : Name)
-    (fields : Array (TSyntax `Lean.Parser.Command.structSimpleBinder)) (parent? : Option Name :=
-      none)
+def lfModelStructureCommandSyntax (_checked : CheckedSignature) (structureName : Name)
+    (fields : Array (TSyntax `Lean.Parser.Command.structSimpleBinder))
+    (levelParams : Array Name := #[]) (parent? : Option (Name × Array Name) := none)
     (internalChunk : Bool := false) : CommandElabM Syntax := do
   let structId := mkIdent structureName
-  let levelIds := checked.levelParams.map (mkIdent ·.eraseMacroScopes)
-  match parent? with
-  | none =>
-      let cmd ←
+  let levelIds := levelParams.map (mkIdent ·.eraseMacroScopes)
+  let cmd ←
+    match parent? with
+    | none =>
         if levelIds.isEmpty then
           if internalChunk then
             `(command| /-- Internal chunk of a generated LF model interface. -/
@@ -3284,12 +3459,9 @@ def lfModelStructureCommandSyntax (checked : CheckedSignature) (structureName : 
               obligations. -/
               structure $structId:ident.{$[$levelIds:ident],*} where
                 $[$fields:structSimpleBinder]*)
-      let autoImplicitOpt := mkIdent `autoImplicit
-      let wrapped ← `(command| set_option $autoImplicitOpt:ident false in $cmd:command)
-      pure wrapped.raw
-  | some parent =>
-      let parentId := mkIdent parent
-      let cmd ←
+    | some (parent, parentLevels) =>
+        let parentId := mkIdent parent
+        let parentLevelIds := parentLevels.map (mkIdent ·.eraseMacroScopes)
         if levelIds.isEmpty then
           if internalChunk then
             `(command| /-- Internal chunk of a generated LF model interface. -/
@@ -3300,21 +3472,31 @@ def lfModelStructureCommandSyntax (checked : CheckedSignature) (structureName : 
               obligations. -/
               structure $structId:ident extends $parentId:ident where
                 $[$fields:structSimpleBinder]*)
+        else if parentLevelIds.isEmpty then
+          if internalChunk then
+            `(command| /-- Internal chunk of a generated LF model interface. -/
+              structure $structId:ident.{$[$levelIds:ident],*} extends $parentId:ident where
+                $[$fields:structSimpleBinder]*)
+          else
+            `(command| /-- Prototype generated LF model interface from checked LF model
+              obligations. -/
+              structure $structId:ident.{$[$levelIds:ident],*} extends $parentId:ident where
+                $[$fields:structSimpleBinder]*)
         else
           if internalChunk then
             `(command| /-- Internal chunk of a generated LF model interface. -/
               structure $structId:ident.{$[$levelIds:ident],*} extends
-                $parentId:ident.{$[$levelIds:ident],*} where
+                $parentId:ident.{$[$parentLevelIds:ident],*} where
                 $[$fields:structSimpleBinder]*)
           else
             `(command| /-- Prototype generated LF model interface from checked LF model
               obligations. -/
               structure $structId:ident.{$[$levelIds:ident],*} extends
-                $parentId:ident.{$[$levelIds:ident],*} where
+                $parentId:ident.{$[$parentLevelIds:ident],*} where
                 $[$fields:structSimpleBinder]*)
-      let autoImplicitOpt := mkIdent `autoImplicit
-      let wrapped ← `(command| set_option $autoImplicitOpt:ident false in $cmd:command)
-      pure wrapped.raw
+  let autoImplicitOpt := mkIdent `autoImplicit
+  let wrapped ← `(command| set_option $autoImplicitOpt:ident false in $cmd:command)
+  pure wrapped.raw
 
 /-- Syntax-level generated LF model structures from the generic LF model-obligation IR.
 
@@ -3323,17 +3505,23 @@ internal chunks whose final structure keeps the requested public name. -/
 def lfModelStructureSyntaxes (checked : CheckedSignature) (structureName : Name)
     (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) :
       CommandElabM (Array Syntax) := do
-  let fields ← lfModelStructureFieldSyntaxes checked admittedNames mode
-  let chunks := chunkLFModelStructureFields fields
-  if chunks.size <= 1 then
-    return #[← lfModelStructureCommandSyntax checked structureName chunks[0]!]
+  let fields ← lfModelStructureRenderedFields checked admittedNames mode
+  let chunks := chunkLFRenderedModelFields fields
   let mut cmds := #[]
+  let mut parent? : Option (Name × Array Name) := none
+  let mut parentLevels : Array Name := #[]
   for h : i in [:chunks.size] do
     let chunkFields := chunks[i]
     let isFinal := i + 1 == chunks.size
-    let owner := if isFinal then structureName else lfModelStructureChunkName structureName i
-    let parent? := if i == 0 then none else some (lfModelStructureChunkName structureName (i - 1))
-    cmds := cmds.push (← lfModelStructureCommandSyntax checked owner chunkFields parent? (!isFinal))
+    let owner := if chunks.size <= 1 || isFinal then structureName else
+      lfModelStructureChunkName structureName i
+    let ownLevels := orderedModelLevelParamUnion checked (chunkFields.map (·.levelParams))
+    let thisLevels := orderedModelLevelParamUnion checked #[parentLevels, ownLevels]
+    let syntaxFields := chunkFields.map (·.fieldSyntax)
+    cmds := cmds.push (← lfModelStructureCommandSyntax checked owner syntaxFields thisLevels
+      parent? (!isFinal))
+    parent? := some (owner, thisLevels)
+    parentLevels := thisLevels
   pure cmds
 
 /-- User-facing section assigned to a source LF declaration, if any. -/
@@ -3393,10 +3581,9 @@ def lfModelSectionNameSuffix (run : LFModelSectionRun) : String :=
       run.sectionName.eraseMacroScopes)
   if run.occurrence <= 1 then s!"_{base}" else s!"_{base}_part{run.occurrence}"
 
-/-- Render field syntaxes for a selected set of model obligations, using the full field map. -/
-def lfModelStructureFieldSyntaxesForObligations (checked : CheckedSignature) (allObs runObs :
-  Array LFModelObligation) :
-    CommandElabM (Array (TSyntax `Lean.Parser.Command.structSimpleBinder)) := do
+/-- Render fields for selected obligations, using the full field map. -/
+def lfModelStructureRenderedFieldsForObligations (checked : CheckedSignature) (allObs runObs :
+  Array LFModelObligation) : CommandElabM (Array LFRenderedModelField) := do
   let fieldNames := lfModelFieldNameMap allObs
   let paramVis := lfParamVisibilityMapOfObligations allObs
   let defValues := lfDefinitionValueMap checked
@@ -3407,8 +3594,20 @@ def lfModelStructureFieldSyntaxesForObligations (checked : CheckedSignature) (al
     if let some field ←
       lfModelObligationFieldSyntax? fieldNames defValues paramVis blockingUntyped
         sidePredicateNames o then
-      fields := fields.push field
+      let used :=
+        lfModelObligationRenderedLevelParams defValues blockingUntyped sidePredicateNames o
+      fields := fields.push {
+        obligation := o
+        fieldSyntax := field
+        levelParams := orderedModelLevelParams checked used }
   pure fields
+
+/-- Render field syntaxes for a selected set of model obligations, using the full field map. -/
+def lfModelStructureFieldSyntaxesForObligations (checked : CheckedSignature) (allObs runObs :
+  Array LFModelObligation) :
+    CommandElabM (Array (TSyntax `Lean.Parser.Command.structSimpleBinder)) := do
+  let fields ← lfModelStructureRenderedFieldsForObligations checked allObs runObs
+  pure (fields.map (·.fieldSyntax))
 
 /-- Generated sectioned LF model-interface structures from the generic obligation IR.
 
@@ -3422,11 +3621,12 @@ def lfModelSectionStructureSyntaxes (checked : CheckedSignature) (structureName 
   let runs := lfModelSectionRuns checked obs
   let mut cmds := #[]
   let mut names := #[]
-  let mut parent? : Option Name := none
+  let mut parent? : Option (Name × Array Name) := none
+  let mut parentLevels : Array Name := #[]
   for hRun : runIndex in [:runs.size] do
     let run := runs[runIndex]
-    let fieldSyntaxes ← lfModelStructureFieldSyntaxesForObligations checked obs run.fields
-    let chunks := chunkLFModelStructureFields fieldSyntaxes lfModelSectionStructureChunkSize
+    let renderedFields ← lfModelStructureRenderedFieldsForObligations checked obs run.fields
+    let chunks := chunkLFRenderedModelFields renderedFields lfModelSectionStructureChunkSize
     for hChunk : chunkIndex in [:chunks.size] do
       let isFinalGlobal := runIndex + 1 == runs.size && chunkIndex + 1 == chunks.size
       let baseName := nameWithLastComponentSuffix structureName (lfModelSectionNameSuffix run)
@@ -3434,11 +3634,15 @@ def lfModelSectionStructureSyntaxes (checked : CheckedSignature) (structureName 
         if isFinalGlobal then structureName
         else if chunks.size == 1 then baseName
         else nameWithLastComponentSuffix baseName s!"_chunk{chunkIndex}"
-      cmds :=
-        cmds.push (← lfModelStructureCommandSyntax checked owner chunks[chunkIndex]! parent?
-          (!isFinalGlobal))
+      let chunkFields := chunks[chunkIndex]!
+      let ownLevels := orderedModelLevelParamUnion checked (chunkFields.map (·.levelParams))
+      let thisLevels := orderedModelLevelParamUnion checked #[parentLevels, ownLevels]
+      let syntaxFields := chunkFields.map (·.fieldSyntax)
+      cmds := cmds.push (← lfModelStructureCommandSyntax checked owner syntaxFields thisLevels
+        parent? (!isFinalGlobal))
       names := names.push owner
-      parent? := some owner
+      parent? := some (owner, thisLevels)
+      parentLevels := thisLevels
   pure (cmds, names)
 
 /-- Names of the generated flat-interface structures/chunks for a field count. -/

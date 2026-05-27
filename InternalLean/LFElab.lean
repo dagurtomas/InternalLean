@@ -352,6 +352,20 @@ def checkDeclaredLevelParamsInLFExpr (sig : HLSignature) (ownerKind : String)
         level parameter '{u}' in {where_}; declare it in the theory-level parameter list \
           containing '{u}' or use a numeric level. Currently declared level parameter(s): {optIn}"
 
+/-- Check that all universe parameters mentioned in a level expression were explicitly opted into
+by the surrounding theory. -/
+def checkDeclaredLevelParamsInLevelExpr (sig : HLSignature) (ownerKind : String)
+    (ownerName : Name) (where_ : String) (level : LevelExpr) : CoreM Unit := do
+  let allowed : NameSet := sig.levelParams.foldl (fun acc u => acc.insert u.eraseMacroScopes) {}
+  for u in level.params do
+    let u := u.eraseMacroScopes
+    unless allowed.contains u do
+      let optIn := if sig.levelParams.isEmpty then "none" else
+        String.intercalate ", " (sig.levelParams.toList.map (toString ·.eraseMacroScopes))
+      throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' uses undeclared universe \
+        level parameter '{u}' in {where_}; declare it in the theory-level parameter list \
+          containing '{u}' or use a numeric level. Currently declared level parameter(s): {optIn}"
+
 /-- Check one LF metadata binder for undeclared universe-level parameters. -/
 def checkDeclaredLevelParamsInLFBinding (sig : HLSignature) (ownerKind : String)
     (ownerName : Name) (b : HLBinding) : CoreM Unit :=
@@ -432,6 +446,8 @@ def checkLFUniverseLevelMetadata (sig : HLSignature) : CoreM Unit := do
   for s in sig.syntaxSorts do
     for b in s.params do
       checkDeclaredLevelParamsInLFBinding sig "syntax_sort" s.name b
+    checkDeclaredLevelParamsInLevelExpr sig "syntax_sort" s.name "result universe"
+      s.resultLevel
   for a in sig.syntaxAbbrevs do
     for b in a.params do
       checkDeclaredLevelParamsInLFBinding sig "syntax_abbrev" a.name b
@@ -1342,7 +1358,8 @@ partial def inferKnownLFExprType? (sig : HLSignature) (knownTypes : LFLocalTypes
               | some d => some (eraseObjExprScopes d.typeExpr)
               | none =>
                   match findSyntaxSortDecl? sig n with
-                  | some s => if s.params.isEmpty then some .sort else none
+                  | some s =>
+                      if s.params.isEmpty then some (objExprTypeOfLevel s.resultLevel) else none
                   | none =>
                       match findJudgmentDecl? sig n with
                       | some j => if j.params.isEmpty then some .sort else none
@@ -1408,7 +1425,7 @@ partial def inferKnownLFExprType? (sig : HLSignature) (knownTypes : LFLocalTypes
                       match findSyntaxSortDecl? sig head with
                       | some s =>
                           if args.size == s.params.size then
-                            some .sort
+                            some (objExprTypeOfLevel s.resultLevel)
                           else
                             none
                       | none =>
@@ -1568,7 +1585,7 @@ def findImplicitCallableInfo? (sig : HLSignature) (name : Name) : Option Implici
   let mut out : Option ImplicitCallableInfo := none
   for s in sig.syntaxSorts do
     if s.name.eraseMacroScopes == name then
-      out := some { params := s.params, result? := some .sort }
+      out := some { params := s.params, result? := some (objExprTypeOfLevel s.resultLevel) }
   for a in sig.syntaxAbbrevs do
     if a.name.eraseMacroScopes == name then
       out := some { params := a.params, result? := some a.value }
@@ -2333,7 +2350,11 @@ def checkedLFSyntaxSortDeclArtifact (sig : HLSignature)
     (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (s : SyntaxSortDecl) :
     CoreM CheckedLFSyntaxSort := do
   let (params, _) ← checkedLFBindings sig globalHeads "syntax_sort" s.name s.params
-  pure { name := s.name.eraseMacroScopes, params := params, arity := s.params.size }
+  pure {
+    name := s.name.eraseMacroScopes
+    params := params
+    arity := s.params.size
+    resultLevel := LevelExpr.normalize s.resultLevel }
 
 /-- Build the checked artifact for one syntax-abbreviation declaration. -/
 def checkedLFSyntaxAbbrevDeclArtifact (sig : HLSignature)
@@ -4895,7 +4916,9 @@ def checkedLFBindingToHLBinding (b : CheckedLFBinding) : HLBinding :=
 
 /-- Convert a checked syntax-sort artifact to a high-level declaration. -/
 def checkedLFSyntaxSortToHLDecl (s : CheckedLFSyntaxSort) : SyntaxSortDecl :=
-  { name := s.name, params := s.params.map checkedLFBindingToHLBinding }
+  { name := s.name
+    params := s.params.map checkedLFBindingToHLBinding
+    resultLevel := s.resultLevel }
 
 /-- Convert a checked syntax-abbreviation artifact to a high-level declaration. -/
 def checkedLFSyntaxAbbrevToHLDecl (a : CheckedLFSyntaxAbbrev) : SyntaxAbbrevDecl :=
@@ -5270,6 +5293,7 @@ def checkLFUniverseLevelInSyntaxSortDecl (sig : HLSignature) (s : SyntaxSortDecl
     CoreM Unit := do
   for b in s.params do
     checkDeclaredLevelParamsInLFBinding sig "syntax_sort" s.name b
+  checkDeclaredLevelParamsInLevelExpr sig "syntax_sort" s.name "result universe" s.resultLevel
 
 /-- Check universe parameters for one syntax-abbreviation declaration. -/
 def checkLFUniverseLevelInSyntaxAbbrevDecl (sig : HLSignature) (a : SyntaxAbbrevDecl) :

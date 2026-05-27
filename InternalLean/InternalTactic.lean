@@ -2524,8 +2524,9 @@ def internalObjectHover? (target : InternalDefTarget) (sig : HLSignature) (goal 
       name := n
       typeOrStatement := diagnosticObjExprString statement }
   if let some s := sig.syntaxSorts.find? (fun s => sameObjectName s.name n) then
+    let result := objExprTypeOfLevel s.resultLevel
     let ty := diagnosticObjExprString <|
-      if s.params.isEmpty then .sort else objectArrowTelescope s.params .sort
+      if s.params.isEmpty then result else objectArrowTelescope s.params result
     return some { kind := "syntax sort", name := n, typeOrStatement := ty }
   if let some j := sig.judgments.find? (fun j => sameObjectName j.name n) then
     let ty := diagnosticObjExprString <|

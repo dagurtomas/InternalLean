@@ -98,6 +98,24 @@ The generated interface includes the main structure `T.M`, inherited projection 
 nested strict structural-equivalence structure `T.M.StructuralEquiv` for comparing two completed
 models.
 
+Syntax-sort result universes control the Lean universe of generated carrier fields. For example,
+
+```lean
+declare_type_theory LargeExample{u, v} where
+  syntax_sort Obj : Type u
+  syntax_sort Hom (X : Obj) (Y : Obj) : Type v
+```
+
+generates fields of the shape:
+
+```lean
+Obj : Type u
+Hom : (X : Obj) → (Y : Obj) → Type v
+```
+
+Unannotated syntax sorts keep the older `Type` result. Generated chunked and sectioned interfaces
+only bind universe parameters that appear in their fields or inherited parent chunks.
+
 `generate_lf_model_structure T as M` is the older direct-LF spelling used by low-level tests and
 diagnostics. It currently emits the same flat model structure, projection exports, docstrings, and
 `StructuralEquiv` as `generate_model_interface`. Prefer `generate_model_interface` in user-facing

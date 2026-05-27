@@ -123,6 +123,10 @@ declare_type_theory TinyNat where
   rule zero_intro : wfNat zero
 ```
 
+Syntax-sort carriers are small by default in generated model interfaces. Use a theory universe
+parameter and a result annotation, such as `syntax_sort Obj : Type u`, when the intended semantic
+carrier lives in a higher Lean universe.
+
 After a theory has been declared, object-level definitions and theorems live in its namespace and
 use `internal def`:
 

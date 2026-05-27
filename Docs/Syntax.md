@@ -108,9 +108,15 @@ syntax_sort Nat
 ```lean
 syntax_sort S
 syntax_sort S (x : A) {y : B}
+syntax_sort Large : Type u
+syntax_sort Family (x : Large) : Type v
 ```
 
 A syntax sort declares an object-language family. Parameters may be explicit or implicit.
+Unannotated syntax sorts use result universe `Type`, so their generated model field is a small
+Lean type. Add `: Type u`, `: Type (u+1)`, or `: Type max u v` when a model carrier should live in
+a higher Lean universe. Universe parameters used in result annotations must be declared on the
+theory, for example `declare_type_theory T{u, v} where`.
 
 ```lean
 syntax_sort_role S : role
@@ -518,7 +524,9 @@ generate_public_model_interface T as M
 
 Generation commands must be run at the root namespace. Printing and checking commands are safe to
 use for inspection before generation. Generated interfaces include a nested `M.StructuralEquiv`
-structure for strict structure-preserving comparisons between completed models.
+structure for strict structure-preserving comparisons between completed models. Syntax-sort fields
+use the declared result universe: unannotated sorts generate `S : Type`, while
+`syntax_sort S : Type u` generates `S : Type u`.
 
 `generate_lf_model_structure T as M` is the older direct-LF spelling for the same flat interface
 generation path. Prefer `generate_model_interface T as M` in user-facing code.

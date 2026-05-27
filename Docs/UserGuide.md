@@ -64,6 +64,16 @@ syntax_sort Eq (lhs : Nat) (rhs : Nat)
 The second declaration is indexed: `Eq lhs rhs` is a family of object syntax depending on two
 object-level natural-number terms.
 
+Unannotated syntax sorts generate small Lean carrier fields in model interfaces. If a model carrier
+should live in a higher universe, declare theory universe parameters and annotate the result
+universe:
+
+```lean
+declare_type_theory LargeExample{u, v} where
+  syntax_sort Obj : Type u
+  syntax_sort Hom (X : Obj) (Y : Obj) : Type v
+```
+
 Roles can attach generic meaning to syntax sorts for tactics and model generation:
 
 ```lean
