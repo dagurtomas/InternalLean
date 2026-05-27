@@ -1,8 +1,8 @@
 # InternalLean frontend syntax reference
 
 This document records the public frontend syntax provided by `InternalLean.Command`. It focuses
-on source syntax: theory declarations, LF declarations, metadata, `internal def`, object tactics,
-and user-facing model commands.
+on source syntax: theory declarations, LF declarations, metadata, `internal def`, internal
+tactics, and user-facing model commands.
 
 For a narrative introduction, see `Docs/UserGuide.md`.
 
@@ -30,7 +30,7 @@ declare_type_theory T{u, v} extends Parent₁, Parent₂ where
   ...
 ```
 
-The braces after the theory name declare object-level universe parameters. They are not Lean
+The braces after the theory name declare universe parameters for the type theory. They are not Lean
 universe parameters, although backends may later translate them.
 
 A previously declared theory can be reopened with:
@@ -51,9 +51,9 @@ declare_type_theory TinyNat where
   ...
 ```
 
-## Object expression syntax
+## Internal expression syntax
 
-The declaration block uses a small object-expression language.
+The declaration block uses a small internal expression language.
 
 ```lean
 Type
@@ -75,14 +75,14 @@ lhs ≡ rhs
 
 Notes:
 
-- `Type`, `Type u`, and `Type max u v` are object-level universe expressions.
+- `Type`, `Type u`, and `Type max u v` are internal universe expressions.
 - `_` is an inferable placeholder in direct `internal def` terms when the surrounding expected
   type determines the omitted argument.
 - `→` is compatibility notation for the framework's structural/function-family arrow.
 - `⇒` is the explicit spelling of the same framework arrow for LF arities and dependent rule
-  parameters. Use it when you want to avoid suggesting an object-level function former.
-- `fun x => body` builds an object lambda.
-- `lhs ≡ rhs` is object-expression syntax for judgmental-equality-shaped expressions.
+  parameters. Use it when you want to avoid suggesting an internal function former.
+- `fun x => body` builds an internal lambda.
+- `lhs ≡ rhs` is internal syntax for judgmental-equality-shaped expressions.
 - `{x := value}` is an explicit implicit-argument marker used by the LF elaborator.
 
 Binders in declaration telescopes use:
@@ -112,7 +112,7 @@ syntax_sort Large : Type u
 syntax_sort Family (x : Large) : Type v
 ```
 
-A syntax sort declares an object-language family. Parameters may be explicit or implicit.
+A syntax sort declares an internal syntax family. Parameters may be explicit or implicit.
 Unannotated syntax sorts use result universe `Type`, so their generated model field is a small
 Lean type. Add `: Type u`, `: Type (u+1)`, or `: Type max u v` when a model carrier should live in
 a higher Lean universe. Universe parameters used in result annotations must be declared on the
@@ -161,7 +161,7 @@ judgment J
 judgment J (x : A) {y : B}
 ```
 
-A judgment declares an object-theory predicate or relation.
+A judgment declares a predicate or relation in the declared type theory.
 
 ```lean
 judgment_role J : role
@@ -177,7 +177,7 @@ Common judgment-role names include:
 - `substitution_wellformedness`
 - `side_judgment`
 
-The generic object tactics currently use `type_conversion` and `term_conversion` to find
+The generic internal tactics currently use `type_conversion` and `term_conversion` to find
 conversion judgments.
 
 ### LF opaque constants
@@ -188,7 +188,7 @@ lf_opaque c / 3
 lf_opaque c (x : A) {y : B} : C
 ```
 
-`lf_opaque` introduces a primitive LF/object constant or placeholder.
+`lf_opaque` introduces a primitive LF constant or placeholder.
 
 - The untyped form declares an opaque name with no type information.
 - The arity form declares an untyped opaque name with an expected number of arguments.
@@ -246,11 +246,11 @@ computation
 structural
 ```
 
-The `computation` role marks rules that prove conversion/equality consequences. Object `simp` uses
-these rules as rewrite candidates when they conclude in a judgment marked `type_conversion` or
+The `computation` role marks rules that prove conversion/equality consequences. Internal `simp`
+uses these rules as rewrite candidates when they conclude in a judgment marked `type_conversion` or
 `term_conversion`.
 
-### Diagnostic object macros and roles
+### Diagnostic macros and roles
 
 ```lean
 object_macro T Name (x, y) => template
@@ -266,11 +266,11 @@ It is not part of checked LF elaboration: checked declarations should use the ex
 If a macro head appears in a checked declaration, InternalLean rejects it with a diagnostic asking
 for the expanded expression.
 
-`object_role` attaches non-semantic role metadata to an object declaration or macro.
+`object_role` attaches non-semantic role metadata to a declaration or macro.
 
 ### Rewrite and transport metadata
 
-The object `rw` and non-definitional object `simp` steps use relation/transport metadata.
+Internal `rw` and non-definitional `simp` steps use relation/transport metadata.
 
 ```lean
 rewrite_relation R [lhs, rhs]
@@ -284,7 +284,7 @@ transport_rule tr for R [evidence, source]
 transport_position tr : Head [0]
 ```
 
-A transport rule explains how evidence for relation `R` transports a source proof/object across a
+A transport rule explains how evidence for relation `R` transports a source proof or value across a
 larger judgment. `transport_position` tells automation which argument of `Head` is rewritten.
 
 ```lean
@@ -298,7 +298,7 @@ rewrite_congruence congr for R under Head [0] [evidence]
 ```
 
 A congruence rule or theorem lifts rewrite evidence through an argument position of `Head`. This is
-used for nested object rewrites.
+used for nested internal rewrites.
 
 ### Side-condition solvers
 
@@ -339,7 +339,7 @@ plugin_axiom
 pluginAxiom
 ```
 
-Currently, object `simp` can use registered executable `beta` steps. Other step classes are
+Currently, internal `simp` can use registered executable `beta` steps. Other step classes are
 metadata for the checked conversion-certificate boundary and future automation.
 
 ### Model visibility and sections
@@ -370,7 +370,7 @@ the first occurrence determines section-order diagnostics.
 lf_def name : type := value
 ```
 
-`lf_def` declares a checked LF/object definition. It unfolds during object conversion and model
+`lf_def` declares a checked LF definition. It unfolds during internal conversion and model
 transport when supported.
 
 ```lean
@@ -381,7 +381,7 @@ judgment_theorem thm (x : A) {y : B} : J x y := proof
 
 ## Internal declarations
 
-After a theory exists, object-level declarations use `internal def`. Put unqualified declarations
+After a theory exists, internal declarations use `internal def`. Put unqualified declarations
 inside the theory namespace:
 
 ```lean
@@ -427,7 +427,7 @@ ones. Batched definitions support both direct terms and internal tactic scripts.
 `internal theorem ... := sorry` records theorem-shaped formalization debt without adding a model
 field.
 
-Declaration-local object universe parameters are supported:
+Declaration-local universe parameters are supported:
 
 ```lean
 internal def f{u, v} : J := value
@@ -444,13 +444,13 @@ internal def g (x : A) : B x := by
 internal def admitted (x : A) : B x := sorry
 ```
 
-Binder-style declarations lower to an explicit object function type and object lambda. The binder
-syntax still depends on the theory having suitable function/lambda LF structure for the body to
-check.
+Binder-style declarations lower to an explicit internal function type and internal lambda. The
+binder syntax still depends on the theory having suitable function/lambda LF structure for the body
+to check.
 
-## Object tactic syntax
+## Internal tactic syntax
 
-Object tactic mode is available after `:= by` in `internal def`.
+Internal tactic mode is available after `:= by` in `internal def`.
 
 ```lean
 exact term
@@ -477,7 +477,7 @@ refine head arg₁ _ ?_ (nested arg)
 sorry
 ```
 
-Object tactic arguments for `exact head ...` and `refine head ...` are:
+Internal tactic arguments for `exact head ...` and `refine head ...` are:
 
 ```lean
 _
@@ -487,7 +487,7 @@ name
 (term)
 ```
 
-These tactics operate on object goals, not Lean goals. They compile to object terms before the
+These tactics operate on internal goals, not Lean goals. They compile to internal terms before the
 result is registered.
 
 ## User-facing diagnostic commands
@@ -579,4 +579,4 @@ public examples unless you are debugging the implementation.
 `object_def` and `object_theorem` are deprecated compatibility shims. New code should use
 `internal def`.
 
-Regression files should avoid these shims except when intentionally testing legacy behavior.
+Regression files should avoid these shims except when they are testing legacy behavior.

@@ -6,8 +6,7 @@ checked LF artifacts rather than parser traces.
 ## High-level idea
 
 InternalLean commands are elaborators. They parse convenient Lean syntax and produce artifacts in a
-small logical framework (LF). Those LF artifacts are then checked against the declared object
-theory.
+small logical framework (LF). Those LF artifacts are then checked against the declared type theory.
 
 The trusted boundary is not the surface command text. The meaningful boundary is:
 
@@ -18,10 +17,10 @@ The trusted boundary is not the surface command text. The meaningful boundary is
 
 ## What LF means here
 
-LF is the project's internal logical-framework language for representing object-theory data:
+LF is the project's internal logical-framework language for representing declared type-theory data:
 
 - syntax sorts;
-- object expressions;
+- internal expressions;
 - judgment forms;
 - rules and premises;
 - binders and scoped local variables;
@@ -30,7 +29,7 @@ LF is the project's internal logical-framework language for representing object-
 - conversion certificates.
 
 LF is not Lean's kernel. Lean hosts the implementation and generated code, while LF represents the
-object theory being declared.
+type theory being declared.
 
 ## What certificate checking means
 
@@ -44,11 +43,11 @@ step by supported conversion evidence.
 This is different from:
 
 - trusting a parser trace;
-- trusting an object tactic script directly;
-- asking Lean to prove the object-theory statement;
-- treating object equality as Lean equality.
+- trusting an internal tactic script directly;
+- asking Lean to prove the internal statement;
+- treating internal equality as Lean equality.
 
-Object tactics and high-level commands are conveniences. Their output has to pass through checked
+Internal tactics and high-level commands are conveniences. Their output has to pass through checked
 LF artifacts before model generation or transport should rely on it.
 
 ## Checked ingredients
@@ -69,17 +68,17 @@ The checker validates and stores information such as:
 
 The exact checked data depends on the declaration kind and backend support.
 
-## Object equality is not Lean equality
+## Internal equality is not Lean equality
 
-A declared object theory controls its own equality and conversion judgments. For example:
+A declared type theory controls its own equality and conversion judgments. For example:
 
 ```lean
 judgment eqNat (lhs : Nat) (rhs : Nat)
 judgment_role eqNat : term_conversion
 ```
 
-This does not create Lean equality between `lhs` and `rhs`. It declares an object-theory conversion
-judgment that InternalLean tooling may use when the required LF evidence is available.
+This does not create Lean equality between `lhs` and `rhs`. It declares a conversion judgment that
+InternalLean tooling may use when the required LF evidence is available.
 
 Similarly, an internal equality type such as:
 
@@ -87,12 +86,12 @@ Similarly, an internal equality type such as:
 syntax_sort Eq (lhs : Nat) (rhs : Nat)
 ```
 
-is just another object-theory family until the theory declares proof constructors and rules for it.
+is just another internal family until the theory declares proof constructors and rules for it.
 Judgmental conversion and internal equality proofs should not be conflated.
 
 ## Remaining trusted leaves
 
-Some leaves are intentionally trusted or opaque. They should be explicit in source and diagnostics.
+Some leaves are trusted or opaque by design. They should be explicit in source and diagnostics.
 
 Current trusted leaves include:
 
@@ -114,9 +113,9 @@ internal def admitted : J := sorry
 internal theorem admittedTheorem : J := sorry
 ```
 
-The annotation `J` is still checked as an object-theory judgment or type, but the body is not
-checked. `internal theorem ... := sorry` records theorem-shaped debt without adding a model field.
-The admission is stored explicitly and can be inspected with:
+The annotation `J` is still checked as a judgment or type in the declared theory, but the body is
+not checked. `internal theorem ... := sorry` records theorem-shaped debt without adding a model
+field. The admission is stored explicitly and can be inspected with:
 
 ```lean
 #lint_type_theory_sorries T
@@ -165,12 +164,12 @@ A plugin declaration records the trust mode and supported generic step classes. 
 steps can be checked by the framework when support exists. External-certificate and opaque modes are
 trusted leaves unless backed by additional checked evidence.
 
-Object `simp` currently uses registered executable `beta` plugin steps. Other step classes are part
-of the conversion-certificate vocabulary and future automation boundary.
+Internal `simp` currently uses registered executable `beta` plugin steps. Other step classes are
+part of the conversion-certificate vocabulary and future automation boundary.
 
 ## Rewriting and transport metadata
 
-Object `rw` and non-definitional object `simp` can use metadata such as:
+Internal `rw` and non-definitional `simp` can use metadata such as:
 
 ```lean
 rewrite_relation R [lhs, rhs]
@@ -180,8 +179,8 @@ rewrite_symmetry symm for R [evidence]
 rewrite_congruence congr for R under Head [0] [evidence]
 ```
 
-This metadata is not proof by itself. It tells the object-tactic compiler where to find LF evidence
-and how to build transport terms. The referenced rules or theorems still have to check.
+This metadata is not proof by itself. It tells the internal tactic compiler where to find LF
+evidence and how to build transport terms. The referenced rules or theorems still have to check.
 
 ## Why model generation uses checked artifacts
 

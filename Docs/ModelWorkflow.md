@@ -1,13 +1,13 @@
 # Model workflow guide
 
-This guide explains the public workflow for interpreting a checked object theory by generating a
-Lean model interface and transporting checked declarations to a completed model.
+This guide explains the public workflow for interpreting a checked type theory by generating a Lean
+model interface and transporting checked declarations to a completed model.
 
 For a shorter introduction, see `Docs/UserGuide.md`.
 
 ## What is a model interface?
 
-A model interface is a Lean structure generated from a checked object theory. It lists the semantic
+A model interface is a Lean structure generated from a checked type theory. It lists the semantic
 data and laws that a model author must provide.
 
 Depending on the theory, the generated fields can include:
@@ -204,8 +204,8 @@ Meanings:
 - `model_internal decl` hides `decl` from public/minimal interfaces.
 - `model_compat decl` keeps compatibility/debug declarations out of public/minimal interfaces.
 
-Visibility metadata does not change object-theory checking. It only affects generated model
-interfaces and templates.
+Visibility metadata does not change checking for the declared type theory. It only affects
+generated model interfaces and templates.
 
 ## Advanced: model sections
 

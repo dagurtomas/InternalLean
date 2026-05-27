@@ -1,10 +1,10 @@
-# Object tactic guide
+# Internal tactic guide
 
-Object tactics are available in `internal def ... := by` declarations. They operate on goals in the
-declared object theory and compile to object terms before the declaration is checked.
+Internal tactic scripts are available in `internal def ... := by` declarations. They operate on
+goals in the declared type theory and compile to internal terms before the declaration is checked.
 
-They are not Lean tactics over Lean goals. Lean is the host language; the goal being solved is an
-object-theory judgment or type.
+They are not Lean tactics over Lean goals. Lean is the host language; the goal being solved is a
+judgment or type in the declared theory.
 
 ## Basic form
 
@@ -17,8 +17,8 @@ internal def f : J := by
 end T
 ```
 
-The annotation after `:` is the object goal. Each tactic step either closes the current object goal
-or changes it to another object goal that must be solved by later steps.
+The annotation after `:` is the internal goal. Each tactic step either closes the current goal or
+changes it to another internal goal that must be solved by later steps.
 
 Binder-style declarations are also supported:
 
@@ -31,8 +31,8 @@ internal def f (x : A) : B x := by
 end T
 ```
 
-The generic frontend lowers this to an explicit object function type and object lambda. The result
-still has to check in the declared theory.
+The generic frontend lowers this to an explicit internal function type and internal lambda. The
+result still has to check in the declared theory.
 
 ## Supported tactics
 
@@ -62,7 +62,7 @@ refine head arg₁ _ ?_ (nested arg)
 sorry
 ```
 
-Object tactic arguments for `exact head ...` and `refine head ...` are:
+Internal tactic arguments for `exact head ...` and `refine head ...` are:
 
 ```lean
 _
@@ -78,7 +78,7 @@ name
 exact term
 ```
 
-Uses `term` as the proof or object for the current goal. The term is checked when the resulting
+Uses `term` as the proof or value for the current goal. The term is checked when the resulting
 `internal def` is registered.
 
 ```lean
@@ -106,7 +106,7 @@ apply rule
 ```
 
 Applies a named rule, checked theorem, or internal declaration whose conclusion matches the current
-goal. Premises become new object subgoals.
+goal. Premises become new internal subgoals.
 
 Example shape:
 
@@ -123,10 +123,10 @@ Focus bullets are supported for subgoals. If you start using bullets for the sub
 Limitations:
 
 - `apply` does not do broad theorem search.
-- Side conditions are only synthesized when the current object-tactic support knows how to solve
+- Side conditions are only synthesized when the current internal tactic support knows how to solve
   them; opaque side-condition certificates cause diagnostics.
-- Candidate matching is object-syntax matching plus checked object conversion, not Lean typeclass
-  inference or Lean unification.
+- Candidate matching is internal-syntax matching plus checked internal conversion, not Lean
+  typeclass inference or Lean unification.
 
 ## `assumption`
 
@@ -134,8 +134,8 @@ Limitations:
 assumption
 ```
 
-Searches the current object context for a local hypothesis whose type is convertible to the current
-goal.
+Searches the current internal context for a local hypothesis whose type is convertible to the
+current goal.
 
 The search is local and deterministic. It does not search global declarations.
 
@@ -145,13 +145,13 @@ The search is local and deterministic. It does not search global declarations.
 intros x y
 ```
 
-Introduces leading object arrows or function arrows in the current goal and adds the new variables
-to the object context.
+Introduces leading internal arrows or function arrows in the current goal and adds the new variables
+to the internal context.
 
 Limitations:
 
-- The current goal must be headed by an object arrow/function-arrow.
-- Names must be fresh in the object context.
+- The current goal must be headed by an internal arrow/function-arrow.
+- Names must be fresh in the internal context.
 - There is no pattern destructuring or implicit-introduction search.
 
 ## `show` and `change`
@@ -161,14 +161,14 @@ show target
 change target
 ```
 
-Both replace the current goal by `target` when the old and new goals are equal by checked object
+Both replace the current goal by `target` when the old and new goals are equal by checked internal
 conversion.
 
 Use `show` when you want to state the target you expect. Use `change` when you want to rewrite the
 current target into a more convenient convertible form.
 
-These tactics use object conversion evidence. They do not use Lean equality or internal equality
-proof objects.
+These tactics use checked conversion evidence. They do not use Lean equality or internal equality
+proof terms.
 
 ## `have`
 
@@ -178,10 +178,10 @@ have h : J := by
 end
 ```
 
-Solves a local object subgoal `J`, then makes `h : J` available in the remaining goal.
+Solves a local internal subgoal `J`, then makes `h : J` available in the remaining goal.
 
 Current limitation: `have` is compiled by substituting the proof term for `h` in the continuation.
-It is useful as tactic structure, but it is not yet a general object-level let-binding facility.
+It is useful as tactic structure, but it is not yet a general internal let-binding facility.
 The syntax currently requires the explicit closing `end`.
 
 ## `refine`
@@ -191,7 +191,7 @@ refine term
 refine head arg₁ _ ?_ (nested arg)
 ```
 
-`refine term` provides an object term directly. The direct term form does not support holes.
+`refine term` provides an internal term directly. The direct term form does not support holes.
 
 `refine head ...` uses a named rule, theorem, or internal declaration as an application head.
 Arguments may contain:
@@ -214,7 +214,7 @@ rw ← h
 rw [h₁, ← h₂]
 ```
 
-`rw` rewrites the current object goal using a named direct-LF rewrite candidate.
+`rw` rewrites the current internal goal using a named direct-LF rewrite candidate.
 
 A rewrite candidate is usually one of:
 
@@ -261,8 +261,8 @@ rewrite_congruence congr_f for Eq under f [0] [evidence]
 
 Limitations:
 
-- Rewriting is direct-LF object rewriting, not Lean `rw`.
-- Matching is syntactic object-pattern matching, modulo the supported checked conversion steps.
+- Rewriting is direct-LF internal rewriting, not Lean `rw`.
+- Matching is syntactic internal-pattern matching, modulo the supported checked conversion steps.
 - The endpoint convention for conversion judgments currently uses the last two judgment arguments.
 - Reverse non-definitional rewriting needs declared `rewrite_symmetry` metadata.
 - Nested non-definitional rewriting needs declared `rewrite_congruence` metadata for each lifted
@@ -276,8 +276,8 @@ simp [rule₁, rule₂]
 simp only [rule₁, rule₂]
 ```
 
-`simp` is a bounded object simplifier. It changes the current object goal, then asks the remaining
-tactic script to solve the simplified goal.
+`simp` is a bounded internal simplifier. It changes the current internal goal, then asks the
+remaining tactic script to solve the simplified goal.
 
 The current simplifier tries these steps:
 
@@ -316,14 +316,14 @@ A `judgment_theorem` whose conclusion is a conversion judgment can also be named
 
 ### Conversion-plugin steps for `simp`
 
-A registered executable `beta` conversion plugin can participate in object `simp`:
+A registered executable `beta` conversion plugin can participate in internal `simp`:
 
 ```lean
 conversion_plugin beta_step executable [beta]
 ```
 
-Currently only executable `beta` plugin steps are used by object `simp`. Other plugin-step classes
-are recorded as conversion-certificate metadata for now.
+Currently only executable `beta` plugin steps are used by internal `simp`. Other plugin-step
+classes are recorded as conversion-certificate metadata for now.
 
 ### `simp`, `simp [...]`, and `simp only [...]`
 
@@ -363,27 +363,27 @@ exhaustion diagnostics.
 
 A focus bullet marks the start of a subgoal proof, especially after `apply` or `refine` with holes.
 The bullet discipline is simpler than Lean's full tactic block structure: bullets are consumed by
-the object tactic compiler to decide where the next subgoal proof starts.
+the internal tactic compiler to decide where the next subgoal proof starts.
 
 ## Current limitations
 
-The object tactic language is intentionally small. Important current limitations include:
+The internal tactic language is small by design. Important current limitations include:
 
-- Tactics operate on object goals, not Lean goals.
+- Tactics operate on internal goals, not Lean goals.
 - There is no general theorem search or `apply?` yet.
 - There is no full Lean-style simplifier database or simp attributes.
-- Object `simp` only uses checked LF definition unfolding, executable `beta` plugins, and
+- Internal `simp` only uses checked LF definition unfolding, executable `beta` plugins, and
   computation rewrites from metadata.
-- Non-`beta` conversion-plugin steps are not yet used by object `simp`.
-- The object simplifier has bounded fuel and minimal success tracing.
+- Non-`beta` conversion-plugin steps are not yet used by internal `simp`.
+- The internal simplifier has bounded fuel and minimal success tracing.
 - `rw` and `simp` need explicit relation, transport, symmetry, and congruence metadata for
   non-definitional proof-producing rewrites.
-- `have` is compiled by substitution and is not yet a general object-level let binding.
+- `have` is compiled by substitution and is not yet a general internal let binding.
 - `refine` holes are supported only in the structured head-application form.
 - Side-condition solving is limited to declared/trivial cases; opaque certificates remain trusted
   leaves and are reported by diagnostics.
-- Object conversion is LF/object evidence, not Lean equality.
+- Internal conversion is LF evidence, not Lean equality.
 
-When a tactic fails, read the diagnostic as a statement about the declared object theory and its LF
+When a tactic fails, read the diagnostic as a statement about the declared type theory and its LF
 metadata. Adding the right `judgment_role`, `rule_role`, rewrite metadata, or transport metadata is
 often the fix.

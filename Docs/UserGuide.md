@@ -1,7 +1,7 @@
 # InternalLean user guide
 
-This guide introduces the public InternalLean workflow: declare an object theory, add internal
-object-level declarations, inspect obligations, and generate model interfaces or transports.
+This guide introduces the public InternalLean workflow: declare a type theory, add internal
+declarations, inspect obligations, and generate model interfaces or transports.
 
 InternalLean is still an active research prototype, so this guide focuses on the stable direct-LF
 surface rather than every developer diagnostic command.
@@ -17,7 +17,7 @@ import InternalLean.Command
 Example and regression files in this repository often use module headers and public sections for
 library organization, but the core user-facing commands are provided by this import.
 
-## Declaring an object theory
+## Declaring a type theory
 
 A type theory declaration starts with:
 
@@ -26,8 +26,8 @@ declare_type_theory T where
   -- declarations go here
 ```
 
-Inside the block, declarations describe the object theory's own syntax, judgments, primitive
-constants, rules, and metadata.
+Inside the block, declarations describe the theory's syntax, judgments, primitive constants, rules,
+and metadata.
 
 A tiny example looks like this:
 
@@ -44,25 +44,26 @@ declare_type_theory TinyNat where
 
 This declares:
 
-- a syntax sort `Nat` for object-level natural-number terms;
-- a judgment `wfNat n` saying that an object-level natural number is wellformed;
+- a syntax sort `Nat` for internal natural-number terms;
+- a judgment `wfNat n` saying that an internal natural number is wellformed;
 - an LF opaque constant `zero : Nat`;
 - a rule proving `wfNat zero`.
 
-The names in this block belong to the object theory. They are represented inside InternalLean's LF
-layer and should not be confused with Lean's own `Nat`, typing judgment, or theorem system.
+The names in this block belong to the declared type theory. They are represented inside
+InternalLean's LF layer and should not be confused with Lean's own `Nat`, typing judgment, or
+theorem system.
 
 ## Syntax sorts
 
-A syntax sort declares a family of object-language syntax.
+A syntax sort declares a family of internal syntax.
 
 ```lean
 syntax_sort Nat
 syntax_sort Eq (lhs : Nat) (rhs : Nat)
 ```
 
-The second declaration is indexed: `Eq lhs rhs` is a family of object syntax depending on two
-object-level natural-number terms.
+The second declaration is indexed: `Eq lhs rhs` is a family of internal syntax depending on two
+internal natural-number terms.
 
 Unannotated syntax sorts generate small Lean carrier fields in model interfaces. If a model carrier
 should live in a higher universe, declare theory universe parameters and annotate the result
@@ -81,11 +82,11 @@ syntax_sort_role Nat : term_sort
 ```
 
 Roles are metadata. They do not make `Nat` into Lean's `Nat`; they tell the framework how this
-object-theory sort should be treated by generic tooling.
+sort should be treated by generic tooling.
 
 ## Judgments
 
-A judgment declares an object-theory predicate or relation.
+A judgment declares a predicate or relation in the declared type theory.
 
 ```lean
 judgment wfNat (n : Nat)
@@ -99,24 +100,24 @@ judgment_role wfNat : term_typing
 judgment_role eqNat : term_conversion
 ```
 
-A conversion judgment such as `eqNat` represents judgmental equality or conversion for the object
-theory. It is not Lean equality.
+A conversion judgment such as `eqNat` represents judgmental equality or conversion for the declared
+type theory. It is not Lean equality.
 
 ## LF opaque constants
 
-`lf_opaque` introduces a primitive object-language constant or constructor.
+`lf_opaque` introduces a primitive internal constant or constructor.
 
 ```lean
 lf_opaque zero : Nat
 lf_opaque succ (n : Nat) : Nat
 ```
 
-Opaque constants are trusted leaves of the object theory. Models must usually provide semantic
-interpretations for them unless they are hidden by later generated or derived declarations.
+Opaque constants are trusted leaves of the declared type theory. Models must usually provide
+semantic interpretations for them unless they are hidden by later generated or derived declarations.
 
 ## Rules
 
-A rule declares an inference rule in the object theory.
+A rule declares an inference rule in the declared type theory.
 
 A rule with no premises can be written directly:
 
@@ -140,8 +141,8 @@ rule_role succ_intro : introduction
 
 ## Internal declarations
 
-After a theory has been declared, object-level definitions and theorems live in its Lean namespace
-and use `internal def`.
+After a theory has been declared, internal definitions and theorems live in its Lean namespace and
+use `internal def`.
 
 ```lean
 namespace TinyNat
@@ -151,8 +152,8 @@ internal def myZero : wfNat zero := zero_intro
 end TinyNat
 ```
 
-The annotation after `:` is an object-theory judgment or type. The body is checked as an
-object-level term or proof for that judgment.
+The annotation after `:` is a judgment or type in the declared theory. The body is checked as an
+internal term or proof for that judgment.
 
 Binder-style declarations are also supported:
 
@@ -164,8 +165,8 @@ internal def f (x : A) : B x := body
 end T
 ```
 
-This syntax lowers to an explicit object function type and object lambda. It still relies on the
-object theory having suitable function/lambda LF structure for the result to check.
+This syntax lowers to an explicit internal function type and internal lambda. It still relies on the
+declared theory having suitable function/lambda LF structure for the result to check.
 
 For large chapters, `internal_defs where` registers many internal declarations in source order
 through the same incremental path:
@@ -183,9 +184,9 @@ end T
 Use `internal theorem th : J := sorry` for theorem-shaped formalization debt that should be
 reported by `#lint_type_theory_sorries` without becoming a model field.
 
-## Object tactic mode
+## Internal tactic scripts
 
-`internal def` also supports a small object tactic mode:
+`internal def` also supports a small internal tactic mode:
 
 ```lean
 namespace TinyNat
@@ -196,8 +197,8 @@ internal def myZeroTac : wfNat zero := by
 end TinyNat
 ```
 
-Object tactics compile to object terms, then the resulting declaration goes through the same checked
-registration path as a term-style `internal def`.
+Internal tactic scripts compile to internal terms, then the resulting declaration goes through the
+same checked registration path as a term-style `internal def`.
 
 Common tactics include:
 
@@ -206,12 +207,12 @@ Common tactics include:
 - `assumption`;
 - `show`;
 - `change`;
-- `rw` for object rewrites backed by declared metadata;
+- `rw` for internal rewrites backed by declared metadata;
 - `simp` for checked definition unfolding, selected rewrite rules, and supported conversion steps;
 - `refine` with checked holes.
 
-These tactics reason in the declared object theory. They should not be read as Lean tactics over
-Lean goals. See `Docs/ObjectTactics.md` for the full object tactic guide.
+These tactics reason in the declared type theory. They should not be read as Lean tactics over Lean
+goals. See `Docs/ObjectTactics.md` for the full internal tactic guide.
 
 ## Admissions and side conditions
 
@@ -288,9 +289,9 @@ These commands are intended for normal users. Longer `#print_lf_model_*`,
 
 ## Model interfaces
 
-A model interface is a Lean structure generated from a checked object theory. It lists the semantic
-data and laws needed to interpret that theory. For primitive object constants and rules, the model
-usually needs corresponding semantic fields or laws.
+A model interface is a Lean structure generated from a checked type theory. It lists the semantic
+data and laws needed to interpret that theory. For primitive constants and rules, the model usually
+needs corresponding semantic fields or laws.
 
 Use these commands when you want to inspect or generate those obligations.
 
@@ -399,13 +400,13 @@ entry. Use extensions for narrow additions rather than copying an existing theor
 `object_def` and `object_theorem` are deprecated compatibility shims. New code should use
 `internal def`.
 
-Regression files should avoid these compatibility shims except when intentionally testing legacy behavior.
+Regression files should avoid these compatibility shims except when they are testing legacy behavior.
 
 ## Good examples to read
 
 - `InternalLeanTest/TinyNat.lean` — compact direct-LF arithmetic example.
 - `InternalLeanTest/TinyNatModel.lean` — generated model-interface workflow.
-- `InternalLeanTest/InternalTacticTest.lean` — object tactic examples and regressions.
+- `InternalLeanTest/InternalTacticTest.lean` — internal tactic examples and regressions.
 - `InternalLeanTest/APIExtensionTest.lean` — focused frontend and metadata regressions.
 - `InternalLeanTest/LogicalFrameworkMetadataExamplesTest.lean` — small LF metadata smoke tests.
 
@@ -416,7 +417,7 @@ After reading this guide, the next useful public docs are:
 - frontend syntax reference: `Docs/Syntax.md`;
 - architecture overview: `Docs/Architecture.md`;
 - focused direct-LF declaration reference;
-- object tactic guide: `Docs/ObjectTactics.md`;
+- internal tactic guide: `Docs/ObjectTactics.md`;
 - model workflow guide: `Docs/ModelWorkflow.md`;
 - LF trust-boundary guide: `Docs/LFTrustBoundary.md`;
 - examples guide: `Docs/Examples.md`.

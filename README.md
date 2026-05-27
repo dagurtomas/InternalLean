@@ -1,26 +1,27 @@
 # InternalLean
 
-InternalLean is a standalone Lean project for declaring user-defined object type theories, checking
+InternalLean is a standalone Lean project for declaring user-defined type theories, checking
 internal artifacts, replaying derivations in a small logical framework (LF), and generating model
 interfaces or transports from checked artifacts.
 
-The core goal is to make object-theory reasoning explicit. A declared theory controls its own
-syntax, judgments, rules, equality/conversion evidence, side conditions, and model obligations.
+The core goal is to make reasoning inside declared type theories explicit. A declared theory
+controls its own syntax, judgments, rules, equality/conversion evidence, side conditions, and model
+obligations.
 Example theories and regression tests are used to exercise the framework; they are not assumptions
 baked into the core.
 
 ## Terminology
 
-An **object theory** is a theory being formalized inside the framework. InternalLean is designed to
-let users declare the syntax, judgments, rules, and equality structure needed for a wide range of
-synthetic reasoning inside Lean, subject to the current LF features and checks. The theory's terms,
-typing judgments, equality judgments, and rules are data declared to InternalLean. They are checked
-by InternalLean's LF layer rather than being identified with Lean's own terms and theorems.
+A **declared type theory** is a theory formalized inside the framework. InternalLean lets users
+declare the syntax, judgments, rules, and equality structure needed for a wide range of synthetic
+reasoning inside Lean, subject to the current LF features and checks. The theory's terms, typing
+judgments, equality judgments, and rules are data declared to InternalLean. They are checked by
+InternalLean's LF layer rather than being identified with Lean's own terms and theorems.
 
-A **model interface** is a Lean structure generated from a checked object theory. It lists the
-semantic data and laws a user must provide to interpret that object theory in Lean or in a future
-backend. For example, a model interface may ask for interpretations of object syntax constructors,
-judgment predicates, rules, side-condition certificates, and admitted LF constants.
+A **model interface** is a Lean structure generated from a checked type theory. It lists the
+semantic data and laws a user must provide to interpret that theory in Lean or in a future backend.
+For example, a model interface may ask for interpretations of syntax constructors, judgment
+predicates, rules, side-condition certificates, and admitted LF constants.
 
 A **model transport** is generated Lean code that takes a completed model interface and specializes
 a checked internal declaration or LF theorem to that model. Transports are derived from checked LF
@@ -29,9 +30,9 @@ artifacts, so model generation should not depend on raw parser traces.
 ## Status
 
 This is an active research prototype. The stable surface is the direct-LF declaration workflow,
-`internal def`, object tactic mode, LF certificate checking, and generated model-interface/transport
-commands. APIs may still change as the LF trust boundary, model backend, and object tactics are
-hardened.
+`internal def`, internal tactic scripts, LF certificate checking, and generated
+model-interface/transport commands. APIs may still change as the LF trust boundary, model backend,
+and internal tactics are hardened.
 
 ## Build
 
@@ -103,17 +104,17 @@ Run `lake update InternalLean` after adding the dependency, then `lake build`.
 
 Good first files to inspect:
 
-- `InternalLeanTest/TinyNat.lean` — small direct-LF object theory.
+- `InternalLeanTest/TinyNat.lean` — small direct-LF type theory.
 - `InternalLeanTest/TinyNatModel.lean` — generated model-interface workflow over TinyNat.
-- `InternalLeanTest/InternalTacticTest.lean` — object tactic examples and regressions.
+- `InternalLeanTest/InternalTacticTest.lean` — internal tactic examples and regressions.
 - `InternalLeanTest/APIExtensionTest.lean` — focused command and LF metadata regression tests.
 - `InternalLean/Command.lean` — public import aggregator for the command surface.
 
 ## Declaring a type theory
 
 A type theory starts with `declare_type_theory T where`. Inside the block, declarations such as
-`syntax_sort`, `judgment`, `lf_opaque`, and `rule` describe the object theory's syntax,
-judgments, primitive constants, and inference rules. For example:
+`syntax_sort`, `judgment`, `lf_opaque`, and `rule` describe the theory's syntax, judgments,
+primitive constants, and inference rules. For example:
 
 ```lean
 declare_type_theory TinyNat where
@@ -127,8 +128,8 @@ Syntax-sort carriers are small by default in generated model interfaces. Use a t
 parameter and a result annotation, such as `syntax_sort Obj : Type u`, when the intended semantic
 carrier lives in a higher Lean universe.
 
-After a theory has been declared, object-level definitions and theorems live in its namespace and
-use `internal def`:
+After a theory has been declared, internal definitions and theorems live in its namespace and use
+`internal def`:
 
 ```lean
 namespace T
@@ -143,7 +144,7 @@ internal def admitted : J := sorry
 end T
 ```
 
-Here `J` is an object-theory judgment or type. The basic form writes this judgment or type
+Here `J` is a judgment or type in the declared theory. The basic form writes this judgment or type
 explicitly after `:`.
 
 Binder-style `internal def` declarations are also supported:
@@ -152,9 +153,9 @@ Binder-style `internal def` declarations are also supported:
 internal def f (x : A) : B := body
 ```
 
-The generic LF frontend lowers this syntax to an explicit object function type and object lambda.
-It still relies on the declared theory having suitable function/lambda LF structure for the result
-to check. Large files can group declarations with `internal_defs where`; standalone and batched
+The generic LF frontend lowers this syntax to an explicit internal function type and internal
+lambda. It still relies on the declared theory having suitable function/lambda LF structure for the
+result to check. Large files can group declarations with `internal_defs where`; standalone and batched
 internal declarations use incremental registration instead of rechecking all previous internal
 definitions. Use `internal theorem name : J := sorry` for theorem-shaped admissions that remain
 lint-visible without becoming model fields.
@@ -172,7 +173,7 @@ Theory, navigation, and docs:
 #print_internal_registration_profile T
 ```
 
-Object tactics and side conditions:
+Internal tactics and side conditions:
 
 ```lean
 internal def f : J := by
@@ -213,10 +214,10 @@ High-level commands are elaborators. They parse convenient user syntax and produ
 The trusted artifact boundary is the checked LF signature plus derivation and conversion
 certificates produced from those commands.
 
-Here, LF means the project's small logical-framework language for representing an object theory's
-syntax, judgments, rules, and proof terms. LF certificate checking means taking a generated proof or
-conversion certificate and checking each step against the declared LF signature. It is not a second
-Lean proof search, and it is not just trusting the tactic/parser trace.
+Here, LF means the project's small logical-framework language for representing a declared type
+theory's syntax, judgments, rules, and proof terms. LF certificate checking means taking a
+generated proof or conversion certificate and checking each step against the declared LF signature.
+It checks the LF certificate directly rather than trusting the tactic/parser trace.
 
 In particular, checked LF artifacts track:
 
@@ -248,7 +249,7 @@ InternalLean is licensed under the Apache License, Version 2.0. See `LICENSE`.
 - User guide: `Docs/UserGuide.md`
 - Syntax reference: `Docs/Syntax.md`
 - Architecture: `Docs/Architecture.md`
-- Object tactic guide: `Docs/ObjectTactics.md`
+- Internal tactic guide: `Docs/ObjectTactics.md`
 - Model workflow guide: `Docs/ModelWorkflow.md`
 - LF trust boundary: `Docs/LFTrustBoundary.md`
 - Examples and tests: `Docs/Examples.md`

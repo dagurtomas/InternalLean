@@ -1,16 +1,17 @@
 # InternalLean architecture
 
-InternalLean is organized around a small logical framework (LF). Users declare an object theory in
-Lean syntax, the frontend lowers that declaration to checked LF artifacts, and model commands use
-those checked artifacts to generate Lean interfaces and transports.
+InternalLean is organized around a small logical framework (LF). Users declare a type theory in Lean
+syntax, the frontend lowers that declaration to checked LF artifacts, and model commands use those
+checked artifacts to generate Lean interfaces and transports.
 
 This document gives a public overview of the main layers and the design boundaries between them.
 
-## Object theories
+## Declared type theories
 
-An object theory is a theory formalized inside InternalLean. Examples range from TinyNat-style arithmetic to richer dependent or geometric signatures.
+A declared type theory is a theory formalized inside InternalLean. Examples range from TinyNat-style
+arithmetic to richer dependent or geometric signatures.
 
-A declared object theory provides data such as:
+A declared type theory provides data such as:
 
 - syntax sorts;
 - judgment forms;
@@ -20,8 +21,8 @@ A declared object theory provides data such as:
 - side-condition and certificate requirements;
 - optional model-visibility metadata.
 
-These declarations describe the object theory's own language. Object terms, object equality, and
-object proofs are checked by InternalLean's LF layer. Lean remains the host language used to run the
+These declarations describe the theory's own language. Internal terms, equality evidence, and
+proofs are checked by InternalLean's LF layer. Lean remains the host language used to run the
 checker, store declarations, and generate model code.
 
 ## Main layers
@@ -43,9 +44,9 @@ and certificate checking. It is responsible for generic trust-boundary concerns 
 - conversion-certificate checking;
 - model-interpretation hooks shared by backends.
 
-The LF layer is intentionally generic. It should know about syntax sorts, judgment heads, rules,
-premises, binders, context zones, and certificates. It should not contain branches for
-specific example theories by name.
+The LF layer is generic. It should know about syntax sorts, judgment heads, rules, premises,
+binders, context zones, and certificates. It should not contain branches for specific example
+theories by name.
 
 ### 2. Frontend and registration layer
 
@@ -67,7 +68,7 @@ This layer implements the user-facing Lean commands and diagnostics. Its respons
 - elaborating high-level declarations into checked LF artifacts;
 - validating metadata such as rewrite, transport, congruence, and conversion-plugin declarations;
 - registering checked or admitted `internal def` declarations;
-- compiling object tactic scripts into object terms;
+- compiling internal tactic scripts into internal terms;
 - exposing print commands, lints, status reports, and audit commands.
 
 `InternalLean/Command.lean` is the public import aggregator for the command surface. Most
@@ -86,7 +87,7 @@ Main files:
 This layer generates Lean code from checked LF artifacts.
 
 A model interface is a Lean structure listing the semantic data and laws needed to interpret a
-checked object theory. Depending on the theory, fields may include interpretations of syntax sorts,
+checked type theory. Depending on the theory, fields may include interpretations of syntax sorts,
 judgment predicates, rules, admitted LF constants, and side-condition certificates.
 
 A model transport specializes a checked internal declaration or LF theorem to a completed model.
@@ -109,7 +110,7 @@ A typical declaration moves through the system as follows:
    checked signature when possible.
 5. The declaration is lowered to checked LF artifacts.
 6. The registry stores the checked theory data and creates Lean-visible anchors for navigation.
-7. Diagnostics, object tactics, and model commands consume the checked registry data.
+7. Diagnostics, internal tactics, and model commands consume the checked registry data.
 8. Model-interface and transport commands generate Lean code from the checked artifacts.
 
 The important boundary is between high-level elaboration and checked LF artifacts. Parser traces and
@@ -135,21 +136,21 @@ obligations, or checked replay wrappers at public API boundaries.
 
 ### Extrinsic syntax
 
-Raw object syntax may be ill-formed. Checked derivations certify judgments about raw syntax. This
-keeps the framework flexible enough for many object theories and makes the checking boundary
+Raw internal syntax may be ill-formed. Checked derivations certify judgments about raw syntax. This
+keeps the framework flexible enough for many declared type theories and makes the checking boundary
 explicit.
 
-### Object reasoning belongs to the object theory
+### Internal reasoning belongs to the declared type theory
 
-Object-level typehood, equality, functions, propositions, and proofs mean whatever the declared
-object theory says they mean. Lean equality and Lean typing are used to implement the framework, but
-they should not be silently substituted for object-level judgments.
+Internal typehood, equality, functions, propositions, and proofs mean whatever the declared type
+theory says they mean. Lean equality and Lean typing are used to implement the framework, but they
+should not be silently substituted for internal judgments.
 
 ### Judgmental equality and internal equality are separate
 
 Judgmental equality or conversion is represented by declared judgments or conversion artifacts.
-Internal equality proofs are ordinary object terms only when the object theory declares an equality
-family and proof constructors.
+Internal equality proofs are ordinary internal terms only when the declared type theory includes an
+equality family and proof constructors.
 
 ### Scope and substitution are trust-boundary concerns
 
@@ -195,8 +196,8 @@ Useful entry points for reading the code:
 - `InternalLean/DSL.lean` — high-level declaration data and metadata structures.
 - `InternalLean/LFElab.lean` — LF declaration elaboration and metadata validation.
 - `InternalLean/Registration.lean` — theory and internal-declaration registration.
-- `InternalLean/InternalTactic.lean` — object tactic parsing and compilation.
+- `InternalLean/InternalTactic.lean` — internal tactic parsing and compilation.
 - `InternalLean/ModelInterface.lean` — generated model interfaces.
 - `InternalLean/ModelTransport.lean` — generated model transports.
 - `InternalLeanTest/TinyNat.lean` — compact direct-LF example theory.
-- `InternalLeanTest/InternalTacticTest.lean` — object tactic regression examples.
+- `InternalLeanTest/InternalTacticTest.lean` — internal tactic regression examples.
