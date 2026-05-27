@@ -40,6 +40,12 @@ namespace InternalLeanTest.IntroUXTest
         hover.typeOrStatement.contains "src" && hover.typeOrStatement.contains "edge"
   | none => false
 
+/-- info: InternalLean.InternalHoverView.marker : internal rule IntroUXSmoke.reach_refl :
+  (x : Node) ⇒ Reach x x -/
+#guard_msgs (whitespace := lax) in
+#check (InternalLean.InternalHoverView.marker :
+  InternalLean.InternalHoverView "IntroUXSmoke" "rule" "reach_refl" "(x : Node) ⇒ Reach x x")
+
 end InternalLeanTest.IntroUXTest
 
 declare_type_theory IntroUXSmoke where

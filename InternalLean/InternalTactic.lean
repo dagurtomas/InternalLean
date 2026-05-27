@@ -2572,7 +2572,7 @@ def saveInternalObjectHoverInfo (target : InternalDefTarget) (sig : HLSignature)
           expectedType? := none
           expr := expr
           isBinder := false
-          isDisplayableTerm := true
+          isDisplayableTerm := false
         }
 
 /-- Save ordinary Lean `TacticInfo` nodes for object-theory tactic steps, so VS Code/infoview

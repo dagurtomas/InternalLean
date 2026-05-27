@@ -237,6 +237,8 @@ generate_lf_model_transports IntroReach only
   exercise10_compose_parameterized
 for IntroReachModel
 
+-- `generate_lf_model_transports IntroReach for IntroReachModel` transports everything
+
 namespace IntroReachExercises
 
 /-!
