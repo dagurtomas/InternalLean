@@ -2077,6 +2077,621 @@ partial def lfTelescopeSyntaxInModelWithFields (fieldNames : NameMap Name)
   else
     pure result
 
+/-- Local terms used while rendering structural-equivalence fields. -/
+abbrev LFLocalTermCtx := List (Name × TSyntax `term)
+
+/-- Look up a rendered local term by checked LF source name. -/
+def findLFLocalTerm? (locals : LFLocalTermCtx) (n : Name) : Option (TSyntax `term) :=
+  (locals.find? (fun p => p.fst == n.eraseMacroScopes)).map (·.snd)
+
+/-- Syntax for a checked LF expression projected from a model instance, allowing local variables
+that render as arbitrary terms rather than only identifiers. -/
+partial def lfExprSyntaxInModelInstanceWithTermLocals (fieldNames : NameMap Name)
+    (defValues : NameMap CheckedLFExpr) (modelIdent : Ident) (locals : LFLocalTermCtx)
+    (paramVis : LFParamVisibilityMap := {}) : CheckedLFExpr → CommandElabM (TSyntax `term)
+  | .ident h =>
+      match findLFLocalTerm? locals h.name with
+      | some localTerm => pure localTerm
+      | none =>
+          match h.kind, lfDefinitionValue? defValues h.name with
+          | .lfDefinition, some value =>
+            lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+              paramVis value
+          | _, _ => do
+              let field := mkIdent (lfModelFieldName fieldNames h.name)
+              `($modelIdent.$field:ident)
+  | .sort => `(Type)
+  | .univ u => typeSyntaxOfLevel u
+  | e@(.app ..) => do
+      let (head, args) := splitCheckedLFExprApp e
+      if let some n := checkedLFExprHeadName? head then
+        if lfHeadHasImplicitParams paramVis n then
+          let head ←
+            lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+              paramVis head
+          let head ← explicitLeanHeadSyntax head
+          let args ←
+            args.mapM (lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent
+              locals paramVis)
+          return ← mkTermAppSyntax head args
+      match e with
+      | .app f a => do
+          let f ←
+            lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+              paramVis f
+          let a ←
+            lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+              paramVis a
+          `($f $a)
+      | _ => throwError "internal error: expected LF application while rendering structural \
+          equivalence expression"
+  | .arrow none A B => do
+      let A ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+        paramVis A
+      let B ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+        paramVis B
+      `($A → $B)
+  | .arrow (some x) A B => do
+      let A ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+        paramVis A
+      let reserved : NameSet := {modelIdent.getId.eraseMacroScopes}
+      let xId := freshLFLocalIdent x [] reserved
+      let B ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent ((x,
+        xId) :: locals) paramVis B
+      `(($xId:ident : $A) → $B)
+  | .lam xs body => do
+      let rec go (i : Nat) (locals : LFLocalTermCtx) : CommandElabM (TSyntax `term) := do
+        if h : i < xs.size then
+          let x := xs[i]
+          let reserved : NameSet := {modelIdent.getId.eraseMacroScopes}
+          let xId := freshLFLocalIdent x [] reserved
+          let body ← go (i + 1) ((x, xId) :: locals)
+          `(fun $xId:ident => $body)
+        else
+          lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+            paramVis body
+      go 0 locals
+  | .jeq lhs rhs => do
+      let lhs ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+        paramVis lhs
+      let rhs ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+        paramVis rhs
+      `($lhs = $rhs)
+
+/-- One binder in a generated structural-equivalence field telescope. A missing type expression
+means the model interface rendered the corresponding side-condition input as plain `Type`. -/
+structure LFStructuralBinder where
+  /-- Source binder name. -/
+  name : Name
+  /-- Checked source type, if the generated model field retained it. -/
+  typeExpr? : Option CheckedLFExpr := none
+  /-- Source visibility. -/
+  visibility : BinderVisibility := .explicit
+  deriving Inhabited, Repr, BEq
+
+/-- Convert a checked LF binder to a structural-equivalence binder. -/
+def LFStructuralBinder.ofChecked (b : CheckedLFBinding) : LFStructuralBinder :=
+  { name := b.name, typeExpr? := some b.checkedTypeExpr, visibility := b.visibility }
+
+/-- Convert a source-model binder name to the matching target-model binder name. -/
+def structuralTargetBinderName (n : Name) : Name :=
+  Name.mkSimple s!"{flatNameString n}_target"
+
+/-- Convert a source-model binder name to its generated relation-witness binder name. -/
+def structuralRelationBinderName (n : Name) : Name :=
+  Name.mkSimple s!"{flatNameString n}_rel"
+
+/-- Add generated-field suffixes while avoiding collisions with earlier generated names. -/
+def freshStructuralFieldName (used : NameSet) (base : Name) (suffix : String) : Name × NameSet :=
+  let baseComponent := flatNameString base
+  let rec go : Nat → Name
+    | 0 => Name.mkSimple s!"{baseComponent}{suffix}"
+    | n + 1 => Name.mkSimple s!"{baseComponent}{suffix}{n + 1}"
+  let rec pick : Nat → Nat → Name
+    | 0, n => go n
+    | fuel + 1, n =>
+        let candidate := go n
+        if !used.contains candidate.eraseMacroScopes then
+          candidate
+        else
+          pick fuel (n + 1)
+  let candidate := pick (used.size + 64) 0
+  (candidate, used.insert candidate.eraseMacroScopes)
+
+/-- Pick the nested structural-equivalence structure name, avoiding generated model-namespace
+constants such as model projections and derived declarations. -/
+def lfStructuralEquivStructureName (obs : Array LFModelObligation) : Name := Id.run do
+  let mut used : NameSet := {}
+  for o in obs do
+    if let some generated := o.generatedName? then
+      used := used.insert generated.eraseMacroScopes
+  let base := `StructuralEquiv
+  let rec pick : Nat → Nat → Name
+    | 0, n => Name.mkSimple s!"StructuralEquiv{n}"
+    | fuel + 1, n =>
+        let candidate := Name.mkSimple s!"StructuralEquiv{n}"
+        if used.contains candidate.eraseMacroScopes then pick fuel (n + 1) else candidate
+  return if used.contains base then pick (used.size + 64) 1 else base
+
+/-- Collect explicit function-domain binders from a checked LF type expression. -/
+partial def collectLFStructuralArrowBinders (defValues : NameMap CheckedLFExpr) (owner : Name)
+    (start : Nat) : CheckedLFExpr → Array LFStructuralBinder × CheckedLFExpr
+  | .ident h =>
+      match h.kind, lfDefinitionValue? defValues h.name with
+      | .lfDefinition, some value => collectLFStructuralArrowBinders defValues owner start value
+      | _, _ => (#[], .ident h)
+  | .arrow x? A B =>
+      let name := x?.getD (Name.mkSimple s!"{flatNameString owner}_arg{start}")
+      let (rest, result) := collectLFStructuralArrowBinders defValues owner (start + 1) B
+      (#[{ name := name.eraseMacroScopes, typeExpr? := some A }] ++ rest, result)
+  | e => (#[], e)
+
+/-- Whether an LF expression is an object universe after expanding a bare LF definition head. -/
+partial def lfStructuralResultIsType (defValues : NameMap CheckedLFExpr) : CheckedLFExpr → Bool
+  | .sort | .univ _ => true
+  | .ident h =>
+      match h.kind, lfDefinitionValue? defValues h.name with
+      | .lfDefinition, some value => lfStructuralResultIsType defValues value
+      | _, _ => false
+  | _ => false
+
+/-- Binders and final result type represented by one generated model-field obligation. -/
+def lfStructuralFieldBindersAndResult? (defValues : NameMap CheckedLFExpr)
+    (blockingUntyped sidePredicateNames : NameSet) (o : LFModelObligation) :
+      Option (Array LFStructuralBinder × CheckedLFExpr) :=
+  match o.source with
+  | .syntaxSort | .judgment | .sideConditionPredicate =>
+      some (o.params.map LFStructuralBinder.ofChecked, .sort)
+  | .typedOpaque | .admittedOpaque => do
+      let typeExpr ← o.typeExpr?
+      let (arrowBinders, result) :=
+        collectLFStructuralArrowBinders defValues o.name o.params.size typeExpr
+      some (o.params.map LFStructuralBinder.ofChecked ++ arrowBinders, result)
+  | .rule => do
+      let conclusionExpr ← o.typeExpr?
+      let mut binders := o.params.map LFStructuralBinder.ofChecked
+      for p in o.premises do
+        binders := binders.push { name := p.name, typeExpr? := some p.checkedJudgmentExpr }
+      for e in o.paramEvidences do
+        binders := binders.push { name := e.name, typeExpr? := some e.checkedJudgmentExpr }
+      for sc in o.sideConditions do
+        if lfExprRenderableInModel defValues blockingUntyped sidePredicateNames sc.checkedInput then
+          binders := binders.push { name := sc.name, typeExpr? := some sc.checkedInput }
+        else
+          binders := binders.push { name := sc.name, typeExpr? := none }
+      some (binders, conclusionExpr)
+  | .theoremSideConditionCertificate | .untypedOpaque | .objectDefinition | .judgmentTheorem =>
+      none
+
+/-- Whether a generated model-field obligation is interpreted as a type family in structural
+equivalence generation. -/
+def lfStructuralObligationIsTypeFamily (defValues : NameMap CheckedLFExpr)
+    (blockingUntyped sidePredicateNames : NameSet) (o : LFModelObligation) : Bool :=
+  match lfStructuralFieldBindersAndResult? defValues blockingUntyped sidePredicateNames o with
+  | some (_, result) => lfStructuralResultIsType defValues result
+  | none => false
+
+/-- Generated field names used by the structural-equivalence structure. -/
+structure LFStructuralEquivNameMaps where
+  /-- Source field to generated type-family equivalence field. -/
+  equivNames : NameMap Name := {}
+  /-- Source field to generated operation/rule preservation field. -/
+  preserveNames : NameMap Name := {}
+  deriving Inhabited, Repr
+
+/-- Compute generated structural-equivalence field names from ordered model obligations. -/
+def lfStructuralEquivNameMaps (checked : CheckedSignature) (obs : Array LFModelObligation) :
+    LFStructuralEquivNameMaps := Id.run do
+  let defValues := lfDefinitionValueMap checked
+  let blockingUntyped := blockingUntypedLFOpaqueNames checked
+  let sidePredicateNames := lfSideConditionPredicateNames checked
+  let mut used : NameSet := {lfStructuralEquivStructureName obs}
+  for o in obs do
+    if o.generatedRole == .field && o.renderable then
+      if let some generated := o.generatedName? then
+        used := used.insert generated.eraseMacroScopes
+  let mut equivNames : NameMap Name := {}
+  let mut preserveNames : NameMap Name := {}
+  for o in obs do
+    if o.generatedRole == .field && o.renderable then
+      if let some generated := o.generatedName? then
+        if lfStructuralObligationIsTypeFamily defValues blockingUntyped sidePredicateNames o then
+          let (name, nextUsed) := freshStructuralFieldName used generated "_equiv"
+          used := nextUsed
+          equivNames := equivNames.insert o.name.eraseMacroScopes name
+        else if (lfStructuralFieldBindersAndResult? defValues blockingUntyped
+            sidePredicateNames o).isSome then
+          let (name, nextUsed) := freshStructuralFieldName used generated "_preserve"
+          used := nextUsed
+          preserveNames := preserveNames.insert o.name.eraseMacroScopes name
+  return { equivNames, preserveNames }
+
+/-- Values of a `NameMap Name` as a set of reserved generated names. -/
+def nameMapValueNameSet (m : NameMap Name) : NameSet := Id.run do
+  let mut out : NameSet := {}
+  for (_, n) in m.toList do
+    out := out.insert n.eraseMacroScopes
+  return out
+
+/-- Apply a model projection to generated term arguments. -/
+def structuralModelFieldApp (modelIdent : Ident) (fieldName : Name)
+    (args : Array (TSyntax `term)) (renderExplicit : Bool := false) :
+      CommandElabM (TSyntax `term) := do
+  let fieldId := mkIdent fieldName
+  let head ← `(term| $modelIdent.$fieldId:ident)
+  let head ← if renderExplicit then explicitLeanHeadSyntax head else pure head
+  mkTermAppSyntax head args
+
+/-- Split an LF application into a global head and argument spine after expanding bare LF
+definition heads. -/
+partial def structuralHeadArgs? (defValues : NameMap CheckedLFExpr) :
+    CheckedLFExpr → Option (CheckedLFHead × Array CheckedLFExpr)
+  | .ident h =>
+      match h.kind, lfDefinitionValue? defValues h.name with
+      | .lfDefinition, some value => structuralHeadArgs? defValues value
+      | _, _ => some (h, #[])
+  | .app f a => do
+      let (h, args) ← structuralHeadArgs? defValues f
+      some (h, args.push a)
+  | _ => none
+
+/-- Rendering context for one generated structural-equivalence field type. -/
+structure LFStructuralRenderCtx where
+  /-- Generated type-family equivalence field names. -/
+  equivNames : NameMap Name := {}
+  /-- Generated operation/rule preservation field names. -/
+  preserveNames : NameMap Name := {}
+  /-- Binders and result type for each generated model field. -/
+  fieldBinders : NameMap (Array LFStructuralBinder × CheckedLFExpr) := {}
+  /-- Model field-name map. -/
+  fieldNames : NameMap Name := {}
+  /-- Expanded LF definitions. -/
+  defValues : NameMap CheckedLFExpr := {}
+  /-- Source parameter visibility map. -/
+  paramVis : LFParamVisibilityMap := {}
+  /-- Left/source model variable. -/
+  sourceModel : Ident := mkIdent `M
+  /-- Right/target model variable. -/
+  targetModel : Ident := mkIdent `N
+  /-- Source-side local terms. -/
+  sourceLocals : LFLocalTermCtx := []
+  /-- Target-side local terms. -/
+  targetLocals : LFLocalTermCtx := []
+  /-- Relation witnesses for local terms. -/
+  relationLocals : LFLocalTermCtx := []
+
+/-- Parameter types for a field head in structural-equivalence generation. -/
+def structuralHeadParamTypes (ctx : LFStructuralRenderCtx) (headName : Name) :
+    Array LFStructuralBinder :=
+  match ctx.fieldBinders.find? headName.eraseMacroScopes with
+  | some (binders, _) => binders
+  | none => #[]
+
+/-- Render an LF expression over the source model in a structural-equivalence field. -/
+def structuralSourceExprSyntax (ctx : LFStructuralRenderCtx) (e : CheckedLFExpr) :
+    CommandElabM (TSyntax `term) :=
+  lfExprSyntaxInModelInstanceWithTermLocals ctx.fieldNames ctx.defValues ctx.sourceModel
+    ctx.sourceLocals ctx.paramVis e
+
+/-- Render an LF expression over the target model in a structural-equivalence field. -/
+def structuralTargetExprSyntax (ctx : LFStructuralRenderCtx) (e : CheckedLFExpr) :
+    CommandElabM (TSyntax `term) :=
+  lfExprSyntaxInModelInstanceWithTermLocals ctx.fieldNames ctx.defValues ctx.targetModel
+    ctx.targetLocals ctx.paramVis e
+
+mutual
+
+/-- Term for the generated equivalence between the source and target interpretations of a type
+expression, when the expression is headed by a generated type-family field. -/
+partial def structuralTypeEquivTerm? (ctx : LFStructuralRenderCtx) (typeExpr : CheckedLFExpr) :
+    CommandElabM (Option (TSyntax `term)) := do
+  let some (head, args) := structuralHeadArgs? ctx.defValues typeExpr
+    | return none
+  let some equivName := ctx.equivNames.find? head.name.eraseMacroScopes
+    | match ctx.fieldBinders.find? head.name.eraseMacroScopes with
+      | some (_, result) =>
+          if lfStructuralResultIsType ctx.defValues result then
+            throwError "structural equivalence for type-family dependency '{head.name}' was not \
+              generated before it was needed"
+          else
+            return none
+      | none => return none
+  let mut appArgs : Array (TSyntax `term) := #[]
+  let paramTypes := structuralHeadParamTypes ctx head.name
+  for h : i in [:args.size] do
+    let arg := args[i]
+    appArgs := appArgs.push (← structuralSourceExprSyntax ctx arg)
+    if let some paramBinder := paramTypes[i]? then
+      if let some paramTy := paramBinder.typeExpr? then
+        if (← structuralTypeEquivTerm? ctx paramTy).isSome then
+          appArgs := appArgs.push (← structuralTargetExprSyntax ctx arg)
+          match ← structuralTermRelationTerm? ctx paramTy arg with
+          | some rel => appArgs := appArgs.push rel
+          | none =>
+              throwError "unsupported dependent relation argument for parameter {i} of \
+                '{head.name}'"
+  let headTerm : TSyntax `term := mkIdent equivName
+  let headTerm ← if lfHeadHasImplicitParams ctx.paramVis head.name then
+      explicitLeanHeadSyntax headTerm
+    else
+      pure headTerm
+  some <$> mkTermAppSyntax headTerm appArgs
+
+/-- Relation witness between the mapped source interpretation of a term and its target-model
+interpretation at a specified LF type. -/
+partial def structuralTermRelationTerm? (ctx : LFStructuralRenderCtx) (typeExpr termExpr :
+    CheckedLFExpr) : CommandElabM (Option (TSyntax `term)) := do
+  match termExpr with
+  | .ident h =>
+      if h.kind == .local then
+        return findLFLocalTerm? ctx.relationLocals h.name
+      else if h.kind == .lfDefinition then
+        match lfDefinitionValue? ctx.defValues h.name with
+        | some value => return ← structuralTermRelationTerm? ctx typeExpr value
+        | none => pure ()
+      else
+        pure ()
+  | _ => pure ()
+  let some (head, args) := structuralHeadArgs? ctx.defValues termExpr
+    | return none
+  let some preserveName := ctx.preserveNames.find? head.name.eraseMacroScopes
+    | return none
+  let paramTypes := structuralHeadParamTypes ctx head.name
+  let mut appArgs : Array (TSyntax `term) := #[]
+  for h : i in [:args.size] do
+    let arg := args[i]
+    appArgs := appArgs.push (← structuralSourceExprSyntax ctx arg)
+    if let some paramBinder := paramTypes[i]? then
+      if let some paramTy := paramBinder.typeExpr? then
+        if (← structuralTypeEquivTerm? ctx paramTy).isSome then
+          appArgs := appArgs.push (← structuralTargetExprSyntax ctx arg)
+          match ← structuralTermRelationTerm? ctx paramTy arg with
+          | some rel => appArgs := appArgs.push rel
+          | none =>
+              throwError "unsupported dependent relation argument for term parameter {i} of \
+                '{head.name}'"
+  let preserveTerm : TSyntax `term := mkIdent preserveName
+  let renderExplicit := paramTypes.any (fun b => b.visibility == .implicit)
+  let preserveTerm ←
+    if renderExplicit then explicitLeanHeadSyntax preserveTerm else pure preserveTerm
+  some <$> mkTermAppSyntax preserveTerm appArgs
+
+end
+
+/-- Syntax for the small equivalence type used by generated structural-equivalence fields. -/
+def structuralTypeEquivTypeSyntax (source target : TSyntax `term) :
+    CommandElabM (TSyntax `term) :=
+  mkTermAppSyntax (mkIdent ``InternalLean.TypeEquiv) #[source, target]
+
+/-- Syntax for heterogeneous equality in generated preservation clauses. -/
+def structuralHEqSyntax (lhs rhs : TSyntax `term) : CommandElabM (TSyntax `term) :=
+  mkTermAppSyntax (mkIdent ``HEq) #[lhs, rhs]
+
+/-- Whether an LF expression mentions a generated model field in structural-equivalence
+rendering.  If such a type has no generated equivalence of its own, sharing one source-side
+binder on the target side is unsound and usually ill-typed. -/
+partial def structuralExprMentionsGeneratedField (ctx : LFStructuralRenderCtx) :
+    CheckedLFExpr → Bool
+  | .ident h =>
+      if h.kind == .local then
+        false
+      else
+        match h.kind, lfDefinitionValue? ctx.defValues h.name with
+        | .lfDefinition, some value => structuralExprMentionsGeneratedField ctx value
+        | _, _ => ctx.fieldBinders.contains h.name.eraseMacroScopes
+  | .sort | .univ _ => false
+  | .app f a => structuralExprMentionsGeneratedField ctx f ||
+      structuralExprMentionsGeneratedField ctx a
+  | .arrow _ A B => structuralExprMentionsGeneratedField ctx A ||
+      structuralExprMentionsGeneratedField ctx B
+  | .lam _ body => structuralExprMentionsGeneratedField ctx body
+  | .jeq lhs rhs => structuralExprMentionsGeneratedField ctx lhs ||
+      structuralExprMentionsGeneratedField ctx rhs
+
+/-- Render the left/source side of a structural binder. -/
+def structuralBinderSourceType (ctx : LFStructuralRenderCtx) (b : LFStructuralBinder) :
+    CommandElabM (TSyntax `term) :=
+  match b.typeExpr? with
+  | some typeExpr => structuralSourceExprSyntax ctx typeExpr
+  | none => `(Type)
+
+/-- Render the right/target side of a structural binder. -/
+def structuralBinderTargetType (ctx : LFStructuralRenderCtx) (b : LFStructuralBinder) :
+    CommandElabM (TSyntax `term) :=
+  match b.typeExpr? with
+  | some typeExpr => structuralTargetExprSyntax ctx typeExpr
+  | none => `(Type)
+
+/-- Extend a structural-equivalence telescope with one source binder and, when the binder type has
+a generated equivalence, a target binder plus a heterogeneous relation witness. -/
+def pushStructuralBinder (ctx : LFStructuralRenderCtx) (rendered : Array LFRenderedBinder)
+    (sourceArgs targetArgs : Array (TSyntax `term)) (b : LFStructuralBinder) :
+    CommandElabM (LFStructuralRenderCtx × Array LFRenderedBinder × Array (TSyntax `term) ×
+      Array (TSyntax `term)) := do
+  let sourceTy ← structuralBinderSourceType ctx b
+  let usedNames : NameSet :=
+    rendered.foldl (init := {}) fun acc b => acc.insert b.name.eraseMacroScopes
+  let structuralFieldNames := nameMapValueNameSet ctx.equivNames ++
+    nameMapValueNameSet ctx.preserveNames
+  let reserved :=
+    ((usedNames ++ structuralFieldNames).insert ctx.sourceModel.getId.eraseMacroScopes).insert
+      ctx.targetModel.getId.eraseMacroScopes
+  let sourceId := freshLFLocalIdent b.name [] reserved
+  let sourceTerm : TSyntax `term := sourceId
+  let rendered := rendered.push { name := sourceId.getId, typeStx := sourceTy, visibility :=
+    b.visibility }
+  let sourceArgs := sourceArgs.push sourceTerm
+  let ctxWithSource := { ctx with sourceLocals := (b.name.eraseMacroScopes, sourceTerm) ::
+    ctx.sourceLocals }
+  match b.typeExpr? with
+  | some typeExpr =>
+      match ← structuralTypeEquivTerm? ctx typeExpr with
+      | some equivTerm =>
+          let targetTy ← structuralBinderTargetType ctxWithSource b
+          let reserved := reserved.insert sourceId.getId.eraseMacroScopes
+          let targetId := freshLFLocalIdent (structuralTargetBinderName b.name) [] reserved
+          let targetTerm : TSyntax `term := targetId
+          let rendered := rendered.push { name := targetId.getId, typeStx := targetTy, visibility :=
+            b.visibility }
+          let relLhs ← mkTermAppSyntax equivTerm #[sourceTerm]
+          let relTy ← structuralHEqSyntax relLhs targetTerm
+          let reserved := reserved.insert targetId.getId.eraseMacroScopes
+          let relId := freshLFLocalIdent (structuralRelationBinderName b.name) [] reserved
+          let rendered := rendered.push { name := relId.getId, typeStx := relTy }
+          let relTerm : TSyntax `term := relId
+          let ctx := { ctxWithSource with
+            targetLocals := (b.name.eraseMacroScopes, targetTerm) :: ctx.targetLocals
+            relationLocals := (b.name.eraseMacroScopes, relTerm) :: ctx.relationLocals }
+          pure (ctx, rendered, sourceArgs, targetArgs.push targetTerm)
+      | none =>
+          if structuralExprMentionsGeneratedField ctx typeExpr then
+            throwError "unsupported structural-equivalence binder type for '{b.name}'; the type \
+              mentions generated model fields but has no generated equivalence"
+          let ctx := { ctxWithSource with targetLocals := (b.name.eraseMacroScopes,
+            sourceTerm) :: ctx.targetLocals }
+          pure (ctx, rendered, sourceArgs, targetArgs.push sourceTerm)
+  | none =>
+      let ctx := { ctxWithSource with targetLocals := (b.name.eraseMacroScopes, sourceTerm) ::
+        ctx.targetLocals }
+      pure (ctx, rendered, sourceArgs, targetArgs.push sourceTerm)
+
+/-- Render the relational telescope for a structural-equivalence field. -/
+def structuralBinderTelescope (ctx : LFStructuralRenderCtx)
+    (binders : Array LFStructuralBinder) : CommandElabM (LFStructuralRenderCtx ×
+      Array LFRenderedBinder × Array (TSyntax `term) × Array (TSyntax `term)) := do
+  let mut ctx := ctx
+  let mut rendered : Array LFRenderedBinder := #[]
+  let mut sourceArgs : Array (TSyntax `term) := #[]
+  let mut targetArgs : Array (TSyntax `term) := #[]
+  for b in binders do
+    let (nextCtx, nextRendered, nextSourceArgs, nextTargetArgs) ←
+      pushStructuralBinder ctx rendered sourceArgs targetArgs b
+    ctx := nextCtx
+    rendered := nextRendered
+    sourceArgs := nextSourceArgs
+    targetArgs := nextTargetArgs
+  pure (ctx, rendered, sourceArgs, targetArgs)
+
+/-- Syntax for one generated structural-equivalence field. -/
+def structuralEquivFieldSyntax (name : Name) (typeStx : TSyntax `term) :
+    CommandElabM (TSyntax `Lean.Parser.Command.structSimpleBinder) := do
+  let fieldId := mkIdent name
+  `(Lean.Parser.Command.structSimpleBinder|
+    /-- Generated strict structural-equivalence field. -/
+    $fieldId:ident : $typeStx)
+
+/-- Syntax for the type-family equivalence clause attached to one model field. -/
+def structuralTypeFamilyFieldSyntax (ctx : LFStructuralRenderCtx) (sourceName fieldName
+    equivName : Name) (binders : Array LFStructuralBinder) :
+      CommandElabM (TSyntax `Lean.Parser.Command.structSimpleBinder) := do
+  let (ctx, rendered, sourceArgs, targetArgs) ← structuralBinderTelescope ctx binders
+  let renderExplicit := lfHeadHasImplicitParams ctx.paramVis sourceName
+  let sourceField ← structuralModelFieldApp ctx.sourceModel fieldName sourceArgs renderExplicit
+  let targetField ← structuralModelFieldApp ctx.targetModel fieldName targetArgs renderExplicit
+  let result ← structuralTypeEquivTypeSyntax sourceField targetField
+  let ty ← lfRenderedTelescopeSyntax rendered result
+  structuralEquivFieldSyntax equivName ty
+
+/-- Syntax for the operation/rule preservation clause attached to one model field. -/
+def structuralPreservationFieldSyntax (ctx : LFStructuralRenderCtx) (sourceName fieldName
+    preserveName : Name) (binders : Array LFStructuralBinder) (resultExpr : CheckedLFExpr) :
+      CommandElabM (TSyntax `Lean.Parser.Command.structSimpleBinder) := do
+  let (ctx, rendered, sourceArgs, targetArgs) ← structuralBinderTelescope ctx binders
+  let renderExplicit := lfHeadHasImplicitParams ctx.paramVis sourceName
+  let sourceField ← structuralModelFieldApp ctx.sourceModel fieldName sourceArgs renderExplicit
+  let targetField ← structuralModelFieldApp ctx.targetModel fieldName targetArgs renderExplicit
+  let lhs ←
+    match ← structuralTypeEquivTerm? ctx resultExpr with
+    | some equivTerm => `($equivTerm $sourceField)
+    | none => pure sourceField
+  let result ← structuralHEqSyntax lhs targetField
+  let ty ← lfRenderedTelescopeSyntax rendered result
+  structuralEquivFieldSyntax preserveName ty
+
+/-- Extract a compact message from a structural-equivalence generation exception. -/
+def lfStructuralExceptionMessageData : Exception → MessageData
+  | .error _ msg => msg
+  | .internal _ _ => m!"internal exception"
+
+/-- Field syntaxes for the generated strict structural-equivalence structure. -/
+def lfModelStructuralEquivFieldSyntaxes (checked : CheckedSignature)
+    (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) :
+      CommandElabM (Array (TSyntax `Lean.Parser.Command.structSimpleBinder)) := do
+  let obs ← validateLFModelObligations checked admittedNames mode
+  let fieldObs := obs.filter (fun o => o.generatedRole == .field && o.renderable)
+  let fieldNames := lfModelFieldNameMap obs
+  let defValues := lfDefinitionValueMap checked
+  let paramVis := lfParamVisibilityMapOfObligations obs
+  let blockingUntyped := blockingUntypedLFOpaqueNames checked
+  let sidePredicateNames := lfSideConditionPredicateNames checked
+  let nameMaps := lfStructuralEquivNameMaps checked obs
+  let mut fieldBinders : NameMap (Array LFStructuralBinder × CheckedLFExpr) := {}
+  for o in fieldObs do
+    if let some data := lfStructuralFieldBindersAndResult? defValues blockingUntyped
+        sidePredicateNames o then
+      fieldBinders := fieldBinders.insert o.name.eraseMacroScopes data
+  let mut activeCtx : LFStructuralRenderCtx := {
+    fieldBinders := fieldBinders
+    fieldNames := fieldNames
+    defValues := defValues
+    paramVis := paramVis
+    sourceModel := mkIdent `M
+    targetModel := mkIdent `N }
+  let mut fields := #[]
+  let mut skipped : Array MessageData := #[]
+  for o in fieldObs do
+    if let some fieldName := o.generatedName? then
+      if let some (binders, resultExpr) := fieldBinders.find? o.name.eraseMacroScopes then
+        if let some equivName := nameMaps.equivNames.find? o.name.eraseMacroScopes then
+          try
+            let field ← structuralTypeFamilyFieldSyntax activeCtx o.name fieldName equivName binders
+            fields := fields.push field
+            let equivNames := activeCtx.equivNames.insert o.name.eraseMacroScopes equivName
+            activeCtx := { activeCtx with equivNames := equivNames }
+          catch ex =>
+            skipped := skipped.push m!"{fieldName}: {lfStructuralExceptionMessageData ex}"
+        else if let some preserveName := nameMaps.preserveNames.find? o.name.eraseMacroScopes then
+          try
+            let field ← structuralPreservationFieldSyntax activeCtx o.name fieldName preserveName
+              binders resultExpr
+            fields := fields.push field
+            let preserveNames := activeCtx.preserveNames.insert o.name.eraseMacroScopes preserveName
+            activeCtx := { activeCtx with preserveNames := preserveNames }
+          catch ex =>
+            skipped := skipped.push m!"{fieldName}: {lfStructuralExceptionMessageData ex}"
+  unless skipped.isEmpty do
+    let shown := skipped.toList.take 10
+    let more := if skipped.size > 10 then m!"\n  ... and {skipped.size - 10} more" else m!""
+    logWarning m!"structural-equivalence generation for {checked.name} skipped {skipped.size} \
+      field(s) whose dependent preservation clauses are not supported by the generic renderer:\n  \
+      {MessageData.joinSep shown m!"\n  "}{more}"
+  pure fields
+
+/-- Syntax for the generated strict structural-equivalence structure. -/
+def lfModelStructuralEquivCommandSyntax (checked : CheckedSignature) (structureName : Name)
+    (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) : CommandElabM Syntax :=
+      do
+  let obs ← validateLFModelObligations checked admittedNames mode
+  let fields ← lfModelStructuralEquivFieldSyntaxes checked admittedNames mode
+  let equivId := mkIdent (lfStructuralEquivStructureName obs)
+  let modelId := mkIdent structureName
+  let M := mkIdent `M
+  let N := mkIdent `N
+  let levelIds := checked.levelParams.map (mkIdent ·.eraseMacroScopes)
+  let cmd ←
+    if levelIds.isEmpty then
+      `(command| /-- Strict structural equivalence between generated LF model instances. -/
+        structure $equivId:ident ($M:ident $N:ident : $modelId:ident) where
+          $[$fields:structSimpleBinder]*)
+    else
+      `(command| /-- Strict structural equivalence between generated LF model instances. -/
+        structure $equivId:ident.{$[$levelIds:ident],*}
+            ($M:ident $N:ident : $modelId:ident.{$[$levelIds:ident],*}) where
+          $[$fields:structSimpleBinder]*)
+  let autoImplicitOpt := mkIdent `autoImplicit
+  let wrapped ← `(command| set_option $autoImplicitOpt:ident false in $cmd:command)
+  pure wrapped.raw
+
 /-- Source-doc role usually associated with an LF model obligation. -/
 def sourceDocRoleForLFModelObligation? (o : LFModelObligation) : Option SourceDocRole :=
   match o.source with

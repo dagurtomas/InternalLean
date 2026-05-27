@@ -5,6 +5,7 @@ Authors: Dagur Asgeirsson
 -/
 module
 
+public import InternalLean.Basic
 public import InternalLean.Registry
 public meta import InternalLean.ModelTransport
 

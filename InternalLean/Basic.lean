@@ -34,6 +34,27 @@ namespace InternalLean
 
 open Lean
 
+/-- A small universe-polymorphic equivalence type used by generated structural model
+equivalence interfaces. InternalLean avoids depending on an external `Equiv` definition here so
+generated model code remains available in the minimal project environment. -/
+structure TypeEquiv.{u, v} (α : Sort u) (β : Sort v) where
+  /-- Forward map. -/
+  toFun : α → β
+  /-- Inverse map. -/
+  invFun : β → α
+  /-- The inverse is a left inverse of the forward map. -/
+  left_inv : ∀ x, invFun (toFun x) = x
+  /-- The inverse is a right inverse of the forward map. -/
+  right_inv : ∀ y, toFun (invFun y) = y
+
+namespace TypeEquiv
+
+/-- Apply a generated `TypeEquiv` by function application. -/
+instance {α : Sort u} {β : Sort v} : CoeFun (TypeEquiv α β) (fun _ => α → β) where
+  coe e := e.toFun
+
+end TypeEquiv
+
 /-- Untyped raw object syntax.
 
 The aliases `RawCtx`, `RawTy`, `RawTm`, `RawSubst`, and `RawArg` below document the

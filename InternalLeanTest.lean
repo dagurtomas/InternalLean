@@ -15,6 +15,7 @@ import InternalLeanTest.IntroUXTest
 import InternalLeanTest.LFModelStressTest
 import InternalLeanTest.LogicalFrameworkMetadataExamplesTest
 import InternalLeanTest.ModelStructureDependencyOrderTest
+import InternalLeanTest.ModelStructuralEquivTest
 import InternalLeanTest.ModelWorkflowUXTest
 import InternalLeanTest.NaturalNumbersTest
 import InternalLeanTest.RawConversionCaptureTest
