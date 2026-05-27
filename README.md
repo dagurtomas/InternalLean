@@ -104,6 +104,10 @@ Run `lake update InternalLean` after adding the dependency, then `lake build`.
 
 Good first files to inspect:
 
+- `Examples/IntroExercises.lean` — first hands-on exercises for declaring a tiny type theory and
+  filling internal proofs.
+- `Examples/IntroExercisesHints.lean` and `Examples/IntroExercisesSolutions.lean` — hints and
+  worked solutions for the exercises.
 - `InternalLeanTest/TinyNat.lean` — small direct-LF type theory.
 - `InternalLeanTest/TinyNatModel.lean` — generated model-interface workflow over TinyNat.
 - `InternalLeanTest/InternalTacticTest.lean` — internal tactic examples and regressions.
