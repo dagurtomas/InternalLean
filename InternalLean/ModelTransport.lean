@@ -257,6 +257,7 @@ elab "generate_lf_model_structure " theory:ident " as " structureName:ident : co
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  LeanTypeModelGeneration.warnTemporaryAdmissionFieldsIfAny checked admittedNames
   let cmds ←
     LeanTypeModelGeneration.lfModelStructureSyntaxes checked structureName.getId admittedNames
   LeanTypeModelGeneration.addLFModelInterfaceLibrarySuggestionDenyList structureName.getId cmds.size
@@ -297,13 +298,19 @@ elab "#check_lf_model_derived_theorems " theory:ident " for " structureName:iden
       derivation was missed"
 
 /-- Whether an admission can be generated as an LF model-interface method. -/
-def isLFModelAdmission (checked : CheckedSignature) (a : InternalAdmission) : Bool :=
+def isLFModelAdmission (checked : CheckedSignature) (admittedNames : NameSet)
+    (a : InternalAdmission) : Bool :=
+  let tempFields :=
+    LeanTypeModelGeneration.lfModelTemporaryAdmissionFieldNames checked admittedNames
   match a.kind with
   | .lfOpaque =>
-      match checked.lfOpaqueConsts.find? (fun c =>
-        c.name.eraseMacroScopes == a.declName.eraseMacroScopes) with
-      | some c => c.checkedTypeExpr?.isSome
-      | none => false
+      if tempFields.contains a.declName.eraseMacroScopes then
+        false
+      else
+        match checked.lfOpaqueConsts.find? (fun c =>
+          c.name.eraseMacroScopes == a.declName.eraseMacroScopes) with
+        | some c => c.checkedTypeExpr?.isSome
+        | none => false
   | .judgmentTheorem => LeanTypeModelGeneration.isLFJudgmentAdmission checked a
 
 /-- Check whether a generated LF model-interface method name is available. -/
@@ -353,8 +360,8 @@ def generateLFObjectDefModelMethod (theoryName structureName : Name) (checked : 
 /-- Generate one admitted LF opaque as a model-interface method whose body intentionally uses Lean
 `sorry`. -/
 def generateLFAdmissionModelMethod (theoryName structureName : Name) (checked : CheckedSignature)
-    (a : InternalAdmission) : CommandElabM Bool := do
-  unless isLFModelAdmission checked a do
+    (admittedNames : NameSet) (a : InternalAdmission) : CommandElabM Bool := do
+  unless isLFModelAdmission checked admittedNames a do
     return false
   let cmd ←
     LeanTypeModelGeneration.admittedModelInterpretationSyntax checked structureName a.declName a
@@ -382,7 +389,8 @@ elab "generate_lf_model_derived_theorems " theory:ident " for " structureName:id
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
   LeanTypeModelGeneration.addLFModelInterfaceLibrarySuggestionDenyList structureName.getId 1
   for a in admissions do
-    discard <| generateLFAdmissionModelMethod theory.getId structureName.getId checked a
+    discard <|
+      generateLFAdmissionModelMethod theory.getId structureName.getId checked admittedNames a
   for t in checked.lfJudgmentTheorems do
     discard <| generateLFTheoremModelMethod theory.getId structureName.getId checked t admittedNames
 
@@ -399,18 +407,24 @@ def lfModelTransportPreviewString (theoryName structureName : Name) (checked : C
     let collision := if (← getEnv).contains fullName then " [name collision]" else ""
     pure s!"  {kind} {sourceName.eraseMacroScopes} → {fullName.eraseMacroScopes}; dot: \
       M.{methodName.eraseMacroScopes}{extra}{collision}"
+  let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  let tempFields :=
+    LeanTypeModelGeneration.lfModelTemporaryAdmissionFieldNames checked admittedNames
   let mut generated := 0
   let mut skipped := 0
   for a in admissions do
-    if isLFModelAdmission checked a then
+    if isLFModelAdmission checked admittedNames a then
       let kind := s!"admitted {a.kind.label}"
       admissionLines :=
         admissionLines.push (← methodLine kind a.declName a.declName "; Lean sorry-backed")
       generated := generated + 1
     else
-      skippedLines :=
-        skippedLines.push s!"  admitted {a.declName.eraseMacroScopes}: not a typed LF opaque or \
-          LF judgment admission for this backend"
+      let reason :=
+        if tempFields.contains a.declName.eraseMacroScopes then
+          "already a temporary admitted-definition model field; no transport needed"
+        else
+          "not a typed LF opaque or LF judgment admission for this backend"
+      skippedLines := skippedLines.push s!"  admitted {a.declName.eraseMacroScopes}: {reason}"
       skipped := skipped + 1
   for d in checked.lfObjectDefs do
     let (ok, diag?) := LeanTypeModelGeneration.lfObjectDefTransportStatus checked d
@@ -508,6 +522,8 @@ def generateSelectedLFModelMethods (theoryName structureName : Name) (checked : 
     (admissions : Array InternalAdmission) (selected? : Option NameSet := none) :
       CommandElabM Unit := do
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  let tempFields :=
+    LeanTypeModelGeneration.lfModelTemporaryAdmissionFieldNames checked admittedNames
   let selectedExpanded? := match selected? with
     | none => none
     | some selected => some (expandSelectedLFModelTransportSet checked selected)
@@ -519,9 +535,12 @@ def generateSelectedLFModelMethods (theoryName structureName : Name) (checked : 
   let mut generated : NameSet := {}
   for a in admissions do
     if wanted a.declName then
-      if (← getEnv).contains (theoryName ++ structureName ++ a.declName) then
+      if tempFields.contains a.declName.eraseMacroScopes then
         generated := generated.insert a.declName.eraseMacroScopes
-      else if (← generateLFAdmissionModelMethod theoryName structureName checked a) then
+      else if (← getEnv).contains (theoryName ++ structureName ++ a.declName) then
+        generated := generated.insert a.declName.eraseMacroScopes
+      else if (←
+          generateLFAdmissionModelMethod theoryName structureName checked admittedNames a) then
         generated := generated.insert a.declName.eraseMacroScopes
   for d in checked.lfObjectDefs do
     if wanted d.name then
@@ -740,6 +759,7 @@ elab "generate_model_interface " theory:ident " as " structureName:ident : comma
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  LeanTypeModelGeneration.warnTemporaryAdmissionFieldsIfAny checked admittedNames
   let cmds ←
     LeanTypeModelGeneration.lfModelStructureSyntaxes checked structureName.getId admittedNames
   LeanTypeModelGeneration.addLFModelInterfaceLibrarySuggestionDenyList structureName.getId cmds.size
@@ -760,6 +780,7 @@ elab "generate_public_model_interface " theory:ident " as " structureName:ident 
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  LeanTypeModelGeneration.warnTemporaryAdmissionFieldsIfAny checked admittedNames .publicMode
   let cmds ←
     LeanTypeModelGeneration.lfModelStructureSyntaxes checked structureName.getId admittedNames
       .publicMode
@@ -781,6 +802,7 @@ elab "generate_model_section_interface " theory:ident " as " structureName:ident
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  LeanTypeModelGeneration.warnTemporaryAdmissionFieldsIfAny checked admittedNames
   let (cmds, generatedNames) ←
     LeanTypeModelGeneration.lfModelSectionStructureSyntaxes checked structureName.getId
       admittedNames
@@ -797,6 +819,7 @@ elab "generate_public_model_section_interface " theory:ident " as " structureNam
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  LeanTypeModelGeneration.warnTemporaryAdmissionFieldsIfAny checked admittedNames .publicMode
   let (cmds, generatedNames) ←
     LeanTypeModelGeneration.lfModelSectionStructureSyntaxes checked structureName.getId
       admittedNames .publicMode
@@ -878,6 +901,7 @@ elab "generate_model_section_bundles \
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  LeanTypeModelGeneration.warnTemporaryAdmissionFieldsIfAny checked admittedNames
   let (cmds, adapterCmd, generatedNames) ←
     LeanTypeModelGeneration.lfModelSectionBundleSyntaxes checked bundleName.getId flatName.getId
       admittedNames
@@ -895,6 +919,7 @@ elab "generate_public_model_section_bundles \
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  LeanTypeModelGeneration.warnTemporaryAdmissionFieldsIfAny checked admittedNames .publicMode
   let (cmds, adapterCmd, generatedNames) ←
     LeanTypeModelGeneration.lfModelSectionBundleSyntaxes checked bundleName.getId flatName.getId
       admittedNames .publicMode
@@ -962,8 +987,15 @@ def modelTransportCommandSyntax? (theoryName declName structureName : Name) :
   let some checked ← liftCoreM <| getCheckedTheory? theoryName
     | throwError "no checked artifact stored for type theory '{theoryName}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theoryName
+  let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  let tempFields :=
+    LeanTypeModelGeneration.lfModelTemporaryAdmissionFieldNames checked admittedNames
   if let some a := findInternalAdmission? admissions declName then
-    if isLFModelAdmission checked a then
+    if tempFields.contains a.declName.eraseMacroScopes then
+      throwError "admitted internal declaration '{declName}' is already a temporary \
+        admitted-definition field in model interface '{structureName}'; no transport command is \
+          needed"
+    else if isLFModelAdmission checked admittedNames a then
       let cmd ←
         LeanTypeModelGeneration.admittedModelInterpretationSyntax checked structureName a.declName a
       return some { cmd, outputName := a.declName, admitted := true, targetNamespace :=
@@ -973,7 +1005,6 @@ def modelTransportCommandSyntax? (theoryName declName structureName : Name) :
         model-interface transport"
   if let some d := checked.lfObjectDefs.find? (fun d =>
     d.name.eraseMacroScopes == declName.eraseMacroScopes) then
-    let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
     match ←
       LeanTypeModelGeneration.lfObjectDefInterpretationSyntaxAs? checked structureName d.name d
         admittedNames with
@@ -987,7 +1018,6 @@ def modelTransportCommandSyntax? (theoryName declName structureName : Name) :
               `#print_lf_model_omissions {theoryName}` for details."
   if let some t := checked.lfJudgmentTheorems.find? (fun t =>
     t.name.eraseMacroScopes == declName.eraseMacroScopes) then
-    let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
     match ←
       LeanTypeModelGeneration.lfJudgmentTheoremInterpretationSyntaxAs? checked structureName t.name
         t admittedNames with

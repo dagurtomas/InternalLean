@@ -145,3 +145,44 @@ generate_lf_model_structure SCTShapeModelOrder as SCTShapeModel
   (x : self.Functor (self.animaCat self.terminalAnima) C) : Type -/
 #guard_msgs (whitespace := lax) in
 #check SCTShapeModelOrder.SCTShapeModel.InitialObjectWitness
+
+declare_type_theory ModelTemporaryAdmissionDependency where
+  syntax_sort A
+  syntax_sort P (x : A)
+
+namespace ModelTemporaryAdmissionDependency
+
+/-- warning: internal declaration 'ModelTemporaryAdmissionDependency.tempA' was admitted by `sorry`;
+the annotation was checked in theory 'ModelTemporaryAdmissionDependency', but the body was not
+checked. Use `#lint_type_theory_sorries ModelTemporaryAdmissionDependency` to list current
+admissions. -/
+#guard_msgs (whitespace := lax) in
+internal def tempA : A := sorry
+
+end ModelTemporaryAdmissionDependency
+
+extend_type_theory ModelTemporaryAdmissionDependency where
+  syntax_sort Q (p : P tempA)
+
+/-- warning: generated model interface for ModelTemporaryAdmissionDependency includes 1 temporary
+admitted-definition field(s).
+These fields interpret `sorry`-admitted internal definitions because model-facing obligations
+mention them.
+Preferred fix: replace the corresponding internal `sorry`s with checked internal definitions or
+internal proof terms, then regenerate the model interface.
+Filling these Lean fields is a temporary model-development escape hatch.
+temporary admitted-definition fields:
+  tempA: needed by Q -/
+#guard_msgs (whitespace := lax) in
+generate_lf_model_structure ModelTemporaryAdmissionDependency as ModelTemporaryAdmissionModel
+
+/-- info: ModelTemporaryAdmissionDependency.ModelTemporaryAdmissionModel.tempA
+  (self : ModelTemporaryAdmissionDependency.ModelTemporaryAdmissionModel) : self.A -/
+#guard_msgs (whitespace := lax) in
+#check ModelTemporaryAdmissionDependency.ModelTemporaryAdmissionModel.tempA
+
+/-- info: ModelTemporaryAdmissionDependency.ModelTemporaryAdmissionModel.Q
+  (self : ModelTemporaryAdmissionDependency.ModelTemporaryAdmissionModel) (p : self.P self.tempA) :
+  Type -/
+#guard_msgs (whitespace := lax) in
+#check ModelTemporaryAdmissionDependency.ModelTemporaryAdmissionModel.Q

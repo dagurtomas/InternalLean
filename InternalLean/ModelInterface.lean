@@ -348,7 +348,7 @@ partial def lfExprRenderableInModel (defValues : NameMap CheckedLFExpr)
       | .local | .syntaxSort | .judgment | .opaque | .lfRule =>
           !blockingUntyped.contains h.name || sidePredicateNames.contains h.name
       | .lfDefinition =>
-          match defValues.find? h.name with
+          match lfDefinitionValue? defValues h.name with
           | some value => lfExprRenderableInModel defValues blockingUntyped sidePredicateNames value
           | none => false
       | .lfTheorem | .primitive | .definition | .theorem => false
@@ -400,7 +400,7 @@ object definitions to their checked values. -/
 partial def lfExprSyntaxInModel (defValues : NameMap CheckedLFExpr)
     (locals : LFLocalSyntaxCtx) : CheckedLFExpr → CommandElabM (TSyntax `term)
   | .ident h =>
-      match h.kind, defValues.find? h.name with
+      match h.kind, lfDefinitionValue? defValues h.name with
       | .lfDefinition, some value => lfExprSyntaxInModel defValues locals value
       | _, _ => pure <| (findLFLocalIdent? locals h.name).getD (mkIdent h.name)
   | .sort => `(Type)
@@ -440,7 +440,7 @@ partial def lfExprSyntaxInModelInstance (defValues : NameMap CheckedLFExpr)
       match findLFLocalIdent? locals h.name with
       | some localId => pure localId
       | none =>
-          match h.kind, defValues.find? h.name with
+          match h.kind, lfDefinitionValue? defValues h.name with
           | .lfDefinition, some value =>
             lfExprSyntaxInModelInstance defValues modelIdent locals value
           | _, _ => do
@@ -482,7 +482,7 @@ partial def lfObjExprRenderableInModel (defValues : NameMap CheckedLFExpr)
     (blockingUntyped sidePredicateNames : NameSet) : ObjExpr → Bool
   | .ident n =>
       let n := n.eraseMacroScopes
-      match defValues.find? n with
+      match lfDefinitionValue? defValues n with
       | some value => lfExprRenderableInModel defValues blockingUntyped sidePredicateNames value
       | none => !blockingUntyped.contains n || sidePredicateNames.contains n
   | .sort => true
@@ -502,7 +502,7 @@ partial def lfObjExprSyntaxInModel (defValues : NameMap CheckedLFExpr)
     (locals : LFLocalSyntaxCtx) : ObjExpr → CommandElabM (TSyntax `term)
   | .ident n =>
       let n := n.eraseMacroScopes
-      match findLFLocalIdent? locals n, defValues.find? n with
+      match findLFLocalIdent? locals n, lfDefinitionValue? defValues n with
       | some localId, _ => pure localId
       | none, some value => lfExprSyntaxInModel defValues locals value
       | none, none => pure (mkIdent n)
@@ -542,7 +542,7 @@ partial def lfObjExprSyntaxInModelInstance (defValues : NameMap CheckedLFExpr)
     (modelIdent : Ident) (locals : LFLocalSyntaxCtx) : ObjExpr → CommandElabM (TSyntax `term)
   | .ident n =>
       let n := n.eraseMacroScopes
-      match findLFLocalIdent? locals n, defValues.find? n with
+      match findLFLocalIdent? locals n, lfDefinitionValue? defValues n with
       | some localId, _ => pure localId
       | none, some value => lfExprSyntaxInModelInstance defValues modelIdent locals value
       | none, none => do
@@ -643,12 +643,18 @@ partial def lfTelescopeSyntaxInModel (defValues : NameMap CheckedLFExpr)
     pure result
 
 /-- Syntax for one generated LF-model field. -/
-def lfFieldSyntax (_doc : String) (name : Name) (typeStx : TSyntax `term) :
+def lfFieldSyntax (doc : String) (name : Name) (typeStx : TSyntax `term) :
     CommandElabM (TSyntax `Lean.Parser.Command.structSimpleBinder) := do
   let fieldId := mkIdent name
-  `(Lean.Parser.Command.structSimpleBinder|
-    /-- Generated LF model field. -/
-    $fieldId:ident : $typeStx)
+  if doc == "admitted lf_opaque" then
+    `(Lean.Parser.Command.structSimpleBinder|
+      /-- TEMPORARY admitted-definition field. Prefer closing the source internal `sorry` and
+      regenerating the model interface; fill this field only as a model-development escape hatch. -/
+      $fieldId:ident : $typeStx)
+  else
+    `(Lean.Parser.Command.structSimpleBinder|
+      /-- Generated LF model field. -/
+      $fieldId:ident : $typeStx)
 
 /-- Field for a checked LF syntax sort, interpreted as a Lean type family. -/
 def lfSyntaxSortFieldSyntax (defValues : NameMap CheckedLFExpr) (s : CheckedLFSyntaxSort) :
@@ -1072,7 +1078,7 @@ def LFModelObligation.summary (o : LFModelObligation) : MessageData :=
 def countLFModelObligations (obs : Array LFModelObligation) (p : LFModelObligation → Bool) : Nat :=
   obs.foldl (init := 0) fun n o => if p o then n + 1 else n
 
-/-- Names of admitted LF opaque constants that should not become model fields. -/
+/-- Names of admitted LF opaque constants, before temporary-field promotion is computed. -/
 def internalAdmissionNameSet (admissions : Array InternalAdmission) : NameSet :=
   admissions.foldl (init := {}) fun names a =>
     if a.kind == .lfOpaque then names.insert a.declName.eraseMacroScopes else names
@@ -1111,6 +1117,163 @@ def lfModelObligationMentionsAny (names : NameSet) (o : LFModelObligation) : Boo
     o.premises.any (fun p => lfExprMentionsAny names p.checkedJudgmentExpr) ||
     o.paramEvidences.any (fun e => lfExprMentionsAny names e.checkedJudgmentExpr) ||
     o.sideConditions.any (fun s => lfExprMentionsAny names s.checkedInput)
+
+/-- Whether an obligation is a temporary field for a `sorry`-admitted internal definition. -/
+def LFModelObligation.isTemporaryAdmissionField (o : LFModelObligation) : Bool :=
+  o.source == .admittedOpaque && o.generatedRole == .field && o.renderable
+
+/-- Dependency singleton for a rendered LF-model source name. -/
+def lfModelRenderedDependency (targetNames : NameSet) (n : Name) : NameSet :=
+  let n := n.eraseMacroScopes
+  if targetNames.contains n then ({n} : NameSet) else {}
+
+/-- Dependencies introduced by rendering a checked LF expression in a model structure.
+
+This mirrors `lfExprSyntaxInModelWithFields`: checked LF definitions are expanded before syntax is
+produced, so generated-field dependencies introduced by their bodies must be attributed to the
+field being rendered. -/
+partial def lfExprRenderedFieldDependencies (defValues : NameMap CheckedLFExpr)
+    (targetNames locals visitedDefs : NameSet) : CheckedLFExpr → NameSet
+  | .ident h =>
+      let n := h.name.eraseMacroScopes
+      if h.kind == .local || locals.contains n then
+        {}
+      else if h.kind == .lfDefinition then
+        match lfDefinitionValue? defValues n with
+        | some value =>
+            if visitedDefs.contains n then {}
+            else lfExprRenderedFieldDependencies defValues targetNames locals
+              (visitedDefs.insert n) value
+        | none => lfModelRenderedDependency targetNames n
+      else
+        lfModelRenderedDependency targetNames n
+  | .sort => {}
+  | .univ _ => {}
+  | .app f a =>
+      insertNameSet
+        (lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs f)
+        (lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs a)
+  | .arrow none A B =>
+      insertNameSet
+        (lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs A)
+        (lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs B)
+  | .arrow (some x) A B =>
+      let depsA := lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs A
+      let locals := locals.insert x.eraseMacroScopes
+      insertNameSet depsA
+        (lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs B)
+  | .lam xs body =>
+      let locals := xs.foldl (fun acc x => acc.insert x.eraseMacroScopes) locals
+      lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs body
+  | .jeq lhs rhs =>
+      insertNameSet
+        (lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs lhs)
+        (lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs rhs)
+
+/-- Dependencies introduced by rendering a source LF expression in a model structure. -/
+partial def lfObjExprRenderedFieldDependencies (defValues : NameMap CheckedLFExpr)
+    (targetNames locals visitedDefs : NameSet) : ObjExpr → NameSet
+  | .ident n =>
+      let n := n.eraseMacroScopes
+      if locals.contains n then
+        {}
+      else
+        match lfDefinitionValue? defValues n with
+        | some value =>
+            if visitedDefs.contains n then {}
+            else lfExprRenderedFieldDependencies defValues targetNames locals
+              (visitedDefs.insert n) value
+        | none => lfModelRenderedDependency targetNames n
+  | .sort => {}
+  | .univ _ => {}
+  | .app f a =>
+      insertNameSet
+        (lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs f)
+        (lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs a)
+  | .arrow none A B | .funArrow none A B =>
+      insertNameSet
+        (lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs A)
+        (lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs B)
+  | .arrow (some x) A B | .funArrow (some x) A B =>
+      let depsA := lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs A
+      let locals := locals.insert x.eraseMacroScopes
+      insertNameSet depsA
+        (lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs B)
+  | .lam xs body =>
+      let locals := xs.foldl (fun acc x => acc.insert x.eraseMacroScopes) locals
+      lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs body
+  | .jeq lhs rhs =>
+      insertNameSet
+        (lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs lhs)
+        (lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs rhs)
+
+/-- Target source names mentioned by an LF model obligation after renderer-style expansion. -/
+def lfModelObligationRenderedFieldDependencies (defValues : NameMap CheckedLFExpr)
+    (targetNames : NameSet) (o : LFModelObligation) : NameSet := Id.run do
+  let mut out : NameSet := {}
+  let mut locals : NameSet := {}
+  for p in o.params do
+    out := insertNameSet out <|
+      lfExprRenderedFieldDependencies defValues targetNames locals {} p.checkedTypeExpr
+    locals := locals.insert p.name.eraseMacroScopes
+  if let some e := o.typeExpr? then
+    out := insertNameSet out <| lfExprRenderedFieldDependencies defValues targetNames locals {} e
+  for e in o.extraStatements do
+    out := insertNameSet out <| lfExprRenderedFieldDependencies defValues targetNames locals {} e
+  if let some e := o.sourceObjExpr? then
+    out := insertNameSet out <| lfObjExprRenderedFieldDependencies defValues targetNames locals {} e
+  for p in o.premises do
+    out := insertNameSet out <|
+      lfExprRenderedFieldDependencies defValues targetNames locals {} p.checkedJudgmentExpr
+  for e in o.paramEvidences do
+    out := insertNameSet out <|
+      lfExprRenderedFieldDependencies defValues targetNames locals {} e.checkedJudgmentExpr
+  for s in o.sideConditions do
+    out := insertNameSet out <|
+      lfExprRenderedFieldDependencies defValues targetNames locals {} s.checkedInput
+  return out
+
+/-- Typed admitted opaque obligations, i.e. admissions that can become temporary model fields. -/
+def lfModelTypedAdmittedObligationNames (obs : Array LFModelObligation) : NameSet :=
+  obs.foldl (init := {}) fun acc o =>
+    if o.source == .admittedOpaque && o.typeExpr?.isSome then
+      acc.insert o.name.eraseMacroScopes
+    else
+      acc
+
+/-- Diagnostic attached to temporary model fields for `sorry`-admitted internal definitions. -/
+def lfModelTemporaryAdmissionFieldDiagnostic : String :=
+  "temporary model field for a sorry-admitted internal definition used by model-facing " ++
+    "obligations; preferred fix: replace the internal `sorry` with a checked internal " ++
+      "definition or internal proof term, then regenerate the model interface"
+
+/-- Admitted internal definitions that must temporarily be fields because model fields mention
+them.
+
+The closure step accounts for temporary fields whose own types mention admitted definitions. -/
+def lfModelTemporaryAdmissionFieldNamesFromObligations (defValues : NameMap CheckedLFExpr)
+    (admittedNames : NameSet) (obs : Array LFModelObligation) : NameSet := Id.run do
+  let typedAdmitted := lfModelTypedAdmittedObligationNames obs
+  let admittedTargets := typedAdmitted.toList.foldl (init := {}) fun acc n =>
+    if admittedNames.contains n.eraseMacroScopes then acc.insert n.eraseMacroScopes else acc
+  let mut out : NameSet := {}
+  for o in obs do
+    if o.generatedRole == .field && o.renderable then
+      out := insertNameSet out <|
+        lfModelObligationRenderedFieldDependencies defValues admittedTargets o
+  let mut changed := true
+  while changed do
+    changed := false
+    for o in obs do
+      let n := o.name.eraseMacroScopes
+      if o.source == .admittedOpaque && out.contains n then
+        let deps := lfModelObligationRenderedFieldDependencies defValues admittedTargets o
+        for dep in deps.toList do
+          let dep := dep.eraseMacroScopes
+          if !out.contains dep then
+            out := out.insert dep
+            changed := true
+  return out
 
 /-- Explain why a checked LF rule is not renderable by the current generic LF model backend. -/
 def lfRuleOmissionReason (blockingUntyped : NameSet) (r : CheckedLFRule) : String := Id.run do
@@ -1165,13 +1328,13 @@ def lfJudgmentTheoremObligationStatus (checked : CheckedSignature) (t : CheckedL
 
 /-- Generic LF model obligations extracted from checked LF metadata and generated LF replay
 artifacts.
-`admittedNames` are typed LF opaque constants introduced by `internal def ... := sorry`;
-the LF backend treats them as Lean-side generated declarations rather than model fields. -/
+`admittedNames` are typed LF opaque constants introduced by `internal def ... := sorry`.
+When such an admission is mentioned by a model-facing field, it becomes a loud temporary model
+field; otherwise it remains a generated Lean declaration with a `sorry` body. -/
 def lfModelObligations (checked : CheckedSignature) (admittedNames : NameSet := {}) :
   Array LFModelObligation := Id.run do
   let defValues := lfDefinitionValueMap checked
   let blockingUntyped := blockingUntypedLFOpaqueNames checked
-  let blockingFields := unionNameSet blockingUntyped admittedNames
   let sidePredicates := lfSideConditionPredicates checked
   let sidePredicateNames := lfSideConditionPredicateNames checked
   let mut out : Array LFModelObligation := #[]
@@ -1225,7 +1388,7 @@ def lfModelObligations (checked : CheckedSignature) (admittedNames : NameSet := 
       diagnostic? := if renderable then some "generated as a derived-theorem parameter" else
         some "instantiated side-condition input is not renderable by the LF-model backend" }
   for r in checked.lfRules do
-    let renderable := lfRuleRenderable blockingFields r
+    let renderable := lfRuleRenderable blockingUntyped r
     out := out.push {
       name := r.name, source := .rule,
       generatedRole := if renderable then .field else .omitted,
@@ -1258,7 +1421,19 @@ def lfModelObligations (checked : CheckedSignature) (admittedNames : NameSet := 
       generatedName? := if renderable then some t.name else none,
       typeExpr? := some t.checkedJudgmentExpr, renderable := renderable,
       diagnostic? := diagnostic? }
-  return out.map fun o => { o with visibility := lfModelVisibilityOf checked o.name }
+  let tempAdmissions :=
+    lfModelTemporaryAdmissionFieldNamesFromObligations defValues admittedNames out
+  return out.map fun o =>
+    let o :=
+      if o.source == .admittedOpaque && tempAdmissions.contains o.name.eraseMacroScopes then
+        { o with
+          generatedRole := .field,
+          generatedName? := some o.name,
+          renderable := true,
+          diagnostic? := some lfModelTemporaryAdmissionFieldDiagnostic }
+      else
+        o
+    { o with visibility := lfModelVisibilityOf checked o.name }
 
 /-- Apply a public/full model-interface mode to raw LF model obligations. -/
 def lfModelObligationsForMode (checked : CheckedSignature) (mode : LFModelInterfaceMode)
@@ -1295,6 +1470,13 @@ def lfModelObligationsForMode (checked : CheckedSignature) (mode : LFModelInterf
         else
           o
 
+/-- Temporary admitted-definition fields selected for the current model-interface mode. -/
+def lfModelTemporaryAdmissionFieldNames (checked : CheckedSignature)
+    (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) : NameSet :=
+  let obs := lfModelObligationsForMode checked mode (lfModelObligations checked admittedNames)
+  obs.foldl (init := {}) fun acc o =>
+    if o.isTemporaryAdmissionField then acc.insert o.name.eraseMacroScopes else acc
+
 /-- Summary for the generic LF model-obligation IR. -/
 def lfModelObligationSummaryString (checked : CheckedSignature) (admittedNames : NameSet := {})
     (mode : LFModelInterfaceMode := .full) : String :=
@@ -1326,6 +1508,7 @@ def lfModelFieldSourceBreakdown (obs : Array LFModelObligation) : String :=
     ("syntax_sort", count .syntaxSort),
     ("judgment", count .judgment),
     ("typed lf_opaque", count .typedOpaque),
+    ("temporary admitted-definition", count .admittedOpaque),
     ("side-condition predicate", count .sideConditionPredicate),
     ("rule", count .rule)]
   let shown := entries.filter (fun (_, n) => n != 0)
@@ -1348,6 +1531,43 @@ def lfModelFieldImplementationHint (o : LFModelObligation) : String :=
   s!"  {generated}: {o.source.label} {nameString o.name} ({o.paramCount} \
     parameter(s){implicitText}{premiseText}{sideText})"
 
+/-- Model-facing fields whose rendered types mention the selected temporary admission. -/
+def lfModelTemporaryAdmissionDependents (defValues : NameMap CheckedLFExpr)
+    (obs : Array LFModelObligation) (admissionName : Name) : Array LFModelObligation :=
+  let target : NameSet := {admissionName.eraseMacroScopes}
+  obs.filter fun o =>
+    o.generatedRole == .field && o.renderable && o.name.eraseMacroScopes !=
+      admissionName.eraseMacroScopes &&
+        (lfModelObligationRenderedFieldDependencies defValues target o).contains
+          admissionName.eraseMacroScopes
+
+/-- Warning text for temporary admitted-definition fields, if the interface needs any. -/
+def lfModelTemporaryAdmissionWarningStringFromObligations (checked : CheckedSignature)
+    (obs : Array LFModelObligation) : Option String := Id.run do
+  let temps := obs.filter (·.isTemporaryAdmissionField)
+  if temps.isEmpty then
+    return none
+  let defValues := lfDefinitionValueMap checked
+  let mut lines := #[
+    s!"generated model interface for {nameString checked.name} includes {temps.size} temporary \
+      admitted-definition field(s).",
+    "These fields interpret `sorry`-admitted internal definitions because model-facing \
+      obligations mention them.",
+    "Preferred fix: replace the corresponding internal `sorry`s with checked internal \
+      definitions or internal proof terms, then regenerate the model interface.",
+    "Filling these Lean fields is a temporary model-development escape hatch.",
+    "temporary admitted-definition fields:" ]
+  for o in temps.take 12 do
+    let deps := lfModelTemporaryAdmissionDependents defValues obs o.name
+    let depNames := deps.toList.take 6 |>.map fun d => nameString ((d.generatedName?).getD d.name)
+    let depText := if depNames.isEmpty then "<dependency closure>" else
+      String.intercalate ", " depNames
+    let more := if deps.size > 6 then s!", ... {deps.size - 6} more" else ""
+    lines := lines.push s!"  {nameString o.name}: needed by {depText}{more}"
+  if temps.size > 12 then
+    lines := lines.push s!"  ... {temps.size - 12} more temporary field(s)"
+  return some (String.intercalate "\n" lines.toList)
+
 /-- User-facing guide printed before generated LF model-interface source. -/
 def lfModelInterfaceGuideString (theoryName structureName : Name) (checked : CheckedSignature)
     (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) : CommandElabM String :=
@@ -1368,6 +1588,8 @@ def lfModelInterfaceGuideString (theoryName structureName : Name) (checked : Che
     lines :=
       lines.push s!"syntax abbreviations expanded before fields: {checked.lfSyntaxAbbrevs.size}; \
         they are public notation, not model obligations."
+  if let some warning := lfModelTemporaryAdmissionWarningStringFromObligations checked obs then
+    lines := lines.push s!"WARNING: {warning}"
   if !heavy.isEmpty then
     lines := lines.push "dependency-heavy fields to inspect first:"
     for o in heavy.take 8 do
@@ -1410,8 +1632,8 @@ def lfModelContractString (checked : CheckedSignature) : String :=
     "source classes:",
     "  syntax_sort/judgment/typed lf_opaque/rule: normally become model fields",
     "  syntax_abbrev: public notation expanded before model obligations, not a model field",
-    "  admitted lf_opaque: generated Lean declaration with a sorry body, not a required model \
-      field",
+    "  admitted lf_opaque: normally generated as a Lean declaration with a sorry body; if a \
+      model-facing field mentions it, it becomes a loud temporary model field",
     "  side-condition predicate: inferred model predicate field used by rule evidence arguments",
     "  theorem side-condition certificate: derived theorem parameter when renderable",
     "  lf_def: expanded metadata, not a field when renderable",
@@ -1501,120 +1723,6 @@ def validateLFModelObligationArray (theoryName : Name) (obs : Array LFModelOblig
           seenDerivedParams := seenDerivedParams.insert n
   return .ok ()
 
-/-- Dependency singleton for a rendered LF-model field source name. -/
-def lfModelRenderedFieldDependency (fieldSourceNames : NameSet) (n : Name) : NameSet :=
-  let n := n.eraseMacroScopes
-  if fieldSourceNames.contains n then ({n} : NameSet) else {}
-
-/-- Field dependencies introduced by rendering a checked LF expression in a model structure.
-
-This mirrors `lfExprSyntaxInModelWithFields`: checked LF definitions are expanded before syntax is
-produced, so their generated-field dependencies must be attributed to the field being rendered. -/
-partial def lfExprRenderedFieldDependencies (defValues : NameMap CheckedLFExpr)
-    (fieldSourceNames locals visitedDefs : NameSet) : CheckedLFExpr → NameSet
-  | .ident h =>
-      let n := h.name.eraseMacroScopes
-      if h.kind == .local || locals.contains n then
-        {}
-      else if h.kind == .lfDefinition then
-        match lfDefinitionValue? defValues n with
-        | some value =>
-            if visitedDefs.contains n then {}
-            else lfExprRenderedFieldDependencies defValues fieldSourceNames locals
-              (visitedDefs.insert n) value
-        | none => lfModelRenderedFieldDependency fieldSourceNames n
-      else
-        lfModelRenderedFieldDependency fieldSourceNames n
-  | .sort => {}
-  | .univ _ => {}
-  | .app f a =>
-      insertNameSet
-        (lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs f)
-        (lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs a)
-  | .arrow none A B =>
-      insertNameSet
-        (lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs A)
-        (lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs B)
-  | .arrow (some x) A B =>
-      let depsA := lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs A
-      let locals := locals.insert x.eraseMacroScopes
-      insertNameSet depsA
-        (lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs B)
-  | .lam xs body =>
-      let locals := xs.foldl (fun acc x => acc.insert x.eraseMacroScopes) locals
-      lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs body
-  | .jeq lhs rhs =>
-      insertNameSet
-        (lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs lhs)
-        (lfExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs rhs)
-
-/-- Field dependencies introduced by rendering a source LF expression in a model structure. -/
-partial def lfObjExprRenderedFieldDependencies (defValues : NameMap CheckedLFExpr)
-    (fieldSourceNames locals visitedDefs : NameSet) : ObjExpr → NameSet
-  | .ident n =>
-      let n := n.eraseMacroScopes
-      if locals.contains n then
-        {}
-      else
-        match lfDefinitionValue? defValues n with
-        | some value =>
-            if visitedDefs.contains n then {}
-            else lfExprRenderedFieldDependencies defValues fieldSourceNames locals
-              (visitedDefs.insert n) value
-        | none => lfModelRenderedFieldDependency fieldSourceNames n
-  | .sort => {}
-  | .univ _ => {}
-  | .app f a =>
-      insertNameSet
-        (lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs f)
-        (lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs a)
-  | .arrow none A B | .funArrow none A B =>
-      insertNameSet
-        (lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs A)
-        (lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs B)
-  | .arrow (some x) A B | .funArrow (some x) A B =>
-      let depsA :=
-        lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs A
-      let locals := locals.insert x.eraseMacroScopes
-      insertNameSet depsA
-        (lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs B)
-  | .lam xs body =>
-      let locals := xs.foldl (fun acc x => acc.insert x.eraseMacroScopes) locals
-      lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs body
-  | .jeq lhs rhs =>
-      insertNameSet
-        (lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs lhs)
-        (lfObjExprRenderedFieldDependencies defValues fieldSourceNames locals visitedDefs rhs)
-
-/-- Global field names mentioned by an LF model obligation after renderer-style expansion. -/
-def lfModelObligationRenderedFieldDependencies (defValues : NameMap CheckedLFExpr)
-    (fieldSourceNames : NameSet) (o : LFModelObligation) : NameSet := Id.run do
-  let mut out : NameSet := {}
-  let mut locals : NameSet := {}
-  for p in o.params do
-    out := insertNameSet out <|
-      lfExprRenderedFieldDependencies defValues fieldSourceNames locals {} p.checkedTypeExpr
-    locals := locals.insert p.name.eraseMacroScopes
-  if let some e := o.typeExpr? then
-    out := insertNameSet out <| lfExprRenderedFieldDependencies defValues fieldSourceNames
-      locals {} e
-  for e in o.extraStatements do
-    out := insertNameSet out <| lfExprRenderedFieldDependencies defValues fieldSourceNames
-      locals {} e
-  if let some e := o.sourceObjExpr? then
-    out := insertNameSet out <| lfObjExprRenderedFieldDependencies defValues fieldSourceNames
-      locals {} e
-  for p in o.premises do
-    out := insertNameSet out <| lfExprRenderedFieldDependencies defValues fieldSourceNames
-      locals {} p.checkedJudgmentExpr
-  for e in o.paramEvidences do
-    out := insertNameSet out <| lfExprRenderedFieldDependencies defValues fieldSourceNames
-      locals {} e.checkedJudgmentExpr
-  for s in o.sideConditions do
-    out := insertNameSet out <| lfExprRenderedFieldDependencies defValues fieldSourceNames
-      locals {} s.checkedInput
-  return out
-
 /-- Unemitted generated fields that a field still depends on. -/
 def unresolvedLFModelFieldDependencies (defValues : NameMap CheckedLFExpr)
     (fieldSourceNames emitted : NameSet) (o : LFModelObligation) : List Name :=
@@ -1675,19 +1783,29 @@ def validateLFModelObligations (checked : CheckedSignature) (admittedNames : Nam
       | .ok obs => pure obs
       | .error msg => throwError msg
 
+/-- Emit the default warning for temporary admitted-definition model fields, if any. -/
+def warnTemporaryAdmissionFieldsIfAny (checked : CheckedSignature)
+    (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) : CommandElabM Unit :=
+  do
+  let obs ← validateLFModelObligations checked admittedNames mode
+  if let some warning := lfModelTemporaryAdmissionWarningStringFromObligations checked obs then
+    logWarning m!"{warning}"
+
 /-- Generated field-name map induced by renderable field obligations. -/
 def lfModelFieldNameMap (obs : Array LFModelObligation) : NameMap Name := Id.run do
   let mut out : NameMap Name := {}
   for o in obs do
     if o.generatedRole == .field && o.renderable then
       if let some generatedName := o.generatedName? then
-        out := out.insert o.name generatedName
+        out := out.insert o.name.eraseMacroScopes generatedName.eraseMacroScopes
   return out
 
 /-- Generated field name for an LF global, defaulting to the original name when no model field
 exists. -/
 def lfModelFieldName (fieldNames : NameMap Name) (n : Name) : Name :=
-  (fieldNames.find? n).getD n
+  match fieldNames.find? n with
+  | some fieldName => fieldName
+  | none => (fieldNames.find? n.eraseMacroScopes).getD n.eraseMacroScopes
 
 /-- Source parameter visibility map induced by LF model obligations. -/
 def lfParamVisibilityMapOfObligations (obs : Array LFModelObligation) : LFParamVisibilityMap :=
@@ -1695,7 +1813,7 @@ def lfParamVisibilityMapOfObligations (obs : Array LFModelObligation) : LFParamV
   let mut out : LFParamVisibilityMap := {}
   for o in obs do
     if !o.params.isEmpty then
-      out := out.insert o.name (o.params.map (·.visibility))
+      out := out.insert o.name.eraseMacroScopes (o.params.map (·.visibility))
   return out
 
 /-- Syntax for a checked LF expression in an LF-model structure field, using generated names
@@ -1705,7 +1823,7 @@ partial def lfExprSyntaxInModelWithFields (fieldNames : NameMap Name)
       LFParamVisibilityMap := {}) :
     CheckedLFExpr → CommandElabM (TSyntax `term)
   | .ident h =>
-      match findLFLocalIdent? locals h.name, h.kind, defValues.find? h.name with
+      match findLFLocalIdent? locals h.name, h.kind, lfDefinitionValue? defValues h.name with
       | some localId, _, _ => pure localId
       | none, .lfDefinition, some value =>
         lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis value
@@ -1758,7 +1876,7 @@ partial def lfObjExprSyntaxInModelWithFields (fieldNames : NameMap Name)
     ObjExpr → CommandElabM (TSyntax `term)
   | .ident n =>
       let n := n.eraseMacroScopes
-      match findLFLocalIdent? locals n, defValues.find? n with
+      match findLFLocalIdent? locals n, lfDefinitionValue? defValues n with
       | some localId, _ => pure localId
       | none, some value => lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis value
       | none, none => pure (mkIdent (lfModelFieldName fieldNames n))
@@ -1813,7 +1931,7 @@ partial def lfExprSyntaxInModelInstanceWithFields (fieldNames : NameMap Name)
       match findLFLocalIdent? locals h.name with
       | some localId => pure localId
       | none =>
-          match h.kind, defValues.find? h.name with
+          match h.kind, lfDefinitionValue? defValues h.name with
           | .lfDefinition, some value =>
             lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis
               value
@@ -1879,7 +1997,7 @@ partial def lfObjExprSyntaxInModelInstanceWithFields (fieldNames : NameMap Name)
     (paramVis : LFParamVisibilityMap := {}) : ObjExpr → CommandElabM (TSyntax `term)
   | .ident n =>
       let n := n.eraseMacroScopes
-      match findLFLocalIdent? locals n, defValues.find? n with
+      match findLFLocalIdent? locals n, lfDefinitionValue? defValues n with
       | some localId, _ => pure localId
       | none, some value =>
         lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis value
@@ -2017,6 +2135,16 @@ def lfModelFieldDocString (theoryName structureName : Name) (o : LFModelObligati
     | some doc => ["", "Source documentation:", trimCapturedDoc doc]
     | none => ["",
       "Source documentation: missing; run `#lint_type_theory_docs` on the source theory."]
+  let temporaryAdmissionLines :=
+    if o.isTemporaryAdmissionField then
+      ["",
+       "TEMPORARY admitted-definition field:",
+       "This field interprets a `sorry`-admitted internal definition because later model \
+        obligations mention it.",
+       "Preferred fix: replace the internal `sorry` with a checked internal definition or \
+        internal proof term, then regenerate the model interface."]
+    else
+      []
   pure <| String.intercalate "\n" <|
     [ s!"LF model field \
       `{theoryName.eraseMacroScopes}.{structureName.eraseMacroScopes}.\
@@ -2032,7 +2160,7 @@ def lfModelFieldDocString (theoryName structureName : Name) (o : LFModelObligati
       "Generated names are deterministic source names unless collision validation reports \
         otherwise.",
       "This field is part of a generated model interface; checked LF/profile artifacts remain the \
-        trust boundary." ] ++ sourceDocLines
+        trust boundary." ] ++ temporaryAdmissionLines ++ sourceDocLines
 
 /-- Maximum number of generated LF-model fields per generated structure chunk.
 
@@ -2133,7 +2261,7 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
     (fieldTerms.find? fieldName).getD (mkIdent fieldName)
   let rec expr (locals : LFLocalSyntaxCtx) : CheckedLFExpr → CommandElabM (TSyntax `term)
     | .ident h =>
-        match findLFLocalIdent? locals h.name, h.kind, defValues.find? h.name with
+        match findLFLocalIdent? locals h.name, h.kind, lfDefinitionValue? defValues h.name with
         | some localId, _, _ => pure localId
         | none, .lfDefinition, some value => expr locals value
         | none, _, _ => pure (fieldTerm h.name)
@@ -2181,7 +2309,7 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
   let rec obj (locals : LFLocalSyntaxCtx) : ObjExpr → CommandElabM (TSyntax `term)
     | .ident n =>
         let n := n.eraseMacroScopes
-        match findLFLocalIdent? locals n, defValues.find? n with
+        match findLFLocalIdent? locals n, lfDefinitionValue? defValues n with
         | some localId, _ => pure localId
         | none, some value => expr locals value
         | none, none => pure (fieldTerm n)
@@ -2249,7 +2377,7 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
       let result ← `(Type)
       let ty ← telescope o.params result
       some <$> lfFieldSyntax o.source.label generatedName ty
-  | .typedOpaque =>
+  | .typedOpaque | .admittedOpaque =>
       let some typeExpr := o.typeExpr?
         | throwError "LF model field obligation '{o.name}' has no checked type expression"
       let result ← expr [] typeExpr
@@ -2288,7 +2416,7 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
       let concl ← expr locals conclusionExpr
       let ty ← lfRenderedTelescopeSyntax binders concl
       some <$> lfFieldSyntax o.source.label generatedName ty
-  | .admittedOpaque | .untypedOpaque | .objectDefinition | .judgmentTheorem =>
+  | .untypedOpaque | .objectDefinition | .judgmentTheorem =>
       return none
 
 /-- Syntax for one generated LF-model field, driven by the generic obligation IR. -/
@@ -2306,7 +2434,7 @@ def lfModelObligationFieldSyntax? (fieldNames : NameMap Name) (defValues : NameM
       let result ← `(Type)
       let ty ← lfTelescopeSyntaxInModelWithFields fieldNames defValues o.params result [] 0 paramVis
       some <$> lfFieldSyntax o.source.label generatedName ty
-  | .typedOpaque =>
+  | .typedOpaque | .admittedOpaque =>
       let some typeExpr := o.typeExpr?
         | throwError "LF model field obligation '{o.name}' has no checked type expression"
       let result ← lfExprSyntaxInModelWithFields fieldNames defValues [] paramVis typeExpr
@@ -2348,7 +2476,7 @@ def lfModelObligationFieldSyntax? (fieldNames : NameMap Name) (defValues : NameM
       let concl ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis conclusionExpr
       let ty ← lfRenderedTelescopeSyntax binders concl
       some <$> lfFieldSyntax o.source.label generatedName ty
-  | .admittedOpaque | .untypedOpaque | .objectDefinition | .judgmentTheorem =>
+  | .untypedOpaque | .objectDefinition | .judgmentTheorem =>
       return none
 
 /-- Field-dependency diagnostics for generated LF-model fields. -/
@@ -2409,24 +2537,25 @@ def lfModelDerivedStatementSummaries (checked : CheckedSignature) (structureName
 
 /-- Summary of LF-model fields that can be generated from checked LF metadata. -/
 def lfModelSummaryString (checked : CheckedSignature) (admittedNames : NameSet := {}) : String :=
-  let defValues := lfDefinitionValueMap checked
+  let obs := lfModelObligations checked admittedNames
+  let countFields (source : LFModelObligationSource) :=
+    countLFModelObligations obs fun o =>
+      o.source == source && o.generatedRole == .field && o.renderable
   let blockingUntyped := blockingUntypedLFOpaqueNames checked
-  let blockingFields := unionNameSet blockingUntyped admittedNames
-  let sidePredicates := lfSideConditionPredicates checked
-  let sidePredicateNames := lfSideConditionPredicateNames checked
-  let typedOpaque := checked.lfOpaqueConsts.foldl (init := 0) fun n c =>
-    if c.checkedTypeExpr?.isSome && !admittedNames.contains c.name.eraseMacroScopes then n + 1 else
-      n
-  let certParams := (lfTheoremSideConditionFields checked).foldl (init := 0) fun n f =>
-    if lfTheoremSideConditionFieldRenderable defValues blockingUntyped sidePredicateNames f then
-      n + 1 else n
-  let renderableRules := checked.lfRules.foldl (init := 0) fun n r =>
-    if lfRuleRenderable blockingFields r then n + 1 else n
+  let certParams := countLFModelObligations obs fun o =>
+    o.source == .theoremSideConditionCertificate && o.generatedRole == .derivedParameter &&
+      o.renderable
+  let typedOpaque := countFields .typedOpaque
+  let tempAdmissions := countFields .admittedOpaque
+  let sidePredicates := countFields .sideConditionPredicate
+  let renderableRules := countFields .rule
+  let tempText := if tempAdmissions == 0 then "" else
+    s!", {tempAdmissions} temporary admitted-definition field(s)"
   let abbrevText := if checked.lfSyntaxAbbrevs.isEmpty then "" else
     s!", {checked.lfSyntaxAbbrevs.size} syntax abbreviation(s) expanded"
   s!"LF model summary for {nameString checked.name}: {checked.lfSyntaxSorts.size} syntax sort \
     field(s){abbrevText}, {checked.lfJudgments.size} judgment field(s), {typedOpaque} typed \
-      opaque constant field(s), {sidePredicates.size} side-condition predicate field(s), \
+      opaque constant field(s){tempText}, {sidePredicates} side-condition predicate field(s), \
         {certParams} theorem side-condition certificate parameter(s), \
           {renderableRules}/{checked.lfRules.size} rule field(s); omitted {blockingUntyped.size} \
             untyped opaque placeholder(s)"
@@ -2442,6 +2571,8 @@ def lfModelOmissionsString (checked : CheckedSignature) (admittedNames : NameSet
     | .theoremSideConditionCertificate, .derivedParameter, some d =>
       some s!"theorem side-condition certificate parameter generated: \
         {nameString ((o.generatedName?).getD o.name)} ({d})"
+    | .admittedOpaque, .field, some d =>
+      some s!"temporary admitted-definition model field: {nameString o.name} ({d})"
     | .admittedOpaque, .derivedDeclaration, some d =>
       some s!"admitted opaque generated as Lean sorry declaration, not model field: \
         {nameString o.name} ({d})"
@@ -2455,8 +2586,7 @@ def lfModelOmissionsString (checked : CheckedSignature) (admittedNames : NameSet
       | .untypedOpaque =>
         "add a checked LF type, or use this opaque only as a side-condition predicate head"
       | .rule =>
-        "inspect the listed dependency and avoid untyped/admitted placeholders in rendered rule \
-          types"
+        "inspect the listed dependency and avoid untyped placeholders in rendered rule types"
       | .objectDefinition =>
         "check that both the lf_def type and value render over the generated model interface"
       | .judgmentTheorem =>
@@ -3305,9 +3435,13 @@ def modelObligationsUXString (checked : CheckedSignature) (admittedNames : NameS
           afterward with `#print_lf_model_transports`."
   let modeText := if mode == .full then uxModelBackendLabel else
     s!"{uxModelBackendLabel}, {mode.label} mode"
+  let warningLines :=
+    match lfModelTemporaryAdmissionWarningStringFromObligations checked obs with
+    | some warning => [s!"WARNING: {warning}"]
+    | none => []
   pure <| String.intercalate "\n" <|
     ([s!"model obligations for {nameString checked.name} ({modeText})", summary,
-      s!"field breakdown: {lfModelFieldSourceBreakdown obs}", nextAction] ++
+      s!"field breakdown: {lfModelFieldSourceBreakdown obs}", nextAction] ++ warningLines ++
       (group "fields to provide" fields).toList ++
       (group "derived declarations generated from replay" derived).toList ++
       (group "theorem-local certificate parameters" params).toList ++
@@ -3380,6 +3514,8 @@ def modelTemplateString (theoryName structureName : Name) (checked : CheckedSign
   lines :=
     lines.push s!"  -- generated/non-field after checking: {nonFields.size} item(s); \
       blocked/omitted in this mode: {omitted.size}"
+  if let some warning := lfModelTemporaryAdmissionWarningStringFromObligations checked obs then
+    lines := lines.push s!"  -- WARNING: {warning.replace "\n" "\n  -- "}"
   if !checked.lfSyntaxAbbrevs.isEmpty then
     lines :=
       lines.push "  -- derived notation (non-field syntax_abbrev item(s), expanded before model \
@@ -3407,9 +3543,12 @@ def modelTemplateString (theoryName structureName : Name) (checked : CheckedSign
       | none => match o.sourceObjExpr? with
         | some e => toString e
         | none => "not available"
+    let note := match o.diagnostic? with
+      | some d => s!", note={d}"
+      | none => ""
     let details :=
       s!"params={o.paramCount} (implicit={implicitParams}), premises/evidence={o.premiseCount}, \
-        side_conditions={o.sideConditionCount}, source_summary={typeSummary}"
+        side_conditions={o.sideConditionCount}, source_summary={typeSummary}{note}"
     let doc := match ← sourceDocForLFModelObligation? theoryName o with
       | some d => (trimCapturedDoc d).replace "\n" " "
       | none => "source documentation missing"
@@ -3672,16 +3811,22 @@ def modelTransportStatusString (theoryName structureName : Name) (checked : Chec
   if admissions.isEmpty then
     lines := lines.push "admitted internal declarations: none"
   else
+    let admittedNames := internalAdmissionNameSet admissions
+    let tempFields := lfModelTemporaryAdmissionFieldNames checked admittedNames
     lines :=
       lines.push s!"admitted internal declarations: {admissions.size}; generated transports use \
-        Lean `sorry`/`sorryAx` visibly"
+        Lean `sorry`/`sorryAx` visibly unless the admission is already a temporary model field"
     for a in admissions do
       let isLF :=
         checked.lfOpaqueConsts.any (fun c =>
           c.name.eraseMacroScopes == a.declName.eraseMacroScopes && c.checkedTypeExpr?.isSome) ||
           isLFJudgmentAdmission checked a
       let kind := a.kind.label
-      if isLF then
+      if tempFields.contains a.declName.eraseMacroScopes then
+        lines :=
+          lines.push s!"  admitted {kind} {nameString a.declName} is a temporary \
+            admitted-definition model field (dot: M.{nameString a.declName}; no transport needed)"
+      else if isLF then
         lines :=
           lines.push s!"  admitted {kind} {nameString a.declName} → \
             {nameString (structureName ++ a.declName)} (dot: M.{nameString a.declName}; Lean \
