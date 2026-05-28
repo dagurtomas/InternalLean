@@ -348,6 +348,16 @@ def admittedInternalLFOpaqueDeclOfRequest (r : AdmittedInternalLFOpaqueRequest) 
     params := params
     typeExpr? := some resultTypeExpr }
 
+/-- Insert a telescope's local LF types into a known-type map. -/
+def insertLFBindingTypes (knownTypes : LFLocalTypes) (params : Array HLBinding) : LFLocalTypes :=
+  params.foldl (init := knownTypes) fun knownTypes b =>
+    knownTypes.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
+
+/-- Render a caught classification exception as plain diagnostic text. -/
+def classificationExceptionMessage : Exception → CoreM String
+  | .error _ msg => msg.toString
+  | .internal _ _ => pure "internal exception"
+
 /-- Classify an admitted internal declaration without running the full signature checker. -/
 def classifyInternalSorryAdmissionShapes (theoryName : Name)
     (requests : Array AdmittedInternalLFOpaqueRequest) :
@@ -373,19 +383,26 @@ def classifyInternalSorryAdmissionShapes (theoryName : Name)
   let mut out := #[]
   for req in requests, d in blockForCheck.lfOpaqueConsts do
     let locals := d.params.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
+    let knownTypes := insertLFBindingTypes priorKnownTypes d.params
     let typeExpr := d.typeExpr?.getD req.typeExpr
     match checkedLFHead? globalHeads locals typeExpr with
     | some head =>
         if head.kind == .judgment then
           out := out.push .judgmentTheorem
-        else if head.kind == .syntaxSort || head.kind == .local then
-          out := out.push .lfOpaque
         else
-          out := out.push <| .unsupported s!"admitted annotation is headed by \
-            {head.kind.label} '{head.name}', expected a syntax_sort/local-family or judgment head"
+          try
+            discard <| checkLFObjectOrStructuralType flatForCheck globalHeads knownTypes locals
+              "admitted internal declaration" req.localName "annotation" typeExpr
+            out := out.push .lfOpaque
+          catch ex =>
+            out := out.push <| .unsupported (← classificationExceptionMessage ex)
     | none =>
-        out := out.push <| .unsupported s!"admitted annotation is not headed by a known LF \
-          identifier: {typeExpr}"
+        try
+          discard <| checkLFObjectOrStructuralType flatForCheck globalHeads knownTypes locals
+            "admitted internal declaration" req.localName "annotation" typeExpr
+          out := out.push .lfOpaque
+        catch ex =>
+          out := out.push <| .unsupported (← classificationExceptionMessage ex)
   if out.size != requests.size then
     throwError "internal error: classified {out.size} admitted declaration(s), expected \
       {requests.size}"

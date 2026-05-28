@@ -407,13 +407,22 @@ def checkDeclaredLevelParamsInLFBinding (sig : HLSignature) (ownerKind : String)
 
 /-- Reject nested LF binders that reuse an already-bound name. -/
 def checkNoLFLocalBinderShadowingInExpr (sig : HLSignature) (ownerKind : String)
-    (ownerName : Name) (where_ : String) (e : ObjExpr) : CoreM Unit := do
+    (ownerName : Name) (where_ : String) (e : ObjExpr)
+    (baseLocals : NameSet := {}) : CoreM Unit := do
   let rec go (locals : NameSet) (e : ObjExpr) : CoreM Unit := do
     match e with
     | .ident _ | .sort | .univ _ => pure ()
     | .app f a => go locals f *> go locals a
-    | .arrow _ A B | .funArrow _ A B | .sigma _ A B => do
+    | .arrow x A B | .funArrow x A B | .sigma x A B => do
         go locals A
+        let locals ← match x with
+          | some x =>
+              let x := x.eraseMacroScopes
+              if locals.contains x then
+                throwError "duplicate LF binder '{x}' in {where_} of {ownerKind} '{ownerName}' \
+                  in type theory '{sig.name}'"
+              pure (locals.insert x)
+          | none => pure locals
         go locals B
     | .pair a b => go locals a *> go locals b
     | .fst e | .snd e => go locals e
@@ -427,7 +436,7 @@ def checkNoLFLocalBinderShadowingInExpr (sig : HLSignature) (ownerKind : String)
           seen := seen.insert x
         go locals body
     | .jeq lhs rhs => go locals lhs *> go locals rhs
-  go {} e
+  go baseLocals e
 
 /-- Check one LF metadata binder for source-level binder hygiene. -/
 def checkNoLFLocalBinderShadowingInBinding (sig : HLSignature) (ownerKind : String)
@@ -2677,29 +2686,6 @@ def checkLFBinderTypesInBindings (sig : HLSignature)
     knownTypes := knownTypes.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
     locals := locals.insert b.name.eraseMacroScopes
 
-/-- Check an `lf_def` type annotation and return its final rigid LF head, when it has one.
-
-This combines the recursive LF type-expression discipline with the object-definition result-shape
-check, so `lf_def` checking does not also need separate syntax-sort and inferable-application
-passes over the same annotation. -/
-def checkLFObjectDefTypeAndResultHead? (sig : HLSignature)
-    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (knownLFDefTypes : LFLocalTypes)
-    (d : LFObjectDefDecl) : CoreM (Option CheckedLFHead) := do
-  checkLFBinderType sig globalHeads "lf_def" d.name "type" knownLFDefTypes {} false d.typeExpr
-  let resultTypeExpr := eraseObjExprScopes (lfFunctionTypeResult d.typeExpr)
-  let typeHead? := checkedLFHead? globalHeads {} resultTypeExpr
-  match typeHead? with
-  | some typeHead =>
-      if typeHead.kind != .syntaxSort then
-        throwError "lf_def '{d.name}' in type theory '{sig.name}' has result type headed by \
-          {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-headed or structural \
-            record/Sigma type"
-  | none =>
-      unless lfObjectDefResultIsStructuralRecord resultTypeExpr do
-        throwError "lf_def '{d.name}' in type theory '{sig.name}' has type not ending in a known \
-          LF identifier or structural record/Sigma type: {d.typeExpr}"
-  pure typeHead?
-
 /-- Classify a declared side-condition solver name into the executable hook registry.
 
 Only `trivial_side_condition` is executable. Other declared solvers remain opaque handles for
@@ -3832,6 +3818,68 @@ partial def checkLFDefinitionReferencesAvailable (sig : HLSignature)
       checkLFDefinitionReferencesAvailable sig globalHeads knownTypes ownerKind ownerName where_
         locals rhs
 
+/-- Check an LF annotation that is expected to denote an object or structural package type.
+
+This shared path validates known identifiers, universe hygiene, LF-definition availability, syntax
+sort arities and arguments, inferable-application arguments, and the recursive LF type-expression
+discipline. It accepts syntax-sort heads, local type-family heads whose inferred kind is a
+universe, and structural function/Sigma package types. Judgment-headed expressions are rejected by
+this helper; callers that want theorem-shaped admissions should classify those before calling it. -/
+def checkLFObjectOrStructuralType (sig : HLSignature)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (knownTypes : LFLocalTypes)
+    (locals : NameSet) (ownerKind : String) (ownerName : Name) (where_ : String)
+    (typeExpr : ObjExpr) : CoreM (Option CheckedLFHead) := do
+  let lfGlobals := lfKnownGlobalNames sig
+  let opaqueArities := lfOpaqueArities sig
+  let syntaxSortArities : NameMap Nat := sig.syntaxSorts.foldl (init := {}) fun acc s =>
+    acc.insert s.name.eraseMacroScopes s.params.size
+  checkKnownNamesInLFExpr sig lfGlobals locals opaqueArities ownerKind ownerName where_ typeExpr
+  checkNoLFLocalBinderShadowingInExpr sig ownerKind ownerName where_ typeExpr
+    (baseLocals := locals)
+  checkDeclaredLevelParamsInLFExpr sig ownerKind ownerName where_ typeExpr
+  checkNoCaptureUnsafeBetaInLFExpr sig ownerKind ownerName where_ typeExpr
+  checkLFDefinitionReferencesAvailable sig globalHeads knownTypes ownerKind ownerName where_
+    (locals := locals) typeExpr
+  checkSyntaxSortApplicationsInExpr sig syntaxSortArities ownerKind ownerName where_ typeExpr
+  checkLFBinderType sig globalHeads ownerKind ownerName where_ knownTypes locals false typeExpr
+  let typeExpr := eraseObjExprScopes typeExpr
+  let typeHead? := checkedLFHead? globalHeads locals typeExpr
+  match typeHead? with
+  | some typeHead =>
+      if typeHead.kind != .syntaxSort && typeHead.kind != .local then
+        throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} headed \
+          by {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-, local-family-, \
+            or structural package type"
+  | none =>
+      unless lfOpaqueResultIsStructuralType typeExpr do
+        throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} not \
+          headed by a known LF identifier or structural package type: {typeExpr}"
+  pure typeHead?
+
+/-- Check an `lf_def` type annotation and return its final rigid LF head, when it has one.
+
+This combines the recursive LF type-expression discipline with the object-definition result-shape
+check, so `lf_def` checking does not also need separate syntax-sort and inferable-application
+passes over the same annotation. -/
+def checkLFObjectDefTypeAndResultHead? (sig : HLSignature)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (knownLFDefTypes : LFLocalTypes)
+    (d : LFObjectDefDecl) : CoreM (Option CheckedLFHead) := do
+  discard <| checkLFObjectOrStructuralType sig globalHeads knownLFDefTypes {} "lf_def" d.name
+    "type" d.typeExpr
+  let resultTypeExpr := eraseObjExprScopes (lfFunctionTypeResult d.typeExpr)
+  let typeHead? := checkedLFHead? globalHeads {} resultTypeExpr
+  match typeHead? with
+  | some typeHead =>
+      if typeHead.kind != .syntaxSort then
+        throwError "lf_def '{d.name}' in type theory '{sig.name}' has result type headed by \
+          {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-headed or structural \
+            record/Sigma type"
+  | none =>
+      unless lfObjectDefResultIsStructuralRecord resultTypeExpr do
+        throwError "lf_def '{d.name}' in type theory '{sig.name}' has type not ending in a known \
+          LF identifier or structural record/Sigma type: {d.typeExpr}"
+  pure typeHead?
+
 /-- Check staged sorted LF/object definitions and custom-judgment theorems.
 
 This is a shallow internal-language milestone: it validates known names, recursively resolves
@@ -3851,10 +3899,6 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
   let mut knownLFDefTypes : LFLocalTypes := {}
   let mut knownLFDefValues : LFDefinitionValueMap := {}
   for d in sig.lfObjectDefs do
-    checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "type" d.typeExpr
-    checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "type" d.typeExpr
-    checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "type"
-      (locals := {}) d.typeExpr
     let typeHead? ← checkLFObjectDefTypeAndResultHead? sig globalHeads knownLFDefTypes d
     checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "value" d.value
     checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "value" d.value
@@ -4111,10 +4155,6 @@ def checkLFObjectDefInContext (ctx : IntraBlockLFCheckContext) (d : LFObjectDefD
   let globalHeads := ctx.globalHeads
   let knownLFDefTypes := ctx.knownLFDefTypes
   let typeHead? ← profileLFCheckPhase m!"{d.name}: metadata prechecks" do
-    checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "type" d.typeExpr
-    checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "type" d.typeExpr
-    checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "type"
-      (locals := {}) d.typeExpr
     let typeHead? ← checkLFObjectDefTypeAndResultHead? sig globalHeads knownLFDefTypes d
     checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "value" d.value
     checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "value" d.value
@@ -4394,27 +4434,8 @@ def checkOneLFOpaqueConstMetadataInSignature (sig : HLSignature) (lfGlobals : Na
     checkLFBinderTypesInBindings sig globalHeads "lf_opaque" opaqueDecl.name opaqueDecl.params
     let opaqueLocalTypes := lfLocalTypesOfBindings opaqueDecl.params
     if let some typeExpr := opaqueDecl.typeExpr? then
-      checkKnownNamesInLFExpr sig lfGlobals opaqueLocals opaqueArities "lf_opaque"
-        opaqueDecl.name "result type" typeExpr
-      checkSyntaxSortApplicationsInExpr sig syntaxSortArities "lf_opaque" opaqueDecl.name
-        "result type" typeExpr
-      checkLFSyntaxSortArgumentsInExpr sig "lf_opaque" opaqueDecl.name "result type"
-        opaqueLocalTypes typeExpr
-      checkLFInferableApplicationArguments sig "lf_opaque" opaqueDecl.name "result type"
-        opaqueLocalTypes typeExpr
-      checkLFBinderType sig globalHeads "lf_opaque" opaqueDecl.name "result type"
-        opaqueLocalTypes opaqueLocals false typeExpr
-      let typeHead? := checkedLFHead? globalHeads opaqueLocals typeExpr
-      match typeHead? with
-      | some typeHead =>
-          if typeHead.kind != .syntaxSort && typeHead.kind != .local then
-            throwError "lf_opaque '{opaqueDecl.name}' in type theory '{sig.name}' has result type \
-              headed by {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-, \
-                local-family-, or structural package type"
-      | none =>
-          unless lfOpaqueResultIsStructuralType typeExpr do
-            throwError "lf_opaque '{opaqueDecl.name}' in type theory '{sig.name}' has result type \
-              not headed by a known LF identifier or structural package type: {typeExpr}"
+      discard <| checkLFObjectOrStructuralType sig globalHeads opaqueLocalTypes opaqueLocals
+        "lf_opaque" opaqueDecl.name "result type" typeExpr
 
 /-- Check one conversion-plugin declaration's step metadata. -/
 def checkOneConversionPluginMetadataInSignature (sig : HLSignature)

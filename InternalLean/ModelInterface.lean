@@ -1220,6 +1220,11 @@ def internalAdmissionNameSet (admissions : Array InternalAdmission) : NameSet :=
   admissions.foldl (init := {}) fun names a =>
     if a.kind == .lfOpaque then names.insert a.declName.eraseMacroScopes else names
 
+/-- Whether a checked LF type is a structural function/package type rather than a rigid head. -/
+def checkedLFExprIsStructuralObjectType : CheckedLFExpr → Bool
+  | .arrow .. | .sigma .. => true
+  | _ => false
+
 /-- Union of two name sets. -/
 def unionNameSet (xs ys : NameSet) : NameSet := Id.run do
   let mut out := xs
@@ -1592,8 +1597,9 @@ def lfJudgmentTheoremObligationStatus (checked : CheckedSignature) (t : CheckedL
 /-- Generic LF model obligations extracted from checked LF metadata and generated LF replay
 artifacts.
 `admittedNames` are typed LF opaque constants introduced by `internal def ... := sorry`.
-When such an admission is mentioned by a model-facing field, it becomes a loud temporary model
-field; otherwise it remains a generated Lean declaration with a `sorry` body. -/
+Structural package-shaped admissions become loud temporary model fields. Other admitted opaque
+constants remain generated Lean declarations with `sorry` bodies unless the dependency closure of a
+model-facing field needs them. -/
 def lfModelObligations (checked : CheckedSignature) (admittedNames : NameSet := {}) :
   Array LFModelObligation := Id.run do
   let defValues := lfDefinitionValueMap checked
@@ -1610,12 +1616,19 @@ def lfModelObligations (checked : CheckedSignature) (admittedNames : NameSet := 
     match c.checkedTypeExpr? with
     | some ty =>
         if admittedNames.contains c.name.eraseMacroScopes then
-          out := out.push {
-            name := c.name, source := .admittedOpaque, generatedRole := .derivedDeclaration,
-            generatedName? := some c.name, params := c.params, paramCount := c.params.size,
-            typeExpr? := some ty,
-            diagnostic? :=
-              some "generated as a Lean declaration whose body uses sorry, not as a model field" }
+          if checkedLFExprIsStructuralObjectType ty then
+            out := out.push {
+              name := c.name, source := .admittedOpaque, generatedRole := .field,
+              generatedName? := some c.name, params := c.params, paramCount := c.params.size,
+              typeExpr? := some ty,
+              diagnostic? := some "structural admitted package exposed as one model field" }
+          else
+            out := out.push {
+              name := c.name, source := .admittedOpaque, generatedRole := .derivedDeclaration,
+              generatedName? := some c.name, params := c.params, paramCount := c.params.size,
+              typeExpr? := some ty,
+              diagnostic? := some
+                "generated as a Lean declaration whose body uses sorry, not as a model field" }
         else
           out := out.push {
             name := c.name, source := .typedOpaque, generatedRole := .field,
@@ -1903,8 +1916,8 @@ def lfModelContractString (checked : CheckedSignature) : String :=
     "source classes:",
     "  syntax_sort/judgment/typed lf_opaque/rule: normally become model fields",
     "  syntax_abbrev: public notation expanded before model obligations, not a model field",
-    "  admitted lf_opaque: normally generated as a Lean declaration with a sorry body; if a \
-      model-facing field mentions it, it becomes a loud temporary model field",
+    "  admitted lf_opaque: structural package-shaped admissions become temporary model fields; \
+      other admissions stay generated declarations unless needed by model-field dependencies",
     "  side-condition predicate: inferred model predicate field used by rule evidence arguments",
     "  theorem side-condition certificate: derived theorem parameter when renderable",
     "  lf_def: expanded metadata, not a field when renderable",
