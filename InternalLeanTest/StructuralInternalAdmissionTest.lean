@@ -75,6 +75,16 @@ end SigmaAdmission
 extend_type_theory SigmaAdmission where
   lf_def packObj : Obj := fst pack
   syntax_abbrev Pack := Σ x : Obj, Fam x
+  lf_def derivedBase : Obj := base
+
+extend_type_theory SigmaAdmission where
+  /-- Typed opaque declarations may reference prior LF definitions in result types. -/
+  lf_opaque derivedFam : Fam derivedBase
+
+extend_type_theory SigmaAdmission where
+  lf_def sameBlockBase : Obj := base
+  /-- Typed opaque declarations may reference same-block LF definitions in result types. -/
+  lf_opaque sameBlockFam : Fam sameBlockBase
 
 namespace SigmaAdmission
 
@@ -87,8 +97,10 @@ internal def viaAbbrev : Pack := sorry
 end SigmaAdmission
 
 #check_model_obligations SigmaAdmission
-#guard_structural_model_field_count SigmaAdmission 8
+#guard_structural_model_field_count SigmaAdmission 10
 #guard_structural_no_model_field_for SigmaAdmission packObj
+#guard_structural_no_model_field_for SigmaAdmission derivedBase
+#guard_structural_no_model_field_for SigmaAdmission sameBlockBase
 
 generate_lf_model_structure SigmaAdmission as SigmaAdmissionModel
 
@@ -96,6 +108,8 @@ generate_lf_model_structure SigmaAdmission as SigmaAdmissionModel
 #check SigmaAdmission.SigmaAdmissionModel.choose
 #check SigmaAdmission.SigmaAdmissionModel.chooseDep
 #check SigmaAdmission.SigmaAdmissionModel.viaAbbrev
+#check SigmaAdmission.SigmaAdmissionModel.derivedFam
+#check SigmaAdmission.SigmaAdmissionModel.sameBlockFam
 
 def sigmaAdmissionModel : SigmaAdmission.SigmaAdmissionModel where
   Obj := Unit
@@ -106,6 +120,8 @@ def sigmaAdmissionModel : SigmaAdmission.SigmaAdmissionModel where
   choose := fun _ => ⟨(), ()⟩
   chooseDep := fun _ => ⟨(), ()⟩
   viaAbbrev := ⟨(), ()⟩
+  derivedFam := ()
+  sameBlockFam := ()
 
 /-- warning: type theory 'SigmaAdmission' has 4 admitted internal declaration(s):
 admitted internal def SigmaAdmission.pack : Σ x : Obj, Fam x [missing doc]

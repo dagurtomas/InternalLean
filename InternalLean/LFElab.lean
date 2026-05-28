@@ -4045,6 +4045,18 @@ def checkedLFDefinitionTypeMapFromDefs (defs : Array CheckedLFObjectDef) : LFLoc
   defs.foldl (init := {}) fun m d =>
     m.insert d.name.eraseMacroScopes (eraseObjExprScopes d.typeExpr)
 
+/-- Declared LF definition result types from a source block. -/
+def lfDefinitionTypeMapFromDecls (defs : Array LFObjectDefDecl) : LFLocalTypes :=
+  defs.foldl (init := {}) fun m d =>
+    m.insert d.name.eraseMacroScopes (eraseObjExprScopes d.typeExpr)
+
+/-- Merge LF definition type maps, preferring entries from `extra`. -/
+def mergeLFLocalTypes (base extra : LFLocalTypes) : LFLocalTypes := Id.run do
+  let mut out := base
+  for (n, e) in extra.toList do
+    out := out.insert n e
+  return out
+
 /-- Previously checked LF definition values. -/
 def lfDefinitionValueMapFromCheckedDefs (defs : Array CheckedLFObjectDef) : LFDefinitionValueMap :=
   defs.foldl (init := {}) fun m d =>
@@ -4421,8 +4433,8 @@ def checkOneJudgmentMetadataInSignature (sig : HLSignature) (lfGlobals : NameSet
 /-- Check one typed LF-opaque declaration's metadata. Untyped opaques are accepted directly. -/
 def checkOneLFOpaqueConstMetadataInSignature (sig : HLSignature) (lfGlobals : NameSet)
     (opaqueArities : NameMap (Option Nat)) (syntaxSortArities : NameMap Nat)
-    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (opaqueDecl : LFOpaqueConstDecl) :
-    CoreM Unit := do
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (opaqueDecl : LFOpaqueConstDecl)
+    (knownLFDefTypes : LFLocalTypes := {}) : CoreM Unit := do
   if opaqueDecl.typeExpr?.isSome then
     checkNoDuplicateMetadataBinders sig "lf_opaque" opaqueDecl.name opaqueDecl.params
     let opaqueLocals ←
@@ -4432,7 +4444,8 @@ def checkOneLFOpaqueConstMetadataInSignature (sig : HLSignature) (lfGlobals : Na
       opaqueDecl.params
     checkLFSyntaxSortArgumentsInBindings sig "lf_opaque" opaqueDecl.name opaqueDecl.params
     checkLFBinderTypesInBindings sig globalHeads "lf_opaque" opaqueDecl.name opaqueDecl.params
-    let opaqueLocalTypes := lfLocalTypesOfBindings opaqueDecl.params
+    let opaqueLocalTypes := opaqueDecl.params.foldl (init := knownLFDefTypes) fun acc b =>
+      acc.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
     if let some typeExpr := opaqueDecl.typeExpr? then
       discard <| checkLFObjectOrStructuralType sig globalHeads opaqueLocalTypes opaqueLocals
         "lf_opaque" opaqueDecl.name "result type" typeExpr
@@ -4697,9 +4710,10 @@ def checkRuleMetadataInSignature (sig : HLSignature) : CoreM (Array CheckedLFRul
       throwError "duplicate conversion_plugin '{pluginName}' in type theory '{sig.name}'"
     plugins := plugins.insert pluginName
     checkOneConversionPluginMetadataInSignature sig plugin
+  let knownLFDefTypes := lfDefinitionTypeMapFromDecls sig.lfObjectDefs
   for opaqueDecl in sig.lfOpaqueConsts do
     checkOneLFOpaqueConstMetadataInSignature sig lfGlobals opaqueArities syntaxSortArities
-      globalHeads opaqueDecl
+      globalHeads opaqueDecl knownLFDefTypes
   let mut checkedRules : Array CheckedLFRule := #[]
   for r in sig.rules do
     checkedRules := checkedRules.push (← checkOneRuleMetadataInSignature sig lfGlobals
@@ -6169,12 +6183,15 @@ def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : Ch
       syntaxSortArities j
     checkedJudgments :=
       checkedJudgments.push (← checkedLFJudgmentDeclArtifact flatForCheck globalHeads j)
+  let knownLFDefTypes := mergeLFLocalTypes
+    (checkedLFDefinitionTypeMapFromDefs checkedBase.lfObjectDefs)
+    (lfDefinitionTypeMapFromDecls block.lfObjectDefs)
   let mut checkedOpaques : Array CheckedLFOpaqueConst := #[]
   for o in block.lfOpaqueConsts do
     checkLFLocalBinderHygieneInLFOpaqueConstDecl flatForCheck o
     checkLFUniverseLevelInLFOpaqueConstDecl flatForCheck o
     checkOneLFOpaqueConstMetadataInSignature flatForCheck lfGlobals opaqueArities
-      syntaxSortArities globalHeads o
+      syntaxSortArities globalHeads o knownLFDefTypes
     checkedOpaques :=
       checkedOpaques.push (← checkedLFOpaqueConstDeclArtifact flatForCheck globalHeads o)
   let checkedSolvers := block.sideConditionSolvers.map checkedLFSideConditionSolverDeclArtifact
