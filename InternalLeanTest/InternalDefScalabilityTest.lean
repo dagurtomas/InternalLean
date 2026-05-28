@@ -382,6 +382,45 @@ declare_type_theory IntraBlockLargeDeclareSmoke where
 #guard_internal_registration_profile_strategy IntraBlockLargeDeclareSmoke
   "full declare_type_theory (streaming artifacts)"
 
+declare_type_theory MetadataOnlyExtensionScaleSmoke where
+  syntax_sort Obj
+  lf_opaque base : Obj
+  lf_def d01 : Obj := base
+  lf_def d02 : Obj := d01
+  lf_def d03 : Obj := d02
+  lf_def d04 : Obj := d03
+  lf_def d05 : Obj := d04
+  lf_def d06 : Obj := d05
+  lf_def d07 : Obj := d06
+  lf_def d08 : Obj := d07
+  lf_def d09 : Obj := d08
+  lf_def d10 : Obj := d09
+  lf_def d11 : Obj := d10
+  lf_def d12 : Obj := d11
+
+extend_type_theory MetadataOnlyExtensionScaleSmoke where
+  syntax_sort Extra01
+
+extend_type_theory MetadataOnlyExtensionScaleSmoke where
+  lf_opaque marker01 : Obj
+
+extend_type_theory MetadataOnlyExtensionScaleSmoke where
+  model_section Public
+
+extend_type_theory MetadataOnlyExtensionScaleSmoke where
+  model_internal marker01
+
+extend_type_theory MetadataOnlyExtensionScaleSmoke where
+  syntax_sort Extra02
+
+extend_type_theory MetadataOnlyExtensionScaleSmoke where
+  lf_opaque marker02 : Obj
+
+#check_type_theory MetadataOnlyExtensionScaleSmoke
+#guard_internal_registration_profile_totals MetadataOnlyExtensionScaleSmoke 7 6 0 0
+#guard_internal_registration_profile_strategy MetadataOnlyExtensionScaleSmoke
+  "incremental extend_type_theory (streaming block)"
+
 declare_type_theory SorryAdmissionIncrementalSmoke where
   syntax_sort Obj
   lf_opaque base : Obj

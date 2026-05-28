@@ -22,6 +22,7 @@ import InternalLeanTest.NaturalNumbersTest
 import InternalLeanTest.RawConversionCaptureTest
 import InternalLeanTest.RawConversionTest
 import InternalLeanTest.SoundnessRegressionTest
+import InternalLeanTest.SyntaxAbbrevPiTest
 import InternalLeanTest.TheoryAnchorTest
 import InternalLeanTest.TinyNatModel
 import InternalLeanTest.TransportPlanTest

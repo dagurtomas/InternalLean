@@ -20,6 +20,21 @@ open Lean Elab Command
 
 namespace InternalLean
 
+register_option internalLean.profileLFCheckPhases : Bool := {
+  defValue := false
+  descr := "log coarse phase timings for LF object-definition checking"
+}
+
+/-- Time an LF elaboration/checking phase when `internalLean.profileLFCheckPhases` is enabled. -/
+def profileLFCheckPhase (label : MessageData) (x : CoreM α) : CoreM α := do
+  if (← getBoolOption `internalLean.profileLFCheckPhases) then
+    let start ← IO.monoMsNow
+    let result ← x
+    let stop ← IO.monoMsNow
+    logInfo m!"LF check phase {label}: {stop - start}ms"
+    return result
+  else
+    x
 
 /-- Substitute object-expression parameters by object-expression arguments in a macro template. -/
 partial def substObjectMacroParams (subst : NameMap ObjExpr) : ObjExpr → ObjExpr
@@ -1101,9 +1116,26 @@ def lfDefinitionValuesOfSignature (sig : HLSignature) : LFDefinitionValueMap := 
     out := out.insert d.name.eraseMacroScopes (eraseObjExprScopes d.value)
   return out
 
+/-- LF-definition values that may be reached while unfolding a particular expression. -/
+def lfDefinitionValuesOfSignatureForExpr (sig : HLSignature) (e : ObjExpr) : LFDefinitionValueMap :=
+  Id.run do
+    let mut needed := freeLFObjectIdentifiers e
+    let mut out : LFDefinitionValueMap := {}
+    let mut changed := true
+    while changed do
+      changed := false
+      for d in sig.lfObjectDefs do
+        let name := d.name.eraseMacroScopes
+        if needed.contains name && !out.contains name then
+          let value := eraseObjExprScopes d.value
+          out := out.insert name value
+          needed := needed ++ freeLFObjectIdentifiers value
+          changed := true
+    return out
+
 /-- Normalize an LF expression for shallow type comparisons. -/
 def normalizeLFExprForTypeComparison (sig : HLSignature) (e : ObjExpr) : ObjExpr :=
-  unfoldLFDefinitionsInExpr (lfDefinitionValuesOfSignature sig) e
+  unfoldLFDefinitionsInExpr (lfDefinitionValuesOfSignatureForExpr sig e) e
 
 /-- Shallow equality of LF types after beta-reduction and LF-definition unfolding. -/
 def lfTypeCompareEq (sig : HLSignature) (actual expected : ObjExpr) : Bool :=
@@ -1118,31 +1150,19 @@ def lfLocalTypesOfBindings (bs : Array HLBinding) : LFLocalTypes := Id.run do
   return locals
 
 /-- Look up a declared judgment by name. -/
-def findJudgmentDecl? (sig : HLSignature) (name : Name) : Option JudgmentDecl := Id.run do
+def findJudgmentDecl? (sig : HLSignature) (name : Name) : Option JudgmentDecl :=
   let name := name.eraseMacroScopes
-  let mut out := none
-  for j in sig.judgments do
-    if j.name.eraseMacroScopes == name then
-      out := some j
-  return out
+  sig.judgments.find? (fun j => j.name.eraseMacroScopes == name)
 
 /-- Look up a declared syntax sort by name. -/
-def findSyntaxSortDecl? (sig : HLSignature) (name : Name) : Option SyntaxSortDecl := Id.run do
+def findSyntaxSortDecl? (sig : HLSignature) (name : Name) : Option SyntaxSortDecl :=
   let name := name.eraseMacroScopes
-  let mut out := none
-  for s in sig.syntaxSorts do
-    if s.name.eraseMacroScopes == name then
-      out := some s
-  return out
+  sig.syntaxSorts.find? (fun s => s.name.eraseMacroScopes == name)
 
 /-- Look up a declared syntax abbreviation by name. -/
-def findSyntaxAbbrevDecl? (sig : HLSignature) (name : Name) : Option SyntaxAbbrevDecl := Id.run do
+def findSyntaxAbbrevDecl? (sig : HLSignature) (name : Name) : Option SyntaxAbbrevDecl :=
   let name := name.eraseMacroScopes
-  let mut out := none
-  for a in sig.syntaxAbbrevs do
-    if a.name.eraseMacroScopes == name then
-      out := some a
-  return out
+  sig.syntaxAbbrevs.find? (fun a => a.name.eraseMacroScopes == name)
 
 /-- Expand public syntax abbreviations in an LF expression.
 
@@ -1330,14 +1350,13 @@ structure LFGlobalTypeInfo where
 /-- Look up the declared object type of a global constant-like head. This is intentionally
 limited to declarations that carry an explicit result type, including typed opaque LF
 placeholders used as staging constructors. -/
-def findLFGlobalTypeInfo? (sig : HLSignature) (name : Name) : Option LFGlobalTypeInfo := Id.run do
+def findLFGlobalTypeInfo? (sig : HLSignature) (name : Name) : Option LFGlobalTypeInfo :=
   let name := name.eraseMacroScopes
-  let mut out := none
-  for o in sig.lfOpaqueConsts do
+  sig.lfOpaqueConsts.findSome? fun o =>
     if o.name.eraseMacroScopes == name then
-      if let some typeExpr := o.typeExpr? then
-        out := some { binders := o.params, typeExpr := typeExpr }
-  return out
+      o.typeExpr?.map fun typeExpr => ({ binders := o.params, typeExpr } : LFGlobalTypeInfo)
+    else
+      none
 
 /-- Infer a shallow LF/object type for expressions whose head has known type metadata.
 This handles local/LF-definition identifiers from `knownTypes` and global object constants
@@ -2028,7 +2047,6 @@ partial def checkLFExprHasType (sig : HLSignature) (ownerKind : String) (ownerNa
                     checkLFExprHasType sig ownerKind ownerName
                       s!"{where_} for constructor '{head}' parameter \
                         '{b.name.eraseMacroScopes}'" knownTypes arg expected
-                    checkInferableApps knownTypes arg
                     subst := subst.insert b.name.eraseMacroScopes (eraseObjExprScopes arg)
                 else
                   for arg in args do
@@ -2043,7 +2061,6 @@ partial def checkLFExprHasType (sig : HLSignature) (ownerKind : String) (ownerNa
                           checkLFExprHasType sig ownerKind ownerName
                             s!"{where_} for local function '{head}' argument" knownTypes arg
                             expected
-                          checkInferableApps knownTypes arg
                           current := match binder? with
                             | some x => substSingleLFParam x (eraseObjExprScopes arg) result
                             | none => result
@@ -3675,21 +3692,25 @@ def checkLFObjectDefInContext (ctx : IntraBlockLFCheckContext) (d : LFObjectDefD
   let opaqueArities := ctx.opaqueArities
   let globalHeads := ctx.globalHeads
   let knownLFDefTypes := ctx.knownLFDefTypes
-  checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "type" d.typeExpr
-  checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "type" d.typeExpr
-  checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "type"
-    (locals := {}) d.typeExpr
-  checkLFSyntaxSortArgumentsInExpr sig "lf_def" d.name "type" knownLFDefTypes d.typeExpr
-  checkLFInferableApplicationArguments sig "lf_def" d.name "type" knownLFDefTypes d.typeExpr
-  checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "value" d.value
-  checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "value" d.value
-  checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "value"
-    (locals := {}) d.value
-  checkLFSyntaxSortArgumentsInExpr sig "lf_def" d.name "value" knownLFDefTypes d.value
-  checkLFInferableApplicationArguments sig "lf_def" d.name "value" knownLFDefTypes d.value
-  checkLFExprHasType sig "lf_def" d.name "value" knownLFDefTypes d.value d.typeExpr
-  let checkedType ← resolveLFExpr sig globalHeads {} "lf_def" d.name "type" d.typeExpr
-  let checkedValue ← resolveLFExpr sig globalHeads {} "lf_def" d.name "value" d.value
+  profileLFCheckPhase m!"{d.name}: metadata prechecks" do
+    checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "type" d.typeExpr
+    checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "type" d.typeExpr
+    checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "type"
+      (locals := {}) d.typeExpr
+    checkLFSyntaxSortArgumentsInExpr sig "lf_def" d.name "type" knownLFDefTypes d.typeExpr
+    checkLFInferableApplicationArguments sig "lf_def" d.name "type" knownLFDefTypes d.typeExpr
+    checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "value" d.value
+    checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "value" d.value
+    checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "value"
+      (locals := {}) d.value
+    checkLFSyntaxSortArgumentsInExpr sig "lf_def" d.name "value" knownLFDefTypes d.value
+    checkLFInferableApplicationArguments sig "lf_def" d.name "value" knownLFDefTypes d.value
+  profileLFCheckPhase m!"{d.name}: value has expected type" do
+    checkLFExprHasType sig "lf_def" d.name "value" knownLFDefTypes d.value d.typeExpr
+  let checkedType ← profileLFCheckPhase m!"{d.name}: resolve type" do
+    resolveLFExpr sig globalHeads {} "lf_def" d.name "type" d.typeExpr
+  let checkedValue ← profileLFCheckPhase m!"{d.name}: resolve value" do
+    resolveLFExpr sig globalHeads {} "lf_def" d.name "value" d.value
   let resultTypeExpr := lfFunctionTypeResult d.typeExpr
   let some typeHead := checkedLFHead? globalHeads {} resultTypeExpr
     | throwError "lf_def '{d.name}' in type theory '{sig.name}' has type not ending in a known \
@@ -3929,12 +3950,8 @@ def checkOneSyntaxAbbrevMetadataInSignature (sig : HLSignature) (lfGlobals : Nam
     abbr.value
   checkLFInferableApplicationArguments sig "syntax_abbrev" abbr.name "value" abbrLocalTypes
     abbr.value
-  let some head := checkedLFHead? globalHeads abbrLocals abbr.value
-    | throwError "syntax_abbrev '{abbr.name}' in type theory '{sig.name}' has value not headed \
-      by a known LF identifier: {abbr.value}"
-  if head.kind != .syntaxSort && head.kind != .local then
-    throwError "syntax_abbrev '{abbr.name}' in type theory '{sig.name}' has value headed by \
-      {head.kind.label} '{head.name}', expected a syntax_sort- or local-family-headed type"
+  checkLFBinderType sig globalHeads "syntax_abbrev" abbr.name "value" abbrLocalTypes
+    abbrLocals false abbr.value
 
 /-- Check one judgment declaration's metadata. -/
 def checkOneJudgmentMetadataInSignature (sig : HLSignature) (lfGlobals : NameSet)
@@ -5753,22 +5770,31 @@ def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : Ch
 /-- Stream-check all artifacts in one theory block and return a single appendable delta. -/
 def checkTheoryBlockDeltaStreaming (flatForCheck : HLSignature) (checkedBase : CheckedSignature)
     (block : HLTheoryBlock) : CoreM CheckedTheoryDelta := do
-  let metadataDelta ← checkTheoryBlockMetadataDelta flatForCheck checkedBase block
-  let mut ctx := mkIntraBlockLFCheckContext flatForCheck checkedBase metadataDelta.rules
+  let metadataDelta ← profileLFCheckPhase m!"{flatForCheck.name}: metadata delta" do
+    checkTheoryBlockMetadataDelta flatForCheck checkedBase block
+  if block.lfObjectDefs.isEmpty && block.lfJudgmentTheorems.isEmpty then
+    return metadataDelta
+  let ctx0 := mkIntraBlockLFCheckContext flatForCheck checkedBase metadataDelta.rules
     metadataDelta.ruleSchemas metadataDelta.sideConditionCertificates
-  for d in block.lfObjectDefs do
-    checkLFLocalBinderHygieneInLFObjectDefDecl flatForCheck d
-    checkLFUniverseLevelInLFObjectDefDecl flatForCheck d
-    let (_, ctx') ← checkLFObjectDefInContext ctx d
-    ctx := ctx'
-  for t in block.lfJudgmentTheorems do
-    checkLFLocalBinderHygieneInLFJudgmentTheoremDecl flatForCheck t
-    checkLFUniverseLevelInLFJudgmentTheoremDecl flatForCheck t
-    let (_, ctx') ← checkLFJudgmentTheoremInContext ctx t
-    ctx := ctx'
+  let ctx ← profileLFCheckPhase m!"{flatForCheck.name}: object definitions in block" do
+    let mut ctx := ctx0
+    for d in block.lfObjectDefs do
+      checkLFLocalBinderHygieneInLFObjectDefDecl flatForCheck d
+      checkLFUniverseLevelInLFObjectDefDecl flatForCheck d
+      let (_, ctx') ← checkLFObjectDefInContext ctx d
+      ctx := ctx'
+    pure ctx
+  let ctx ← profileLFCheckPhase m!"{flatForCheck.name}: judgment theorems in block" do
+    let mut ctx := ctx
+    for t in block.lfJudgmentTheorems do
+      checkLFLocalBinderHygieneInLFJudgmentTheoremDecl flatForCheck t
+      checkLFUniverseLevelInLFJudgmentTheoremDecl flatForCheck t
+      let (_, ctx') ← checkLFJudgmentTheoremInContext ctx t
+      ctx := ctx'
+    pure ctx
   let replayCtx := mkIntraBlockKernelReplayContext flatForCheck checkedBase metadataDelta
     ctx.newObjectDefs ctx.newJudgmentTheorems
-  let (checkedTheorems, _) ←
+  let (checkedTheorems, _) ← profileLFCheckPhase m!"{flatForCheck.name}: theorem replay block" do
     validateLFTheoremKernelReplayBlock flatForCheck replayCtx ctx.newJudgmentTheorems
   pure { metadataDelta with
     objectDefs := ctx.newObjectDefs
@@ -5780,18 +5806,27 @@ def checkTheoryBlockExtensionIncremental (theoryName : Name) (sig : HLSignature)
     CoreM (HLTheoryBlock × CheckedSignature) := do
   if let some reason := unsupportedIncrementalTheoryBlockReason? block then
     throwError "cannot incrementally register extension for type theory '{theoryName}': {reason}"
-  let flatSourceBase ← flattenSignature sig
-  checkNoExtensionNameCollisions flatSourceBase block
+  let flatSourceBase ← profileLFCheckPhase m!"{theoryName}: flatten source base" do
+    flattenSignature sig
+  profileLFCheckPhase m!"{theoryName}: extension collision check" do
+    checkNoExtensionNameCollisions flatSourceBase block
   let priorKnownTypes := checkedLFDefinitionTypeMapFromDefs checked.lfObjectDefs
-  let blockForRegistry ←
+  let blockForRegistry ← profileLFCheckPhase m!"{theoryName}: elaborate implicit apps" do
     elaborateImplicitAppsInTheoryBlockExtension flatSourceBase priorKnownTypes block
-  let checkedBase := checkedSignatureToHLSignature flatSourceBase checked
-  let blockForCheck ← expandSyntaxAbbrevsInTheoryBlockExtension checkedBase blockForRegistry
-  let flatForCheck := checkedBase.appendBlock blockForCheck
-  checkModelVisibilityMetadataForExtension checkedBase flatForCheck blockForCheck
-  checkModelSectionMetadataForExtension flatForCheck blockForCheck
-  let delta ← checkTheoryBlockDeltaStreaming flatForCheck checked blockForCheck
-  let checked := appendCheckedTheoryDelta checked delta
+  let checkedBase ← profileLFCheckPhase m!"{theoryName}: checked-to-HL baseline" do
+    pure (checkedSignatureToHLSignature flatSourceBase checked)
+  let blockForCheck ← profileLFCheckPhase m!"{theoryName}: expand syntax abbrevs" do
+    expandSyntaxAbbrevsInTheoryBlockExtension checkedBase blockForRegistry
+  let flatForCheck ← profileLFCheckPhase m!"{theoryName}: append checked block" do
+    pure (checkedBase.appendBlock blockForCheck)
+  profileLFCheckPhase m!"{theoryName}: model visibility metadata" do
+    checkModelVisibilityMetadataForExtension checkedBase flatForCheck blockForCheck
+  profileLFCheckPhase m!"{theoryName}: model section metadata" do
+    checkModelSectionMetadataForExtension flatForCheck blockForCheck
+  let delta ← profileLFCheckPhase m!"{theoryName}: check theory block delta" do
+    checkTheoryBlockDeltaStreaming flatForCheck checked blockForCheck
+  let checked ← profileLFCheckPhase m!"{theoryName}: append checked delta" do
+    pure (appendCheckedTheoryDelta checked delta)
   pure (blockForRegistry, checked)
 
 /-- Check a candidate signature with the direct-LF checker and report command errors. -/
