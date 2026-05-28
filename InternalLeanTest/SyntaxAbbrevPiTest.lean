@@ -8,10 +8,10 @@ module
 public import InternalLean.Command
 
 /-!
-# Pi-shaped syntax abbreviation tests
+# Pi- and Sigma-shaped syntax abbreviation tests
 
-These regressions cover dependent-function-shaped `syntax_abbrev` values and checked projection
-patterns that should not become user model fields.
+These regressions cover dependent-function-shaped and record/Sigma-shaped `syntax_abbrev` values
+and checked projection patterns that should not become user model fields.
 -/
 
 @[expose] public section
@@ -74,6 +74,73 @@ declare_type_theory WitnessProjectionTest where
 #check_model_obligations WitnessProjectionTest
 #guard_model_field_count WitnessProjectionTest 5
 #guard_no_model_field_for WitnessProjectionTest initialHomContractible
+
+declare_type_theory SigmaAbbrevTest where
+  syntax_sort Obj : Type
+  syntax_sort Fam (x : Obj) : Type
+  syntax_abbrev Witness := Σ x : Obj, Fam x
+  syntax_abbrev ObjPair := Obj × Obj
+  lf_opaque base : Obj
+  lf_opaque mkFam (x : Obj) : Fam x
+  lf_opaque takeWitness (w : Witness) : Obj
+  lf_def witness : Witness := ⟨base, mkFam base⟩
+  lf_def projectObj : Witness ⇒ Obj := fun w => fst w
+  lf_def projectFam : (w : Witness) ⇒ Fam (fst w) := fun w => snd w
+  lf_def basePair : ObjPair := ⟨base, base⟩
+  lf_def firstBasePair : ObjPair ⇒ Obj := fun p => fst p
+
+#check_model_obligations SigmaAbbrevTest
+#guard_model_field_count SigmaAbbrevTest 5
+#guard_no_model_field_for SigmaAbbrevTest witness
+#guard_no_model_field_for SigmaAbbrevTest projectObj
+#guard_no_model_field_for SigmaAbbrevTest projectFam
+#guard_no_model_field_for SigmaAbbrevTest basePair
+#guard_no_model_field_for SigmaAbbrevTest firstBasePair
+
+generate_lf_model_structure SigmaAbbrevTest as SigmaAbbrevModel
+
+generate_model_transports SigmaAbbrevTest for SigmaAbbrevModel
+#check SigmaAbbrevTest.SigmaAbbrevModel.witness
+#check SigmaAbbrevTest.SigmaAbbrevModel.projectObj
+#check SigmaAbbrevTest.SigmaAbbrevModel.projectFam
+#check SigmaAbbrevTest.SigmaAbbrevModel.basePair
+#check SigmaAbbrevTest.SigmaAbbrevModel.firstBasePair
+
+def sigmaAbbrevModel : SigmaAbbrevTest.SigmaAbbrevModel where
+  Obj := Unit
+  Fam := fun _ => Unit
+  base := ()
+  mkFam := fun _ => ()
+  takeWitness := fun _ => ()
+
+declare_type_theory SigmaTheoremReplayTest where
+  syntax_sort Obj : Type
+  syntax_sort Fam (x : Obj) : Type
+  syntax_abbrev Witness := Σ x : Obj, Fam x
+  lf_opaque base : Obj
+  lf_opaque mkFam (x : Obj) : Fam x
+  lf_def witness : Witness := ⟨base, mkFam base⟩
+  judgment HasWitness (w : Witness)
+  rule witness_ok : HasWitness witness
+  judgment_theorem witness_ok_checked : HasWitness witness := witness_ok
+
+#guard_model_field_count SigmaTheoremReplayTest 6
+#guard_no_model_field_for SigmaTheoremReplayTest witness
+#guard_no_model_field_for SigmaTheoremReplayTest witness_ok_checked
+
+generate_lf_model_structure SigmaTheoremReplayTest as SigmaTheoremReplayModel
+generate_model_transports SigmaTheoremReplayTest for SigmaTheoremReplayModel
+#check SigmaTheoremReplayTest.SigmaTheoremReplayModel.witness_ok_checked
+
+/--
+error: syntax_abbrev 'Bad' in type theory 'BadSigmaAbbrevValueTest' has value whose type cannot
+be inferred: 'raw', expected an LF type expression
+-/
+#guard_msgs (whitespace := lax) in
+declare_type_theory BadSigmaAbbrevValueTest where
+  syntax_sort Obj : Type
+  lf_opaque raw / 0
+  syntax_abbrev Bad := Σ x : Obj, raw
 
 /--
 error: syntax_abbrev 'Bad' in type theory 'BadSyntaxAbbrevValueTest' has value whose type

@@ -1100,7 +1100,7 @@ def asInstantiation (σ : ScopedInstantiation) : Instantiation := fun x =>
 `Sort args` shape produced by LF syntax-sort declarations. -/
 def annotationCustomSort? : Raw → Option Name
   | .tyConst n => some n
-  | .tyApp n _ => if n == `arrow then none else some n
+  | .tyApp n _ => if n == `arrow || n == `sigma then none else some n
   | _ => none
 
 /-- Find kernel-facing typed LF constant schemas by name and arity. More than one match is

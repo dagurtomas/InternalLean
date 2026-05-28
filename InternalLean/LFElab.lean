@@ -59,6 +59,16 @@ partial def substObjectMacroParams (subst : NameMap ObjExpr) : ObjExpr → ObjEx
         | some x => subst.erase x.eraseMacroScopes
         | none => subst
       .funArrow x A (substObjectMacroParams subst B)
+  | .sigma x A B =>
+      let A := substObjectMacroParams subst A
+      let subst :=
+        match x with
+        | some x => subst.erase x.eraseMacroScopes
+        | none => subst
+      .sigma x A (substObjectMacroParams subst B)
+  | .pair a b => .pair (substObjectMacroParams subst a) (substObjectMacroParams subst b)
+  | .fst e => .fst (substObjectMacroParams subst e)
+  | .snd e => .snd (substObjectMacroParams subst e)
   | .lam xs body =>
       let subst := xs.foldl (fun subst x => subst.erase x.eraseMacroScopes) subst
       .lam xs (substObjectMacroParams subst body)
@@ -94,6 +104,10 @@ partial def expandObjectMacrosInExpr (sig : HLSignature) (e : ObjExpr) : CoreM O
     | .ident _ | .sort | .univ _ => pure e
     | .arrow x A B => return .arrow x (← go A) (← go B)
     | .funArrow x A B => return .funArrow x (← go A) (← go B)
+    | .sigma x A B => return .sigma x (← go A) (← go B)
+    | .pair a b => return .pair (← go a) (← go b)
+    | .fst e => return .fst (← go e)
+    | .snd e => return .snd (← go e)
     | .lam xs body => return .lam xs (← go body)
     | .jeq lhs rhs => return .jeq (← go lhs) (← go rhs)
     | .app .. =>
@@ -148,6 +162,10 @@ partial def expandSurfaceFunctionsInExpr (sig : HLSignature) (e : ObjExpr) : Cor
         let binder := x.getD `_
         let B ← go B
         pure (.app (.app (.ident `Fun) A) (.lam #[binder] B))
+    | .sigma x A B => return .sigma x (← go A) (← go B)
+    | .pair a b => return .pair (← go a) (← go b)
+    | .fst e => return .fst (← go e)
+    | .snd e => return .snd (← go e)
     | .lam xs body => return .lam xs (← go body)
     | .jeq lhs rhs => return .jeq (← go lhs) (← go rhs)
   go e
@@ -394,9 +412,11 @@ def checkNoLFLocalBinderShadowingInExpr (sig : HLSignature) (ownerKind : String)
     match e with
     | .ident _ | .sort | .univ _ => pure ()
     | .app f a => go locals f *> go locals a
-    | .arrow _ A B | .funArrow _ A B => do
+    | .arrow _ A B | .funArrow _ A B | .sigma _ A B => do
         go locals A
         go locals B
+    | .pair a b => go locals a *> go locals b
+    | .fst e | .snd e => go locals e
     | .lam xs body => do
         let mut seen : NameSet := {}
         for x in xs do
@@ -539,7 +559,9 @@ partial def checkSyntaxSortApplicationsInExpr (sig : HLSignature) (syntaxSortAri
             go head
             for arg in args do
               go arg
-    | .arrow _ A B | .funArrow _ A B => go A *> go B
+    | .arrow _ A B | .funArrow _ A B | .sigma _ A B => go A *> go B
+    | .pair a b => go a *> go b
+    | .fst e | .snd e => go e
     | .lam _ body => go body
     | .jeq lhs rhs => go lhs *> go rhs
   go e
@@ -600,6 +622,14 @@ partial def lfFunctionTypeArity : ObjExpr → Nat
 partial def lfFunctionTypeResult : ObjExpr → ObjExpr
   | .arrow _ _ B | .funArrow _ _ B => lfFunctionTypeResult B
   | e => e
+
+/-- Whether a checked LF object-definition result is a structural record/Sigma type.
+
+Most object definitions still end in a syntax-sort-headed type. A Sigma-shaped package has no
+rigid identifier head after peeling leading function arrows, so it needs this structural case. -/
+def lfObjectDefResultIsStructuralRecord : ObjExpr → Bool
+  | .sigma .. => true
+  | _ => false
 
 /-- Build the explicit framework function type for a binder-style `internal def`. -/
 def mkInternalDefFunctionType (params : Array HLBinding) (result : ObjExpr) : ObjExpr :=
@@ -731,6 +761,18 @@ partial def resolveLFExpr (sig : HLSignature) (globalHeads :
       let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
       let B ← resolveLFExpr sig globalHeads locals ownerKind ownerName where_ B
       pure (.arrow (x.map Name.eraseMacroScopes) A B)
+  | .sigma x A B => do
+      let A ← resolveLFExpr sig globalHeads locals ownerKind ownerName where_ A
+      let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
+      let B ← resolveLFExpr sig globalHeads locals ownerKind ownerName where_ B
+      pure (.sigma (x.map Name.eraseMacroScopes) A B)
+  | .pair a b => do
+      pure (.pair (← resolveLFExpr sig globalHeads locals ownerKind ownerName where_ a)
+        (← resolveLFExpr sig globalHeads locals ownerKind ownerName where_ b))
+  | .fst e => do
+      pure (.fst (← resolveLFExpr sig globalHeads locals ownerKind ownerName where_ e))
+  | .snd e => do
+      pure (.snd (← resolveLFExpr sig globalHeads locals ownerKind ownerName where_ e))
   | .lam xs body => do
       let clean := xs.map Name.eraseMacroScopes
       let locals := clean.foldl (fun locals x => locals.insert x) locals
@@ -771,6 +813,11 @@ partial def eraseObjExprScopes : ObjExpr → ObjExpr
     eraseObjExprScopes B)
   | .funArrow x A B => .funArrow (x.map Name.eraseMacroScopes) (eraseObjExprScopes A) (
     eraseObjExprScopes B)
+  | .sigma x A B => .sigma (x.map Name.eraseMacroScopes) (eraseObjExprScopes A) (
+    eraseObjExprScopes B)
+  | .pair a b => .pair (eraseObjExprScopes a) (eraseObjExprScopes b)
+  | .fst e => .fst (eraseObjExprScopes e)
+  | .snd e => .snd (eraseObjExprScopes e)
   | .lam xs body => .lam (xs.map Name.eraseMacroScopes) (eraseObjExprScopes body)
   | .jeq lhs rhs => .jeq (eraseObjExprScopes lhs) (eraseObjExprScopes rhs)
 
@@ -779,11 +826,13 @@ partial def freeLFObjectIdentifiers : ObjExpr → NameSet
   | .ident n => ({} : NameSet).insert n.eraseMacroScopes
   | .sort | .univ _ => {}
   | .app f a => freeLFObjectIdentifiers f ++ freeLFObjectIdentifiers a
-  | .arrow x A B | .funArrow x A B =>
+  | .arrow x A B | .funArrow x A B | .sigma x A B =>
       let free := freeLFObjectIdentifiers A ++ freeLFObjectIdentifiers B
       match x with
       | some x => free.erase x.eraseMacroScopes
       | none => free
+  | .pair a b => freeLFObjectIdentifiers a ++ freeLFObjectIdentifiers b
+  | .fst e | .snd e => freeLFObjectIdentifiers e
   | .lam xs body =>
       let free := freeLFObjectIdentifiers body
       xs.foldl (fun free x => free.erase x.eraseMacroScopes) free
@@ -802,12 +851,16 @@ partial def freeLFObjectIdentifierArrayWithLocals (locals : NameSet) (seen : Nam
   | .app f a =>
       let (seen, acc) := freeLFObjectIdentifierArrayWithLocals locals seen acc f
       freeLFObjectIdentifierArrayWithLocals locals seen acc a
-  | .arrow x A B | .funArrow x A B =>
+  | .arrow x A B | .funArrow x A B | .sigma x A B =>
       let (seen, acc) := freeLFObjectIdentifierArrayWithLocals locals seen acc A
       let locals := match x with
         | some x => locals.insert x.eraseMacroScopes
         | none => locals
       freeLFObjectIdentifierArrayWithLocals locals seen acc B
+  | .pair a b =>
+      let (seen, acc) := freeLFObjectIdentifierArrayWithLocals locals seen acc a
+      freeLFObjectIdentifierArrayWithLocals locals seen acc b
+  | .fst e | .snd e => freeLFObjectIdentifierArrayWithLocals locals seen acc e
   | .lam xs body =>
       let locals := xs.foldl (fun locals x => locals.insert x.eraseMacroScopes) locals
       freeLFObjectIdentifierArrayWithLocals locals seen acc body
@@ -872,6 +925,27 @@ partial def alphaNormalizeLFExprWithAvoid (avoid : NameSet) (e : ObjExpr) : ObjE
         | none =>
             let (B, next) := go locals next B
             (.funArrow none A B, next)
+    | .sigma x A B =>
+        let (A, next) := go locals next A
+        match x with
+        | some x =>
+            let x := x.eraseMacroScopes
+            let x' := canonicalLFAlphaBinderName next avoid
+            let (B, next) := go ((x, x') :: locals) (next + 1) B
+            (.sigma (some x') A B, next)
+        | none =>
+            let (B, next) := go locals next B
+            (.sigma none A B, next)
+    | .pair a b =>
+        let (a, next) := go locals next a
+        let (b, next) := go locals next b
+        (.pair a b, next)
+    | .fst e =>
+        let (e, next) := go locals next e
+        (.fst e, next)
+    | .snd e =>
+        let (e, next) := go locals next e
+        (.snd e, next)
     | .lam xs body =>
         let clean := xs.map Name.eraseMacroScopes
         let (xs', locals, next) := Id.run do
@@ -952,6 +1026,19 @@ partial def renameLFBoundOccurrences (oldName newName : Name) : ObjExpr → ObjE
             renameLFBoundOccurrences oldName newName B
           .funArrow (some x) A B
       | none => .funArrow none A (renameLFBoundOccurrences oldName newName B)
+  | .sigma x A B =>
+      let A := renameLFBoundOccurrences oldName newName A
+      match x with
+      | some x =>
+          let x := x.eraseMacroScopes
+          let B := if x == oldName.eraseMacroScopes then B else
+            renameLFBoundOccurrences oldName newName B
+          .sigma (some x) A B
+      | none => .sigma none A (renameLFBoundOccurrences oldName newName B)
+  | .pair a b => .pair (renameLFBoundOccurrences oldName newName a)
+      (renameLFBoundOccurrences oldName newName b)
+  | .fst e => .fst (renameLFBoundOccurrences oldName newName e)
+  | .snd e => .snd (renameLFBoundOccurrences oldName newName e)
   | .lam xs body =>
       let clean := xs.map Name.eraseMacroScopes
       let body := if clean.contains oldName.eraseMacroScopes then body else
@@ -1009,6 +1096,25 @@ partial def substLFParams (subst : NameMap ObjExpr) : ObjExpr → ObjExpr
               (x, B, subst)
           .funArrow (some x) A (substLFParams subst B)
       | none => .funArrow none A (substLFParams subst B)
+  | .sigma x A B =>
+      let A := substLFParams subst A
+      match x with
+      | some x =>
+          let x := x.eraseMacroScopes
+          let subst := subst.erase x
+          let (x, B, subst) :=
+            if lfSubstWouldCaptureUnderBinder x subst B then
+              let avoid := freeLFObjectIdentifiers B ++ lfSubstRangeFreeIdentifiers subst ++
+                lfSubstKeys subst |>.insert x
+              let y := freshLFNameAvoiding x avoid
+              (y, renameLFBoundOccurrences x y B, subst.erase y)
+            else
+              (x, B, subst)
+          .sigma (some x) A (substLFParams subst B)
+      | none => .sigma none A (substLFParams subst B)
+  | .pair a b => .pair (substLFParams subst a) (substLFParams subst b)
+  | .fst e => .fst (substLFParams subst e)
+  | .snd e => .snd (substLFParams subst e)
   | .lam xs body =>
       let clean := xs.map Name.eraseMacroScopes
       let (clean, body, subst) := Id.run do
@@ -1114,6 +1220,25 @@ partial def unfoldLFDefinitionsInExprCore (defs : LFDefinitionValueMap) (locals 
               let locals := locals.insert x.eraseMacroScopes
               .funArrow (some x) A (unfoldLFDefinitionsInExprCore defs locals fuel B)
           | none => .funArrow none A (unfoldLFDefinitionsInExprCore defs locals fuel B)
+      | .sigma x A B =>
+          let A := unfoldLFDefinitionsInExprCore defs locals fuel A
+          match x with
+          | some x =>
+              let (x, B) := freshLFUnfoldBinder defs locals x B
+              let locals := locals.insert x.eraseMacroScopes
+              .sigma (some x) A (unfoldLFDefinitionsInExprCore defs locals fuel B)
+          | none => .sigma none A (unfoldLFDefinitionsInExprCore defs locals fuel B)
+      | .pair a b =>
+          .pair (unfoldLFDefinitionsInExprCore defs locals fuel a)
+            (unfoldLFDefinitionsInExprCore defs locals fuel b)
+      | .fst e =>
+          match unfoldLFDefinitionsInExprCore defs locals fuel e with
+          | .pair a _ => a
+          | e => .fst e
+      | .snd e =>
+          match unfoldLFDefinitionsInExprCore defs locals fuel e with
+          | .pair _ b => b
+          | e => .snd e
       | .lam xs body =>
           let (xs, body, locals) := Id.run do
             let mut out := #[]
@@ -1280,6 +1405,18 @@ partial def expandSyntaxAbbrevsInExpr (sig : HLSignature) (ownerKind : String)
       let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
       let B ← expandSyntaxAbbrevsInExpr sig ownerKind ownerName where_ locals fuel B
       pure (.funArrow (x.map Name.eraseMacroScopes) A B)
+  | .sigma x A B => do
+      let A ← expandSyntaxAbbrevsInExpr sig ownerKind ownerName where_ locals fuel A
+      let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
+      let B ← expandSyntaxAbbrevsInExpr sig ownerKind ownerName where_ locals fuel B
+      pure (.sigma (x.map Name.eraseMacroScopes) A B)
+  | .pair a b => do
+      pure (.pair (← expandSyntaxAbbrevsInExpr sig ownerKind ownerName where_ locals fuel a)
+        (← expandSyntaxAbbrevsInExpr sig ownerKind ownerName where_ locals fuel b))
+  | .fst e => do
+      pure (.fst (← expandSyntaxAbbrevsInExpr sig ownerKind ownerName where_ locals fuel e))
+  | .snd e => do
+      pure (.snd (← expandSyntaxAbbrevsInExpr sig ownerKind ownerName where_ locals fuel e))
   | .lam xs body => do
       let clean := xs.map Name.eraseMacroScopes
       let locals := clean.foldl (fun locals x => locals.insert x) locals
@@ -1433,7 +1570,20 @@ partial def inferKnownLFExprType? (sig : HLSignature) (knownTypes : LFLocalTypes
                       match findJudgmentDecl? sig n with
                       | some j => if j.params.isEmpty then some .sort else none
                       | none => none
-  | .sort | .univ _ | .arrow .. | .funArrow .. | .lam .. | .jeq .. => none
+  | .sort | .univ _ | .arrow .. | .funArrow .. | .sigma .. | .pair .. | .lam .. => none
+  | .jeq .. => none
+  | .fst e => do
+      match inferKnownLFExprType? sig knownTypes e with
+      | some (.sigma _ A _) => some (eraseObjExprScopes A)
+      | _ => none
+  | .snd e => do
+      match inferKnownLFExprType? sig knownTypes e with
+      | some (.sigma binder? _ B) =>
+          let B := match binder? with
+            | some x => substSingleLFParam x (.fst (eraseObjExprScopes e)) B
+            | none => B
+          some (eraseObjExprScopes B)
+      | _ => none
   | e@(.app f a) =>
       match inferKnownLFExprType? sig knownTypes f with
       | some (.arrow binder? expected result) | some (.funArrow binder? expected result) =>
@@ -1557,6 +1707,15 @@ partial def objExprSourceStringWithDepth : Nat → ObjExpr → String
   | depth + 1, .funArrow (some x) A B =>
       s!"(({x.eraseMacroScopes} : {objExprSourceStringWithDepth depth A}) → " ++
         s!"{objExprSourceStringWithDepth depth B})"
+  | depth + 1, .sigma none A B =>
+      s!"({objExprSourceStringWithDepth depth A} × {objExprSourceStringWithDepth depth B})"
+  | depth + 1, .sigma (some x) A B =>
+      s!"(Σ {x.eraseMacroScopes} : {objExprSourceStringWithDepth depth A}, " ++
+        s!"{objExprSourceStringWithDepth depth B})"
+  | depth + 1, .pair a b =>
+      s!"⟨{objExprSourceStringWithDepth depth a}, {objExprSourceStringWithDepth depth b}⟩"
+  | depth + 1, .fst e => s!"(fst {objExprSourceStringWithDepth depth e})"
+  | depth + 1, .snd e => s!"(snd {objExprSourceStringWithDepth depth e})"
   | depth + 1, .lam xs body =>
       let binders := String.intercalate " " (xs.toList.map (fun x => toString x.eraseMacroScopes))
       s!"(fun {binders} => {objExprSourceStringWithDepth depth body})"
@@ -1622,6 +1781,33 @@ partial def matchImplicitObjectPattern (vars : NameSet) (pattern actual : ObjExp
               '{ax}'"
           let subst ← matchImplicitObjectPattern vars pA aA subst
           matchImplicitObjectPattern vars pB aB subst
+      | _ => throw s!"rigid expressions do not match: expected \
+          '{diagnosticObjExprString pattern}', got '{diagnosticObjExprString actual}'"
+  | .sigma px pA pB =>
+      match actual with
+      | .sigma ax aA aB =>
+          if px.map Name.eraseMacroScopes != ax.map Name.eraseMacroScopes then
+            throw s!"binder names do not match while inferring implicits: expected '{px}', got \
+              '{ax}'"
+          let subst ← matchImplicitObjectPattern vars pA aA subst
+          matchImplicitObjectPattern vars pB aB subst
+      | _ => throw s!"rigid expressions do not match: expected \
+          '{diagnosticObjExprString pattern}', got '{diagnosticObjExprString actual}'"
+  | .pair pa pb =>
+      match actual with
+      | .pair aa ab =>
+          let subst ← matchImplicitObjectPattern vars pa aa subst
+          matchImplicitObjectPattern vars pb ab subst
+      | _ => throw s!"rigid expressions do not match: expected \
+          '{diagnosticObjExprString pattern}', got '{diagnosticObjExprString actual}'"
+  | .fst pe =>
+      match actual with
+      | .fst ae => matchImplicitObjectPattern vars pe ae subst
+      | _ => throw s!"rigid expressions do not match: expected \
+          '{diagnosticObjExprString pattern}', got '{diagnosticObjExprString actual}'"
+  | .snd pe =>
+      match actual with
+      | .snd ae => matchImplicitObjectPattern vars pe ae subst
       | _ => throw s!"rigid expressions do not match: expected \
           '{diagnosticObjExprString pattern}', got '{diagnosticObjExprString actual}'"
   | .lam pxs pbody =>
@@ -1741,6 +1927,37 @@ mutual
           | none => locals
         let B ← elaborateImplicitAppsInExpr sig knownTypes locals ownerKind ownerName where_ none B
         pure (.funArrow (x.map Name.eraseMacroScopes) A B)
+    | .sigma x A B => do
+        let A ← elaborateImplicitAppsInExpr sig knownTypes locals ownerKind ownerName where_ none A
+        let knownTypes := match x with
+          | some x => knownTypes.insert x.eraseMacroScopes (eraseObjExprScopes A)
+          | none => knownTypes
+        let locals := match x with
+          | some x => locals.insert x.eraseMacroScopes
+          | none => locals
+        let B ← elaborateImplicitAppsInExpr sig knownTypes locals ownerKind ownerName where_ none B
+        pure (.sigma (x.map Name.eraseMacroScopes) A B)
+    | .pair a b => do
+        let (expectedA?, expectedB?) :=
+          match expected?.map eraseObjExprScopes with
+          | some (.sigma binder? A B) =>
+              let aForB := match binder? with
+                | some x => some (fun a => substSingleLFParam x (eraseObjExprScopes a) B)
+                | none => some (fun _ => B)
+              (some A, aForB)
+          | _ => (none, none)
+        let a ← elaborateImplicitAppsInExpr sig knownTypes locals ownerKind ownerName where_
+          expectedA? a
+        let expectedB? := expectedB?.map (fun mk => mk a)
+        let b ← elaborateImplicitAppsInExpr sig knownTypes locals ownerKind ownerName where_
+          expectedB? b
+        pure (.pair a b)
+    | .fst e => do
+        pure (.fst (← elaborateImplicitAppsInExpr sig knownTypes locals ownerKind ownerName where_
+          none e))
+    | .snd e => do
+        pure (.snd (← elaborateImplicitAppsInExpr sig knownTypes locals ownerKind ownerName where_
+          none e))
     | .lam xs body => do
         let clean := xs.map Name.eraseMacroScopes
         let locals := clean.foldl (fun locals x => locals.insert x) locals
@@ -2021,8 +2238,10 @@ partial def lfExprMentionsLFObjectDef (sig : HLSignature) : ObjExpr → Bool
   | .ident n => sig.lfObjectDefs.any (fun d => d.name.eraseMacroScopes == n.eraseMacroScopes)
   | .sort | .univ _ => false
   | .app f a => lfExprMentionsLFObjectDef sig f || lfExprMentionsLFObjectDef sig a
-  | .arrow _ A B | .funArrow _ A B =>
+  | .arrow _ A B | .funArrow _ A B | .sigma _ A B =>
       lfExprMentionsLFObjectDef sig A || lfExprMentionsLFObjectDef sig B
+  | .pair a b => lfExprMentionsLFObjectDef sig a || lfExprMentionsLFObjectDef sig b
+  | .fst e | .snd e => lfExprMentionsLFObjectDef sig e
   | .lam _ body => lfExprMentionsLFObjectDef sig body
   | .jeq lhs rhs => lfExprMentionsLFObjectDef sig lhs || lfExprMentionsLFObjectDef sig rhs
 
@@ -2048,6 +2267,19 @@ partial def normalizeLFExprBetaOnly : ObjExpr → ObjExpr
     normalizeLFExprBetaOnly B)
   | .funArrow x A B => .funArrow (x.map Name.eraseMacroScopes) (normalizeLFExprBetaOnly A) (
     normalizeLFExprBetaOnly B)
+  | .sigma x A B => .sigma (x.map Name.eraseMacroScopes) (normalizeLFExprBetaOnly A) (
+    normalizeLFExprBetaOnly B)
+  | .pair a b => .pair (normalizeLFExprBetaOnly a) (normalizeLFExprBetaOnly b)
+  | .fst e =>
+      let e := normalizeLFExprBetaOnly e
+      match e with
+      | .pair a _ => a
+      | _ => .fst e
+  | .snd e =>
+      let e := normalizeLFExprBetaOnly e
+      match e with
+      | .pair _ b => b
+      | _ => .snd e
   | .lam xs body => .lam (xs.map Name.eraseMacroScopes) (normalizeLFExprBetaOnly body)
   | .jeq lhs rhs => .jeq (normalizeLFExprBetaOnly lhs) (normalizeLFExprBetaOnly rhs)
 
@@ -2123,12 +2355,17 @@ partial def checkLFExprHasType (sig : HLSignature) (ownerKind : String) (ownerNa
             checkInferableApps knownTypes head
             for arg in args do
               checkInferableApps knownTypes arg
-    | .arrow x A B | .funArrow x A B =>
+    | .arrow x A B | .funArrow x A B | .sigma x A B =>
         checkInferableApps knownTypes A
         let knownTypes := match x with
           | some x => knownTypes.insert x.eraseMacroScopes (eraseObjExprScopes A)
           | none => knownTypes
         checkInferableApps knownTypes B
+    | .pair a b =>
+        checkInferableApps knownTypes a
+        checkInferableApps knownTypes b
+    | .fst e | .snd e =>
+        checkInferableApps knownTypes e
     | .lam _ _body =>
         pure ()
     | .jeq lhs rhs =>
@@ -2157,6 +2394,18 @@ partial def checkLFExprHasType (sig : HLSignature) (ownerKind : String) (ownerNa
       else
         throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} as an \
           empty lambda expression"
+  | .pair a b =>
+      match expected with
+      | .sigma expectedBinder? expectedDomain expectedBody =>
+          checkLFExprHasType sig ownerKind ownerName where_ knownTypes a expectedDomain
+          let expectedBody := match expectedBinder? with
+            | some y => substSingleLFParam y (eraseObjExprScopes a) expectedBody
+            | none => expectedBody
+          checkLFExprHasType sig ownerKind ownerName where_ knownTypes b expectedBody
+      | _ =>
+          throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} as \
+            pair expression '{diagnosticObjExprString expr}', expected a record/Sigma type but \
+              got '{diagnosticObjExprString expected}'"
   | _ =>
       checkInferableApps knownTypes expr
       match inferKnownLFExprType? sig knownTypes expr with
@@ -2228,12 +2477,17 @@ partial def checkLFInferableApplicationArguments (sig : HLSignature) (ownerKind 
           checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes head
           for arg in args do
             checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes arg
-  | .arrow x A B | .funArrow x A B => do
+  | .arrow x A B | .funArrow x A B | .sigma x A B => do
       checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes A
       let knownTypes := match x with
         | some x => knownTypes.insert x.eraseMacroScopes (eraseObjExprScopes A)
         | none => knownTypes
       checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes B
+  | .pair a b => do
+      checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes a
+      checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes b
+  | .fst e | .snd e => do
+      checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes e
   | .lam _ _body =>
       pure ()
   | .jeq lhs rhs => do
@@ -2302,12 +2556,17 @@ partial def checkLFSyntaxSortArgumentsInExpr (sig : HLSignature) (ownerKind : St
           checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes head
           for arg in args do
             checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes arg
-  | .arrow x A B | .funArrow x A B => do
+  | .arrow x A B | .funArrow x A B | .sigma x A B => do
       checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes A
       let knownTypes := match x with
         | some x => knownTypes.insert x.eraseMacroScopes (eraseObjExprScopes A)
         | none => knownTypes
       checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes B
+  | .pair a b => do
+      checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes a
+      checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes b
+  | .fst e | .snd e => do
+      checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes e
   | .lam _ _body =>
       pure ()
   | .jeq lhs rhs => do
@@ -2342,7 +2601,7 @@ partial def checkLFBinderType (sig : HLSignature)
   let typeExpr := eraseObjExprScopes typeExpr
   match typeExpr with
   | .sort | .univ _ => pure ()
-  | .arrow x A B | .funArrow x A B =>
+  | .arrow x A B | .funArrow x A B | .sigma x A B =>
       checkLFBinderType sig globalHeads ownerKind ownerName where_ knownTypes locals false A
       let knownTypes := match x with
         | some x => knownTypes.insert x.eraseMacroScopes (eraseObjExprScopes A)
@@ -2351,6 +2610,10 @@ partial def checkLFBinderType (sig : HLSignature)
         | some x => locals.insert x.eraseMacroScopes
         | none => locals
       checkLFBinderType sig globalHeads ownerKind ownerName where_ knownTypes locals false B
+  | .pair .. | .fst .. | .snd .. =>
+      throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} as \
+        term-shaped record expression '{diagnosticObjExprString typeExpr}', expected an LF type \
+          expression"
   | _ =>
       let head? := checkedLFHead? globalHeads locals typeExpr
       match head? with
@@ -2549,10 +2812,15 @@ partial def checkKnownNamesInLFExpr (sig : HLSignature) (globals locals : NameSe
           checkKnownNamesInLFExpr sig globals locals opaqueArities ownerKind ownerName where_ head
           for arg in args do
             checkKnownNamesInLFExpr sig globals locals opaqueArities ownerKind ownerName where_ arg
-  | .arrow x A B | .funArrow x A B => do
+  | .arrow x A B | .funArrow x A B | .sigma x A B => do
       checkKnownNamesInLFExpr sig globals locals opaqueArities ownerKind ownerName where_ A
       let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
       checkKnownNamesInLFExpr sig globals locals opaqueArities ownerKind ownerName where_ B
+  | .pair a b => do
+      checkKnownNamesInLFExpr sig globals locals opaqueArities ownerKind ownerName where_ a
+      checkKnownNamesInLFExpr sig globals locals opaqueArities ownerKind ownerName where_ b
+  | .fst e | .snd e => do
+      checkKnownNamesInLFExpr sig globals locals opaqueArities ownerKind ownerName where_ e
   | .lam xs body => do
       let mut seen : NameSet := {}
       for x in xs do
@@ -2638,11 +2906,13 @@ partial def freeCheckedLFLocalIdentifiers : CheckedLFExpr → NameSet
       if h.kind == .local then ({} : NameSet).insert h.name.eraseMacroScopes else {}
   | .sort | .univ _ => {}
   | .app f a => freeCheckedLFLocalIdentifiers f ++ freeCheckedLFLocalIdentifiers a
-  | .arrow x A B =>
+  | .arrow x A B | .sigma x A B =>
       let free := freeCheckedLFLocalIdentifiers A ++ freeCheckedLFLocalIdentifiers B
       match x with
       | some x => free.erase x.eraseMacroScopes
       | none => free
+  | .pair a b => freeCheckedLFLocalIdentifiers a ++ freeCheckedLFLocalIdentifiers b
+  | .fst e | .snd e => freeCheckedLFLocalIdentifiers e
   | .lam xs body =>
       xs.foldl (fun free x => free.erase x.eraseMacroScopes) (freeCheckedLFLocalIdentifiers body)
   | .jeq lhs rhs => freeCheckedLFLocalIdentifiers lhs ++ freeCheckedLFLocalIdentifiers rhs
@@ -2668,6 +2938,19 @@ partial def renameCheckedLFBoundOccurrences (oldName newName : Name) :
             renameCheckedLFBoundOccurrences oldName newName B
           .arrow (some x) A B
       | none => .arrow none A (renameCheckedLFBoundOccurrences oldName newName B)
+  | .sigma x A B =>
+      let A := renameCheckedLFBoundOccurrences oldName newName A
+      match x with
+      | some x =>
+          let x := x.eraseMacroScopes
+          let B := if x == oldName.eraseMacroScopes then B else
+            renameCheckedLFBoundOccurrences oldName newName B
+          .sigma (some x) A B
+      | none => .sigma none A (renameCheckedLFBoundOccurrences oldName newName B)
+  | .pair a b => .pair (renameCheckedLFBoundOccurrences oldName newName a)
+      (renameCheckedLFBoundOccurrences oldName newName b)
+  | .fst e => .fst (renameCheckedLFBoundOccurrences oldName newName e)
+  | .snd e => .snd (renameCheckedLFBoundOccurrences oldName newName e)
   | .lam xs body =>
       let clean := xs.map Name.eraseMacroScopes
       let body := if clean.contains oldName.eraseMacroScopes then body else
@@ -2703,6 +2986,29 @@ partial def substSingleCheckedLFParam (x : Name) (value : CheckedLFExpr) :
                 (y, B)
             .arrow (some y) A (substSingleCheckedLFParam x value B)
       | none => .arrow none A (substSingleCheckedLFParam x value B)
+  | .sigma y A B =>
+      let A := substSingleCheckedLFParam x value A
+      match y with
+      | some y =>
+          let y := y.eraseMacroScopes
+          if y == x.eraseMacroScopes then
+            .sigma (some y) A B
+          else
+            let (y, B) :=
+              if (freeCheckedLFLocalIdentifiers value).contains y &&
+                  (freeCheckedLFLocalIdentifiers B).contains x.eraseMacroScopes then
+                let avoid := freeCheckedLFLocalIdentifiers value ++ freeCheckedLFLocalIdentifiers B
+                  |>.insert y
+                let y' := freshLFNameAvoiding y avoid
+                (y', renameCheckedLFBoundOccurrences y y' B)
+              else
+                (y, B)
+            .sigma (some y) A (substSingleCheckedLFParam x value B)
+      | none => .sigma none A (substSingleCheckedLFParam x value B)
+  | .pair a b => .pair (substSingleCheckedLFParam x value a)
+      (substSingleCheckedLFParam x value b)
+  | .fst e => .fst (substSingleCheckedLFParam x value e)
+  | .snd e => .snd (substSingleCheckedLFParam x value e)
   | .lam xs body =>
       let clean := xs.map Name.eraseMacroScopes
       if clean.contains x.eraseMacroScopes then
@@ -2786,6 +3092,25 @@ partial def unfoldLFDefinitionsInCheckedExprCore (defs : CheckedLFDefinitionValu
                   let locals := locals.insert x.eraseMacroScopes
                   .arrow (some x) A (unfoldLFDefinitionsInCheckedExprCore defs locals fuel B)
               | none => .arrow none A (unfoldLFDefinitionsInCheckedExprCore defs locals fuel B)
+          | .sigma x A B =>
+              let A := unfoldLFDefinitionsInCheckedExprCore defs locals fuel A
+              match x with
+              | some x =>
+                  let (x, B) := freshCheckedLFUnfoldBinder defs locals x B
+                  let locals := locals.insert x.eraseMacroScopes
+                  .sigma (some x) A (unfoldLFDefinitionsInCheckedExprCore defs locals fuel B)
+              | none => .sigma none A (unfoldLFDefinitionsInCheckedExprCore defs locals fuel B)
+          | .pair a b =>
+              .pair (unfoldLFDefinitionsInCheckedExprCore defs locals fuel a)
+                (unfoldLFDefinitionsInCheckedExprCore defs locals fuel b)
+          | .fst e =>
+              match unfoldLFDefinitionsInCheckedExprCore defs locals fuel e with
+              | .pair a _ => a
+              | e => .fst e
+          | .snd e =>
+              match unfoldLFDefinitionsInCheckedExprCore defs locals fuel e with
+              | .pair _ b => b
+              | e => .snd e
           | .lam xs body =>
               let (xs, body, locals) := Id.run do
                 let mut out := #[]
@@ -2834,6 +3159,10 @@ partial def checkedLFExprToRaw : CheckedLFExpr → Raw
           | .primitive | .definition | .theorem | .opaque => .tmApp h.name rawArgs
       | other => .tmApp `_app (checkedLFExprToRaw other :: rawArgs)
   | .arrow _ A B => .tyApp `arrow [checkedLFExprToRaw A, checkedLFExprToRaw B]
+  | .sigma _ A B => .tyApp `sigma [checkedLFExprToRaw A, checkedLFExprToRaw B]
+  | .pair a b => .tmApp `pair [checkedLFExprToRaw a, checkedLFExprToRaw b]
+  | .fst e => .tmApp `fst [checkedLFExprToRaw e]
+  | .snd e => .tmApp `snd [checkedLFExprToRaw e]
   | .lam xs body => .tmApp `lam ((xs.toList.map Raw.leanParam) ++ [checkedLFExprToRaw body])
   | .jeq lhs rhs => .tmApp `jeq [checkedLFExprToRaw lhs, checkedLFExprToRaw rhs]
 
@@ -2863,10 +3192,13 @@ partial def collectLFDefinitionMentions (defs : LFDefinitionValueMap) (locals : 
   | .sort | .univ _ => acc
   | .app f a =>
     collectLFDefinitionMentions defs locals (collectLFDefinitionMentions defs locals acc f) a
-  | .arrow x A B | .funArrow x A B =>
+  | .arrow x A B | .funArrow x A B | .sigma x A B =>
       let acc := collectLFDefinitionMentions defs locals acc A
       let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
       collectLFDefinitionMentions defs locals acc B
+  | .pair a b =>
+      collectLFDefinitionMentions defs locals (collectLFDefinitionMentions defs locals acc a) b
+  | .fst e | .snd e => collectLFDefinitionMentions defs locals acc e
   | .lam xs body =>
       let locals := xs.foldl (fun locals x => locals.insert x.eraseMacroScopes) locals
       collectLFDefinitionMentions defs locals acc body
@@ -2890,10 +3222,14 @@ partial def collectLFDefinitionUnfoldsCore (defs : LFDefinitionValueMap) (locals
   | .app f a =>
       collectLFDefinitionUnfoldsCore defs locals fuel
         (collectLFDefinitionUnfoldsCore defs locals fuel acc f) a
-  | .arrow x A B | .funArrow x A B =>
+  | .arrow x A B | .funArrow x A B | .sigma x A B =>
       let acc := collectLFDefinitionUnfoldsCore defs locals fuel acc A
       let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
       collectLFDefinitionUnfoldsCore defs locals fuel acc B
+  | .pair a b =>
+      collectLFDefinitionUnfoldsCore defs locals fuel
+        (collectLFDefinitionUnfoldsCore defs locals fuel acc a) b
+  | .fst e | .snd e => collectLFDefinitionUnfoldsCore defs locals fuel acc e
   | .lam xs body =>
       let locals := xs.foldl (fun locals x => locals.insert x.eraseMacroScopes) locals
       collectLFDefinitionUnfoldsCore defs locals fuel acc body
@@ -3440,12 +3776,20 @@ partial def checkLFDefinitionReferencesAvailable (sig : HLSignature)
         locals f
       checkLFDefinitionReferencesAvailable sig globalHeads knownTypes ownerKind ownerName where_
         locals a
-  | .arrow x A B | .funArrow x A B => do
+  | .arrow x A B | .funArrow x A B | .sigma x A B => do
       checkLFDefinitionReferencesAvailable sig globalHeads knownTypes ownerKind ownerName where_
         locals A
       let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
       checkLFDefinitionReferencesAvailable sig globalHeads knownTypes ownerKind ownerName where_
         locals B
+  | .pair a b => do
+      checkLFDefinitionReferencesAvailable sig globalHeads knownTypes ownerKind ownerName where_
+        locals a
+      checkLFDefinitionReferencesAvailable sig globalHeads knownTypes ownerKind ownerName where_
+        locals b
+  | .fst e | .snd e =>
+      checkLFDefinitionReferencesAvailable sig globalHeads knownTypes ownerKind ownerName where_
+        locals e
   | .lam xs body =>
       let locals := xs.foldl (fun locals x => locals.insert x.eraseMacroScopes) locals
       checkLFDefinitionReferencesAvailable sig globalHeads knownTypes ownerKind ownerName where_
@@ -3481,6 +3825,7 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
       (locals := {}) d.typeExpr
     checkLFSyntaxSortArgumentsInExpr sig "lf_def" d.name "type" knownLFDefTypes d.typeExpr
     checkLFInferableApplicationArguments sig "lf_def" d.name "type" knownLFDefTypes d.typeExpr
+    checkLFBinderType sig globalHeads "lf_def" d.name "type" knownLFDefTypes {} false d.typeExpr
     checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "value" d.value
     checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "value" d.value
     checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "value"
@@ -3490,13 +3835,18 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
     checkLFExprHasType sig "lf_def" d.name "value" knownLFDefTypes d.value d.typeExpr
     let checkedType ← resolveLFExpr sig globalHeads {} "lf_def" d.name "type" d.typeExpr
     let checkedValue ← resolveLFExpr sig globalHeads {} "lf_def" d.name "value" d.value
-    let resultTypeExpr := lfFunctionTypeResult d.typeExpr
-    let some typeHead := checkedLFHead? globalHeads {} resultTypeExpr
-      | throwError "lf_def '{d.name}' in type theory '{sig.name}' has type not ending in a known \
-        LF identifier: {d.typeExpr}"
-    if typeHead.kind != .syntaxSort then
-      throwError "lf_def '{d.name}' in type theory '{sig.name}' has result type headed by \
-        {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-headed type"
+    let resultTypeExpr := eraseObjExprScopes (lfFunctionTypeResult d.typeExpr)
+    let typeHead? := checkedLFHead? globalHeads {} resultTypeExpr
+    match typeHead? with
+    | some typeHead =>
+        if typeHead.kind != .syntaxSort then
+          throwError "lf_def '{d.name}' in type theory '{sig.name}' has result type headed by \
+            {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-headed or \
+              structural record/Sigma type"
+    | none =>
+        unless lfObjectDefResultIsStructuralRecord resultTypeExpr do
+          throwError "lf_def '{d.name}' in type theory '{sig.name}' has type not ending in a \
+            known LF identifier or structural record/Sigma type: {d.typeExpr}"
     let valueHead? := checkedLFHead? globalHeads {} d.value
     if let some valueHead := valueHead? then
       if valueHead.kind == .lfDefinition then
@@ -3516,7 +3866,7 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
       name := d.name.eraseMacroScopes
       typeExpr := d.typeExpr
       checkedTypeExpr := checkedType
-      typeHead? := some typeHead
+      typeHead? := typeHead?
       value := d.value
       checkedValue := checkedValue
       valueHead? := valueHead? }
@@ -3749,6 +4099,7 @@ def checkLFObjectDefInContext (ctx : IntraBlockLFCheckContext) (d : LFObjectDefD
       (locals := {}) d.typeExpr
     checkLFSyntaxSortArgumentsInExpr sig "lf_def" d.name "type" knownLFDefTypes d.typeExpr
     checkLFInferableApplicationArguments sig "lf_def" d.name "type" knownLFDefTypes d.typeExpr
+    checkLFBinderType sig globalHeads "lf_def" d.name "type" knownLFDefTypes {} false d.typeExpr
     checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "value" d.value
     checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "value" d.value
     checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "value"
@@ -3761,13 +4112,18 @@ def checkLFObjectDefInContext (ctx : IntraBlockLFCheckContext) (d : LFObjectDefD
     resolveLFExpr sig globalHeads {} "lf_def" d.name "type" d.typeExpr
   let checkedValue ← profileLFCheckPhase m!"{d.name}: resolve value" do
     resolveLFExpr sig globalHeads {} "lf_def" d.name "value" d.value
-  let resultTypeExpr := lfFunctionTypeResult d.typeExpr
-  let some typeHead := checkedLFHead? globalHeads {} resultTypeExpr
-    | throwError "lf_def '{d.name}' in type theory '{sig.name}' has type not ending in a known \
-      LF identifier: {d.typeExpr}"
-  if typeHead.kind != .syntaxSort then
-    throwError "lf_def '{d.name}' in type theory '{sig.name}' has result type headed by \
-      {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-headed type"
+  let resultTypeExpr := eraseObjExprScopes (lfFunctionTypeResult d.typeExpr)
+  let typeHead? := checkedLFHead? globalHeads {} resultTypeExpr
+  match typeHead? with
+  | some typeHead =>
+      if typeHead.kind != .syntaxSort then
+        throwError "lf_def '{d.name}' in type theory '{sig.name}' has result type headed by \
+          {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-headed or structural \
+            record/Sigma type"
+  | none =>
+      unless lfObjectDefResultIsStructuralRecord resultTypeExpr do
+        throwError "lf_def '{d.name}' in type theory '{sig.name}' has type not ending in a known \
+          LF identifier or structural record/Sigma type: {d.typeExpr}"
   let valueHead? := checkedLFHead? globalHeads {} d.value
   if let some valueHead := valueHead? then
     if valueHead.kind == .lfDefinition then
@@ -3787,7 +4143,7 @@ def checkLFObjectDefInContext (ctx : IntraBlockLFCheckContext) (d : LFObjectDefD
     name := d.name.eraseMacroScopes
     typeExpr := d.typeExpr
     checkedTypeExpr := checkedType
-    typeHead? := some typeHead
+    typeHead? := typeHead?
     value := d.value
     checkedValue := checkedValue
     valueHead? := valueHead? }
@@ -3956,10 +4312,12 @@ partial def lfExprContainsIdent (needle : Name) : ObjExpr → Bool
   | .ident n => n.eraseMacroScopes == needle.eraseMacroScopes
   | .sort | .univ .. => false
   | .app f a => lfExprContainsIdent needle f || lfExprContainsIdent needle a
-  | .arrow x A B | .funArrow x A B =>
+  | .arrow x A B | .funArrow x A B | .sigma x A B =>
       lfExprContainsIdent needle A ||
         if x.map Name.eraseMacroScopes == some needle.eraseMacroScopes then false else
           lfExprContainsIdent needle B
+  | .pair a b => lfExprContainsIdent needle a || lfExprContainsIdent needle b
+  | .fst e | .snd e => lfExprContainsIdent needle e
   | .lam xs body =>
       if xs.map Name.eraseMacroScopes |>.contains needle.eraseMacroScopes then false else
         lfExprContainsIdent needle body

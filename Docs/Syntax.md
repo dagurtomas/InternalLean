@@ -67,6 +67,11 @@ A → B
 (x : A) → B
 A ⇒ B
 (x : A) ⇒ B
+A × B
+Σ x : A, B
+⟨a, b⟩
+fst p
+snd p
 fun x => body
 fun x y => body
 lhs ≡ rhs
@@ -82,6 +87,8 @@ Notes:
 - `⇒` is the explicit spelling of the same framework arrow for LF arities and dependent rule
   parameters. Use it when you want to avoid suggesting an internal function former.
 - `fun x => body` builds an internal lambda.
+- `A × B` and `Σ x : A, B` are structural product/record type expressions.
+- `⟨a, b⟩`, `fst p`, and `snd p` build and project structural record values.
 - `lhs ≡ rhs` is internal syntax for judgmental-equality-shaped expressions.
 - `{x := value}` is an explicit implicit-argument marker used by the LF elaborator.
 
@@ -139,7 +146,8 @@ syntax_abbrev Name (x : A) {y : B} := value
 ```
 
 A syntax abbreviation is public notation. It expands before checking and model-obligation
-generation, so it normally does not become a model field.
+generation, so it normally does not become a model field. The value may be any checked LF type
+expression, including structural function and Sigma/record types.
 
 ### Context zones and binder classes
 

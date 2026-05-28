@@ -74,6 +74,11 @@ partial def exprString : ObjExpr → String
   | .arrow (some x) A B => s!"({nameString x} : {exprString A}) → {exprString B}"
   | .funArrow none A B => s!"{atomString A} → {exprString B}"
   | .funArrow (some x) A B => s!"({nameString x} : {exprString A}) → {exprString B}"
+  | .sigma none A B => s!"{atomString A} × {exprString B}"
+  | .sigma (some x) A B => s!"Sigma (fun {nameString x} : {exprString A} => {exprString B})"
+  | .pair a b => s!"⟨{exprString a}, {exprString b}⟩"
+  | .fst e => s!"{atomString e}.1"
+  | .snd e => s!"{atomString e}.2"
   | .lam xs body =>
       let names := xs.toList.map nameString
       s!"fun {String.intercalate " " names} => {exprString body}"
@@ -95,9 +100,15 @@ partial def containsIdent (needle : Name) : ObjExpr → Bool
   | .ident n => n == needle
   | .sort | .univ .. => false
   | .app f a => containsIdent needle f || containsIdent needle a
-  | .arrow _ A B | .funArrow _ A B => containsIdent needle A || containsIdent needle B
+  | .arrow x A B | .funArrow x A B | .sigma x A B =>
+      containsIdent needle A ||
+        if x.map Name.eraseMacroScopes == some needle.eraseMacroScopes then false else
+          containsIdent needle B
+  | .pair a b => containsIdent needle a || containsIdent needle b
+  | .fst e | .snd e => containsIdent needle e
   | .lam xs body =>
-      if xs.contains needle then false else containsIdent needle body
+      if xs.map Name.eraseMacroScopes |>.contains needle.eraseMacroScopes then false else
+        containsIdent needle body
   | .jeq lhs rhs => containsIdent needle lhs || containsIdent needle rhs
 
 /-- Return whether a binder name is used by later binder types or the final result. -/
@@ -312,7 +323,9 @@ partial def lfExprMentionsAny (names : NameSet) : CheckedLFExpr → Bool
   | .sort => false
   | .univ _ => false
   | .app f a => lfExprMentionsAny names f || lfExprMentionsAny names a
-  | .arrow _ A B => lfExprMentionsAny names A || lfExprMentionsAny names B
+  | .arrow _ A B | .sigma _ A B => lfExprMentionsAny names A || lfExprMentionsAny names B
+  | .pair a b => lfExprMentionsAny names a || lfExprMentionsAny names b
+  | .fst e | .snd e => lfExprMentionsAny names e
   | .lam _ body => lfExprMentionsAny names body
   | .jeq lhs rhs => lfExprMentionsAny names lhs || lfExprMentionsAny names rhs
 
@@ -323,7 +336,9 @@ partial def lfExprGlobalHeadNames : CheckedLFExpr → NameSet
   | .sort => {}
   | .univ _ => {}
   | .app f a => insertNameSet (lfExprGlobalHeadNames f) (lfExprGlobalHeadNames a)
-  | .arrow _ A B => insertNameSet (lfExprGlobalHeadNames A) (lfExprGlobalHeadNames B)
+  | .arrow _ A B | .sigma _ A B => insertNameSet (lfExprGlobalHeadNames A) (lfExprGlobalHeadNames B)
+  | .pair a b => insertNameSet (lfExprGlobalHeadNames a) (lfExprGlobalHeadNames b)
+  | .fst e | .snd e => lfExprGlobalHeadNames e
   | .lam _ body => lfExprGlobalHeadNames body
   | .jeq lhs rhs => insertNameSet (lfExprGlobalHeadNames lhs) (lfExprGlobalHeadNames rhs)
 
@@ -334,8 +349,10 @@ partial def objExprGlobalHeadNames : ObjExpr → NameSet
   | .sort => {}
   | .univ _ => {}
   | .app f a => insertNameSet (objExprGlobalHeadNames f) (objExprGlobalHeadNames a)
-  | .arrow _ A B | .funArrow _ A B => insertNameSet (objExprGlobalHeadNames A) (
-    objExprGlobalHeadNames B)
+  | .arrow _ A B | .funArrow _ A B | .sigma _ A B =>
+      insertNameSet (objExprGlobalHeadNames A) (objExprGlobalHeadNames B)
+  | .pair a b => insertNameSet (objExprGlobalHeadNames a) (objExprGlobalHeadNames b)
+  | .fst e | .snd e => objExprGlobalHeadNames e
   | .lam _ body => objExprGlobalHeadNames body
   | .jeq lhs rhs => insertNameSet (objExprGlobalHeadNames lhs) (objExprGlobalHeadNames rhs)
 
@@ -372,8 +389,12 @@ partial def lfExprRenderableInModel (defValues : NameMap CheckedLFExpr)
   | .univ _ => true
   | .app f a => lfExprRenderableInModel defValues blockingUntyped sidePredicateNames f &&
       lfExprRenderableInModel defValues blockingUntyped sidePredicateNames a
-  | .arrow _ A B => lfExprRenderableInModel defValues blockingUntyped sidePredicateNames A &&
-      lfExprRenderableInModel defValues blockingUntyped sidePredicateNames B
+  | .arrow _ A B | .sigma _ A B =>
+      lfExprRenderableInModel defValues blockingUntyped sidePredicateNames A &&
+        lfExprRenderableInModel defValues blockingUntyped sidePredicateNames B
+  | .pair a b => lfExprRenderableInModel defValues blockingUntyped sidePredicateNames a &&
+      lfExprRenderableInModel defValues blockingUntyped sidePredicateNames b
+  | .fst e | .snd e => lfExprRenderableInModel defValues blockingUntyped sidePredicateNames e
   | .lam _ body => lfExprRenderableInModel defValues blockingUntyped sidePredicateNames body
   | .jeq lhs rhs => lfExprRenderableInModel defValues blockingUntyped sidePredicateNames lhs &&
       lfExprRenderableInModel defValues blockingUntyped sidePredicateNames rhs
@@ -396,6 +417,25 @@ partial def lfExprSyntax (locals : LFLocalSyntaxCtx) : CheckedLFExpr → Command
       let xId := freshLFLocalIdent x locals
       let B ← lfExprSyntax ((x, xId) :: locals) B
       `(($xId:ident : $A) → $B)
+  | .sigma none A B => do
+      let A ← lfExprSyntax locals A
+      let B ← lfExprSyntax locals B
+      `($A × $B)
+  | .sigma (some x) A B => do
+      let A ← lfExprSyntax locals A
+      let xId := freshLFLocalIdent x locals
+      let B ← lfExprSyntax ((x, xId) :: locals) B
+      `(Sigma (fun $xId:ident : $A => $B))
+  | .pair a b => do
+      let a ← lfExprSyntax locals a
+      let b ← lfExprSyntax locals b
+      `(⟨$a, $b⟩)
+  | .fst e => do
+      let e ← lfExprSyntax locals e
+      `(($e).1)
+  | .snd e => do
+      let e ← lfExprSyntax locals e
+      `(($e).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
@@ -434,6 +474,25 @@ partial def lfExprSyntaxInModel (defValues : NameMap CheckedLFExpr)
       let xId := freshLFLocalIdent x locals
       let B ← lfExprSyntaxInModel defValues ((x, xId) :: locals) B
       `(($xId:ident : $A) → $B)
+  | .sigma none A B => do
+      let A ← lfExprSyntaxInModel defValues locals A
+      let B ← lfExprSyntaxInModel defValues locals B
+      `($A × $B)
+  | .sigma (some x) A B => do
+      let A ← lfExprSyntaxInModel defValues locals A
+      let xId := freshLFLocalIdent x locals
+      let B ← lfExprSyntaxInModel defValues ((x, xId) :: locals) B
+      `(Sigma (fun $xId:ident : $A => $B))
+  | .pair a b => do
+      let a ← lfExprSyntaxInModel defValues locals a
+      let b ← lfExprSyntaxInModel defValues locals b
+      `(⟨$a, $b⟩)
+  | .fst e => do
+      let e ← lfExprSyntaxInModel defValues locals e
+      `(($e).1)
+  | .snd e => do
+      let e ← lfExprSyntaxInModel defValues locals e
+      `(($e).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
@@ -477,6 +536,25 @@ partial def lfExprSyntaxInModelInstance (defValues : NameMap CheckedLFExpr)
       let xId := freshLFModelLocalIdent x modelIdent locals
       let B ← lfExprSyntaxInModelInstance defValues modelIdent ((x, xId) :: locals) B
       `(($xId:ident : $A) → $B)
+  | .sigma none A B => do
+      let A ← lfExprSyntaxInModelInstance defValues modelIdent locals A
+      let B ← lfExprSyntaxInModelInstance defValues modelIdent locals B
+      `($A × $B)
+  | .sigma (some x) A B => do
+      let A ← lfExprSyntaxInModelInstance defValues modelIdent locals A
+      let xId := freshLFModelLocalIdent x modelIdent locals
+      let B ← lfExprSyntaxInModelInstance defValues modelIdent ((x, xId) :: locals) B
+      `(Sigma (fun $xId:ident : $A => $B))
+  | .pair a b => do
+      let a ← lfExprSyntaxInModelInstance defValues modelIdent locals a
+      let b ← lfExprSyntaxInModelInstance defValues modelIdent locals b
+      `(⟨$a, $b⟩)
+  | .fst e => do
+      let e ← lfExprSyntaxInModelInstance defValues modelIdent locals e
+      `(($e).1)
+  | .snd e => do
+      let e ← lfExprSyntaxInModelInstance defValues modelIdent locals e
+      `(($e).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
@@ -505,9 +583,12 @@ partial def lfObjExprRenderableInModel (defValues : NameMap CheckedLFExpr)
   | .univ _ => true
   | .app f a => lfObjExprRenderableInModel defValues blockingUntyped sidePredicateNames f &&
       lfObjExprRenderableInModel defValues blockingUntyped sidePredicateNames a
-  | .arrow _ A B | .funArrow _ A B =>
+  | .arrow _ A B | .funArrow _ A B | .sigma _ A B =>
       lfObjExprRenderableInModel defValues blockingUntyped sidePredicateNames A &&
       lfObjExprRenderableInModel defValues blockingUntyped sidePredicateNames B
+  | .pair a b => lfObjExprRenderableInModel defValues blockingUntyped sidePredicateNames a &&
+      lfObjExprRenderableInModel defValues blockingUntyped sidePredicateNames b
+  | .fst e | .snd e => lfObjExprRenderableInModel defValues blockingUntyped sidePredicateNames e
   | .lam _ body => lfObjExprRenderableInModel defValues blockingUntyped sidePredicateNames body
   | .jeq lhs rhs => lfObjExprRenderableInModel defValues blockingUntyped sidePredicateNames lhs &&
       lfObjExprRenderableInModel defValues blockingUntyped sidePredicateNames rhs
@@ -538,6 +619,26 @@ partial def lfObjExprSyntaxInModel (defValues : NameMap CheckedLFExpr)
       let xId := freshLFLocalIdent x locals
       let B ← lfObjExprSyntaxInModel defValues ((x, xId) :: locals) B
       `(($xId:ident : $A) → $B)
+  | .sigma none A B => do
+      let A ← lfObjExprSyntaxInModel defValues locals A
+      let B ← lfObjExprSyntaxInModel defValues locals B
+      `($A × $B)
+  | .sigma (some x) A B => do
+      let A ← lfObjExprSyntaxInModel defValues locals A
+      let x := x.eraseMacroScopes
+      let xId := freshLFLocalIdent x locals
+      let B ← lfObjExprSyntaxInModel defValues ((x, xId) :: locals) B
+      `(Sigma (fun $xId:ident : $A => $B))
+  | .pair a b => do
+      let a ← lfObjExprSyntaxInModel defValues locals a
+      let b ← lfObjExprSyntaxInModel defValues locals b
+      `(⟨$a, $b⟩)
+  | .fst e => do
+      let e ← lfObjExprSyntaxInModel defValues locals e
+      `(($e).1)
+  | .snd e => do
+      let e ← lfObjExprSyntaxInModel defValues locals e
+      `(($e).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if i < xs.size then
@@ -580,6 +681,26 @@ partial def lfObjExprSyntaxInModelInstance (defValues : NameMap CheckedLFExpr)
       let xId := freshLFModelLocalIdent x modelIdent locals
       let B ← lfObjExprSyntaxInModelInstance defValues modelIdent ((x, xId) :: locals) B
       `(($xId:ident : $A) → $B)
+  | .sigma none A B => do
+      let A ← lfObjExprSyntaxInModelInstance defValues modelIdent locals A
+      let B ← lfObjExprSyntaxInModelInstance defValues modelIdent locals B
+      `($A × $B)
+  | .sigma (some x) A B => do
+      let A ← lfObjExprSyntaxInModelInstance defValues modelIdent locals A
+      let x := x.eraseMacroScopes
+      let xId := freshLFModelLocalIdent x modelIdent locals
+      let B ← lfObjExprSyntaxInModelInstance defValues modelIdent ((x, xId) :: locals) B
+      `(Sigma (fun $xId:ident : $A => $B))
+  | .pair a b => do
+      let a ← lfObjExprSyntaxInModelInstance defValues modelIdent locals a
+      let b ← lfObjExprSyntaxInModelInstance defValues modelIdent locals b
+      `(⟨$a, $b⟩)
+  | .fst e => do
+      let e ← lfObjExprSyntaxInModelInstance defValues modelIdent locals e
+      `(($e).1)
+  | .snd e => do
+      let e ← lfObjExprSyntaxInModelInstance defValues modelIdent locals e
+      `(($e).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if i < xs.size then
@@ -1169,15 +1290,21 @@ partial def lfExprRenderedFieldDependencies (defValues : NameMap CheckedLFExpr)
       insertNameSet
         (lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs f)
         (lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs a)
-  | .arrow none A B =>
+  | .arrow none A B | .sigma none A B =>
       insertNameSet
         (lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs A)
         (lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs B)
-  | .arrow (some x) A B =>
+  | .arrow (some x) A B | .sigma (some x) A B =>
       let depsA := lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs A
       let locals := locals.insert x.eraseMacroScopes
       insertNameSet depsA
         (lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs B)
+  | .pair a b =>
+      insertNameSet
+        (lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs a)
+        (lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs b)
+  | .fst e | .snd e =>
+      lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs e
   | .lam xs body =>
       let locals := xs.foldl (fun acc x => acc.insert x.eraseMacroScopes) locals
       lfExprRenderedFieldDependencies defValues targetNames locals visitedDefs body
@@ -1206,15 +1333,21 @@ partial def lfObjExprRenderedFieldDependencies (defValues : NameMap CheckedLFExp
       insertNameSet
         (lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs f)
         (lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs a)
-  | .arrow none A B | .funArrow none A B =>
+  | .arrow none A B | .funArrow none A B | .sigma none A B =>
       insertNameSet
         (lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs A)
         (lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs B)
-  | .arrow (some x) A B | .funArrow (some x) A B =>
+  | .arrow (some x) A B | .funArrow (some x) A B | .sigma (some x) A B =>
       let depsA := lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs A
       let locals := locals.insert x.eraseMacroScopes
       insertNameSet depsA
         (lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs B)
+  | .pair a b =>
+      insertNameSet
+        (lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs a)
+        (lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs b)
+  | .fst e | .snd e =>
+      lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs e
   | .lam xs body =>
       let locals := xs.foldl (fun acc x => acc.insert x.eraseMacroScopes) locals
       lfObjExprRenderedFieldDependencies defValues targetNames locals visitedDefs body
@@ -1275,13 +1408,17 @@ partial def lfExprRenderedLevelParams (defValues : NameMap CheckedLFExpr)
   | .app f a =>
       insertNameSet (lfExprRenderedLevelParams defValues locals visitedDefs f)
         (lfExprRenderedLevelParams defValues locals visitedDefs a)
-  | .arrow none A B =>
+  | .arrow none A B | .sigma none A B =>
       insertNameSet (lfExprRenderedLevelParams defValues locals visitedDefs A)
         (lfExprRenderedLevelParams defValues locals visitedDefs B)
-  | .arrow (some x) A B =>
+  | .arrow (some x) A B | .sigma (some x) A B =>
       let paramsA := lfExprRenderedLevelParams defValues locals visitedDefs A
       let locals := locals.insert x.eraseMacroScopes
       insertNameSet paramsA (lfExprRenderedLevelParams defValues locals visitedDefs B)
+  | .pair a b =>
+      insertNameSet (lfExprRenderedLevelParams defValues locals visitedDefs a)
+        (lfExprRenderedLevelParams defValues locals visitedDefs b)
+  | .fst e | .snd e => lfExprRenderedLevelParams defValues locals visitedDefs e
   | .lam xs body =>
       let locals := xs.foldl (fun acc x => acc.insert x.eraseMacroScopes) locals
       lfExprRenderedLevelParams defValues locals visitedDefs body
@@ -1307,13 +1444,17 @@ partial def lfObjExprRenderedLevelParams (defValues : NameMap CheckedLFExpr)
   | .app f a =>
       insertNameSet (lfObjExprRenderedLevelParams defValues locals visitedDefs f)
         (lfObjExprRenderedLevelParams defValues locals visitedDefs a)
-  | .arrow none A B | .funArrow none A B =>
+  | .arrow none A B | .funArrow none A B | .sigma none A B =>
       insertNameSet (lfObjExprRenderedLevelParams defValues locals visitedDefs A)
         (lfObjExprRenderedLevelParams defValues locals visitedDefs B)
-  | .arrow (some x) A B | .funArrow (some x) A B =>
+  | .arrow (some x) A B | .funArrow (some x) A B | .sigma (some x) A B =>
       let paramsA := lfObjExprRenderedLevelParams defValues locals visitedDefs A
       let locals := locals.insert x.eraseMacroScopes
       insertNameSet paramsA (lfObjExprRenderedLevelParams defValues locals visitedDefs B)
+  | .pair a b =>
+      insertNameSet (lfObjExprRenderedLevelParams defValues locals visitedDefs a)
+        (lfObjExprRenderedLevelParams defValues locals visitedDefs b)
+  | .fst e | .snd e => lfObjExprRenderedLevelParams defValues locals visitedDefs e
   | .lam xs body =>
       let locals := xs.foldl (fun acc x => acc.insert x.eraseMacroScopes) locals
       lfObjExprRenderedLevelParams defValues locals visitedDefs body
@@ -1997,6 +2138,25 @@ partial def lfExprSyntaxInModelWithFields (fieldNames : NameMap Name)
       let xId := freshLFLocalIdent x locals
       let B ← lfExprSyntaxInModelWithFields fieldNames defValues ((x, xId) :: locals) paramVis B
       `(($xId:ident : $A) → $B)
+  | .sigma none A B => do
+      let A ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis A
+      let B ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis B
+      `($A × $B)
+  | .sigma (some x) A B => do
+      let A ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis A
+      let xId := freshLFLocalIdent x locals
+      let B ← lfExprSyntaxInModelWithFields fieldNames defValues ((x, xId) :: locals) paramVis B
+      `(Sigma (fun $xId:ident : $A => $B))
+  | .pair a b => do
+      let a ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis a
+      let b ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis b
+      `(⟨$a, $b⟩)
+  | .fst e => do
+      let e ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis e
+      `(($e).1)
+  | .snd e => do
+      let e ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis e
+      `(($e).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
@@ -2051,6 +2211,26 @@ partial def lfObjExprSyntaxInModelWithFields (fieldNames : NameMap Name)
       let xId := freshLFLocalIdent x locals
       let B ← lfObjExprSyntaxInModelWithFields fieldNames defValues ((x, xId) :: locals) paramVis B
       `(($xId:ident : $A) → $B)
+  | .sigma none A B => do
+      let A ← lfObjExprSyntaxInModelWithFields fieldNames defValues locals paramVis A
+      let B ← lfObjExprSyntaxInModelWithFields fieldNames defValues locals paramVis B
+      `($A × $B)
+  | .sigma (some x) A B => do
+      let A ← lfObjExprSyntaxInModelWithFields fieldNames defValues locals paramVis A
+      let x := x.eraseMacroScopes
+      let xId := freshLFLocalIdent x locals
+      let B ← lfObjExprSyntaxInModelWithFields fieldNames defValues ((x, xId) :: locals) paramVis B
+      `(Sigma (fun $xId:ident : $A => $B))
+  | .pair a b => do
+      let a ← lfObjExprSyntaxInModelWithFields fieldNames defValues locals paramVis a
+      let b ← lfObjExprSyntaxInModelWithFields fieldNames defValues locals paramVis b
+      `(⟨$a, $b⟩)
+  | .fst e => do
+      let e ← lfObjExprSyntaxInModelWithFields fieldNames defValues locals paramVis e
+      `(($e).1)
+  | .snd e => do
+      let e ← lfObjExprSyntaxInModelWithFields fieldNames defValues locals paramVis e
+      `(($e).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if i < xs.size then
@@ -2117,6 +2297,33 @@ partial def lfExprSyntaxInModelInstanceWithFields (fieldNames : NameMap Name)
       let B ← lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent ((x,
         xId) :: locals) paramVis B
       `(($xId:ident : $A) → $B)
+  | .sigma none A B => do
+      let A ←
+        lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis A
+      let B ←
+        lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis B
+      `($A × $B)
+  | .sigma (some x) A B => do
+      let A ←
+        lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis A
+      let xId := freshLFModelLocalIdent x modelIdent locals
+      let B ← lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent ((x,
+        xId) :: locals) paramVis B
+      `(Sigma (fun $xId:ident : $A => $B))
+  | .pair a b => do
+      let a ←
+        lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis a
+      let b ←
+        lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis b
+      `(⟨$a, $b⟩)
+  | .fst e => do
+      let e ←
+        lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis e
+      `(($e).1)
+  | .snd e => do
+      let e ←
+        lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis e
+      `(($e).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
@@ -2186,6 +2393,34 @@ partial def lfObjExprSyntaxInModelInstanceWithFields (fieldNames : NameMap Name)
       let B ← lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent ((x,
         xId) :: locals) paramVis B
       `(($xId:ident : $A) → $B)
+  | .sigma none A B => do
+      let A ←
+        lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis A
+      let B ←
+        lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis B
+      `($A × $B)
+  | .sigma (some x) A B => do
+      let A ←
+        lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis A
+      let x := x.eraseMacroScopes
+      let xId := freshLFModelLocalIdent x modelIdent locals
+      let B ← lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent ((x,
+        xId) :: locals) paramVis B
+      `(Sigma (fun $xId:ident : $A => $B))
+  | .pair a b => do
+      let a ←
+        lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis a
+      let b ←
+        lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis b
+      `(⟨$a, $b⟩)
+  | .fst e => do
+      let e ←
+        lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis e
+      `(($e).1)
+  | .snd e => do
+      let e ←
+        lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis e
+      `(($e).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if i < xs.size then
@@ -2283,6 +2518,34 @@ partial def lfExprSyntaxInModelInstanceWithTermLocals (fieldNames : NameMap Name
       let B ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent ((x,
         xId) :: locals) paramVis B
       `(($xId:ident : $A) → $B)
+  | .sigma none A B => do
+      let A ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+        paramVis A
+      let B ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+        paramVis B
+      `($A × $B)
+  | .sigma (some x) A B => do
+      let A ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+        paramVis A
+      let reserved : NameSet := {modelIdent.getId.eraseMacroScopes}
+      let xId := freshLFLocalIdent x [] reserved
+      let B ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent ((x,
+        xId) :: locals) paramVis B
+      `(Sigma (fun $xId:ident : $A => $B))
+  | .pair a b => do
+      let a ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+        paramVis a
+      let b ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+        paramVis b
+      `(⟨$a, $b⟩)
+  | .fst e => do
+      let e ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+        paramVis e
+      `(($e).1)
+  | .snd e => do
+      let e ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+        paramVis e
+      `(($e).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalTermCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
@@ -2626,8 +2889,11 @@ partial def structuralExprMentionsGeneratedField (ctx : LFStructuralRenderCtx) :
   | .sort | .univ _ => false
   | .app f a => structuralExprMentionsGeneratedField ctx f ||
       structuralExprMentionsGeneratedField ctx a
-  | .arrow _ A B => structuralExprMentionsGeneratedField ctx A ||
+  | .arrow _ A B | .sigma _ A B => structuralExprMentionsGeneratedField ctx A ||
       structuralExprMentionsGeneratedField ctx B
+  | .pair a b => structuralExprMentionsGeneratedField ctx a ||
+      structuralExprMentionsGeneratedField ctx b
+  | .fst e | .snd e => structuralExprMentionsGeneratedField ctx e
   | .lam _ body => structuralExprMentionsGeneratedField ctx body
   | .jeq lhs rhs => structuralExprMentionsGeneratedField ctx lhs ||
       structuralExprMentionsGeneratedField ctx rhs
@@ -2869,6 +3135,13 @@ partial def checkedLFExprSummaryString : CheckedLFExpr → String
   | .arrow none A B => s!"({checkedLFExprSummaryString A} → {checkedLFExprSummaryString B})"
   | .arrow (some x) A B =>
     s!"(({nameString x} : {checkedLFExprSummaryString A}) → {checkedLFExprSummaryString B})"
+  | .sigma none A B => s!"({checkedLFExprSummaryString A} × {checkedLFExprSummaryString B})"
+  | .sigma (some x) A B =>
+    s!"(Sigma (fun {nameString x} : {checkedLFExprSummaryString A} => " ++
+      s!"{checkedLFExprSummaryString B}))"
+  | .pair a b => s!"⟨{checkedLFExprSummaryString a}, {checkedLFExprSummaryString b}⟩"
+  | .fst e => s!"({checkedLFExprSummaryString e}.1)"
+  | .snd e => s!"({checkedLFExprSummaryString e}.2)"
   | .lam xs body =>
     s!"(fun {String.intercalate " " (xs.toList.map nameString)} => \
       {checkedLFExprSummaryString body})"
@@ -3052,6 +3325,25 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
         let xId := freshLFLocalIdent x locals
         let B ← expr ((x, xId) :: locals) B
         `(($xId:ident : $A) → $B)
+    | .sigma none A B => do
+        let A ← expr locals A
+        let B ← expr locals B
+        `($A × $B)
+    | .sigma (some x) A B => do
+        let A ← expr locals A
+        let xId := freshLFLocalIdent x locals
+        let B ← expr ((x, xId) :: locals) B
+        `(Sigma (fun $xId:ident : $A => $B))
+    | .pair a b => do
+        let a ← expr locals a
+        let b ← expr locals b
+        `(⟨$a, $b⟩)
+    | .fst e => do
+        let e ← expr locals e
+        `(($e).1)
+    | .snd e => do
+        let e ← expr locals e
+        `(($e).2)
     | .lam xs body => do
         let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
           if h : i < xs.size then
@@ -3101,6 +3393,26 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
         let xId := freshLFLocalIdent x locals
         let B ← obj ((x, xId) :: locals) B
         `(($xId:ident : $A) → $B)
+    | .sigma none A B => do
+        let A ← obj locals A
+        let B ← obj locals B
+        `($A × $B)
+    | .sigma (some x) A B => do
+        let A ← obj locals A
+        let x := x.eraseMacroScopes
+        let xId := freshLFLocalIdent x locals
+        let B ← obj ((x, xId) :: locals) B
+        `(Sigma (fun $xId:ident : $A => $B))
+    | .pair a b => do
+        let a ← obj locals a
+        let b ← obj locals b
+        `(⟨$a, $b⟩)
+    | .fst e => do
+        let e ← obj locals e
+        `(($e).1)
+    | .snd e => do
+        let e ← obj locals e
+        `(($e).2)
     | .lam xs body => do
         let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
           if i < xs.size then

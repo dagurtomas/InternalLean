@@ -509,7 +509,9 @@ partial def lfTheoremRefsInCheckedLFExpr : CheckedLFExpr → Array Name
   | .ident h => if h.kind == .lfTheorem then #[h.name.eraseMacroScopes] else #[]
   | .sort | .univ _ => #[]
   | .app f a => lfTheoremRefsInCheckedLFExpr f ++ lfTheoremRefsInCheckedLFExpr a
-  | .arrow _ A B => lfTheoremRefsInCheckedLFExpr A ++ lfTheoremRefsInCheckedLFExpr B
+  | .arrow _ A B | .sigma _ A B => lfTheoremRefsInCheckedLFExpr A ++ lfTheoremRefsInCheckedLFExpr B
+  | .pair a b => lfTheoremRefsInCheckedLFExpr a ++ lfTheoremRefsInCheckedLFExpr b
+  | .fst e | .snd e => lfTheoremRefsInCheckedLFExpr e
   | .lam _ body => lfTheoremRefsInCheckedLFExpr body
   | .jeq lhs rhs => lfTheoremRefsInCheckedLFExpr lhs ++ lfTheoremRefsInCheckedLFExpr rhs
 

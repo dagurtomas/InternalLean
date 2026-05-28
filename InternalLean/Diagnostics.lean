@@ -108,7 +108,10 @@ partial def objExprMentionsName (needle : Name) : ObjExpr → Bool
   | .ident n => n.eraseMacroScopes == needle.eraseMacroScopes
   | .sort | .univ .. => false
   | .app f a => objExprMentionsName needle f || objExprMentionsName needle a
-  | .arrow _ A B | .funArrow _ A B => objExprMentionsName needle A || objExprMentionsName needle B
+  | .arrow _ A B | .funArrow _ A B | .sigma _ A B =>
+      objExprMentionsName needle A || objExprMentionsName needle B
+  | .pair a b => objExprMentionsName needle a || objExprMentionsName needle b
+  | .fst e | .snd e => objExprMentionsName needle e
   | .lam _ body => objExprMentionsName needle body
   | .jeq lhs rhs => objExprMentionsName needle lhs || objExprMentionsName needle rhs
 
@@ -419,6 +422,11 @@ partial def CheckedLFExpr.summary : CheckedLFExpr → MessageData
   | .app f a => m!"({CheckedLFExpr.summary f} {CheckedLFExpr.summary a})"
   | .arrow none A B => m!"({CheckedLFExpr.summary A} ⇒ {CheckedLFExpr.summary B})"
   | .arrow (some x) A B => m!"(({x} : {CheckedLFExpr.summary A}) ⇒ {CheckedLFExpr.summary B})"
+  | .sigma none A B => m!"({CheckedLFExpr.summary A} × {CheckedLFExpr.summary B})"
+  | .sigma (some x) A B => m!"(Σ {x} : {CheckedLFExpr.summary A}, {CheckedLFExpr.summary B})"
+  | .pair a b => m!"⟨{CheckedLFExpr.summary a}, {CheckedLFExpr.summary b}⟩"
+  | .fst e => m!"({CheckedLFExpr.summary e}.1)"
+  | .snd e => m!"({CheckedLFExpr.summary e}.2)"
   | .lam xs body => m!"(fun {xs} => {CheckedLFExpr.summary body})"
   | .jeq lhs rhs => m!"({CheckedLFExpr.summary lhs} ≡ {CheckedLFExpr.summary rhs})"
 
@@ -432,7 +440,10 @@ partial def CheckedLFExpr.collectHeads (counts : NameMap Nat) : CheckedLFExpr �
       if h.kind == .local then counts else incrementNameCount counts h.name
   | .sort | .univ _ => counts
   | .app f a => CheckedLFExpr.collectHeads (CheckedLFExpr.collectHeads counts f) a
-  | .arrow _ A B => CheckedLFExpr.collectHeads (CheckedLFExpr.collectHeads counts A) B
+  | .arrow _ A B | .sigma _ A B =>
+      CheckedLFExpr.collectHeads (CheckedLFExpr.collectHeads counts A) B
+  | .pair a b => CheckedLFExpr.collectHeads (CheckedLFExpr.collectHeads counts a) b
+  | .fst e | .snd e => CheckedLFExpr.collectHeads counts e
   | .lam _ body => CheckedLFExpr.collectHeads counts body
   | .jeq lhs rhs => CheckedLFExpr.collectHeads (CheckedLFExpr.collectHeads counts lhs) rhs
 

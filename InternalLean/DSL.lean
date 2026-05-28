@@ -160,6 +160,14 @@ inductive ObjExpr where
   /-- Surface compatibility spelling of the structural/function-family arrow, written `→`.
   The explicit framework spelling is `⇒`; both currently share this representation. -/
   | funArrow : Option Name → ObjExpr → ObjExpr → ObjExpr
+  /-- Structural dependent-pair/record type. `none` means a nondependent product. -/
+  | sigma : Option Name → ObjExpr → ObjExpr → ObjExpr
+  /-- Structural pair constructor for a dependent-pair/record type. -/
+  | pair : ObjExpr → ObjExpr → ObjExpr
+  /-- First projection from a structural dependent-pair/record value. -/
+  | fst : ObjExpr → ObjExpr
+  /-- Second projection from a structural dependent-pair/record value. -/
+  | snd : ObjExpr → ObjExpr
   /-- Lambda with one or more untyped binders. Types are supplied by checking against an arrow. -/
   | lam : Array Name → ObjExpr → ObjExpr
   /-- Object-level judgmental equality expression, used in `eq` declarations and, for now,
@@ -184,6 +192,11 @@ partial def toString : ObjExpr → String
   | .arrow (some x) a b => s!"({userNameString x} : {toString a}) ⇒ {toString b}"
   | .funArrow none a b => s!"{atomString a} → {toString b}"
   | .funArrow (some x) a b => s!"({userNameString x} : {toString a}) → {toString b}"
+  | .sigma none a b => s!"{atomString a} × {toString b}"
+  | .sigma (some x) a b => s!"Σ {userNameString x} : {toString a}, {toString b}"
+  | .pair a b => s!"⟨{toString a}, {toString b}⟩"
+  | .fst e => s!"fst {atomString e}"
+  | .snd e => s!"snd {atomString e}"
   | .lam xs body =>
       s!"fun {String.intercalate " " (xs.toList.map userNameString)} => {toString body}"
   | .jeq lhs rhs => s!"{toString lhs} ≡ {toString rhs}"
@@ -203,7 +216,9 @@ partial def levelParams : ObjExpr → Array Name
   | .ident _ | .sort => #[]
   | .univ u => u.params
   | .app f a => levelParams f ++ levelParams a
-  | .arrow _ A B | .funArrow _ A B => levelParams A ++ levelParams B
+  | .arrow _ A B | .funArrow _ A B | .sigma _ A B => levelParams A ++ levelParams B
+  | .pair a b => levelParams a ++ levelParams b
+  | .fst e | .snd e => levelParams e
   | .lam _ body => levelParams body
   | .jeq lhs rhs => levelParams lhs ++ levelParams rhs
 
@@ -682,6 +697,14 @@ inductive CheckedLFExpr where
   | app (fn arg : CheckedLFExpr) : CheckedLFExpr
   /-- Structural/function-family arrow. -/
   | arrow (binderName : Option Name) (domain codomain : CheckedLFExpr) : CheckedLFExpr
+  /-- Structural dependent-pair/record type. -/
+  | sigma (binderName : Option Name) (domain codomain : CheckedLFExpr) : CheckedLFExpr
+  /-- Structural pair constructor. -/
+  | pair (fst snd : CheckedLFExpr) : CheckedLFExpr
+  /-- First projection from a structural dependent pair. -/
+  | fst (value : CheckedLFExpr) : CheckedLFExpr
+  /-- Second projection from a structural dependent pair. -/
+  | snd (value : CheckedLFExpr) : CheckedLFExpr
   /-- Lambda expression. -/
   | lam (binders : Array Name) (body : CheckedLFExpr) : CheckedLFExpr
   /-- Object-level judgmental equality expression. -/
@@ -1679,6 +1702,11 @@ not a user-declared object-theory function type former. It currently elaborates 
 same internal representation as `→`, which remains as compatibility syntax. -/
 syntax:50 ttExpr:51 " ⇒ " ttExpr:50 : ttExpr
 syntax:50 "(" ident " : " ttExpr ")" " ⇒ " ttExpr:50 : ttExpr
+syntax:50 ttExpr:51 " × " ttExpr:50 : ttExpr
+syntax:50 "Σ " ident " : " ttExpr ", " ttExpr:50 : ttExpr
+syntax "⟨" ttExpr ", " ttExpr "⟩" : ttExpr
+syntax "fst " ttExpr:90 : ttExpr
+syntax "snd " ttExpr:90 : ttExpr
 syntax ident : ttLamBinder
 syntax "_" : ttLamBinder
 syntax:60 "fun " ttLamBinder+ " => " ttExpr:50 : ttExpr
@@ -1860,6 +1888,12 @@ meta partial def elabObjExpr : TSyntax `ttExpr → CommandElabM ObjExpr
   | `(ttExpr| $a:ttExpr ⇒ $b:ttExpr) => return .arrow none (← elabObjExpr a) (← elabObjExpr b)
   | `(ttExpr| ($x:ident : $a:ttExpr) ⇒ $b:ttExpr) =>
       return .arrow (some x.getId) (← elabObjExpr a) (← elabObjExpr b)
+  | `(ttExpr| $a:ttExpr × $b:ttExpr) => return .sigma none (← elabObjExpr a) (← elabObjExpr b)
+  | `(ttExpr| Σ $x:ident : $a:ttExpr, $b:ttExpr) =>
+      return .sigma (some x.getId) (← elabObjExpr a) (← elabObjExpr b)
+  | `(ttExpr| ⟨$a:ttExpr, $b:ttExpr⟩) => return .pair (← elabObjExpr a) (← elabObjExpr b)
+  | `(ttExpr| fst $e:ttExpr) => return .fst (← elabObjExpr e)
+  | `(ttExpr| snd $e:ttExpr) => return .snd (← elabObjExpr e)
   | `(ttExpr| fun $xs:ttLamBinder* => $body:ttExpr) => do
       let xs ← xs.mapM elabLamBinder
       return .lam xs (← elabObjExpr body)

@@ -275,6 +275,17 @@ partial def checkedLFExprSourceStringWithDepth : Nat → CheckedLFExpr → Strin
   | depth + 1, .arrow (some x) A B =>
       s!"(({lfReplayNameString x} : {checkedLFExprSourceStringWithDepth depth A}) ⇒ " ++
         s!"{checkedLFExprSourceStringWithDepth depth B})"
+  | depth + 1, .sigma none A B =>
+      s!"({checkedLFExprSourceStringWithDepth depth A} × " ++
+        s!"{checkedLFExprSourceStringWithDepth depth B})"
+  | depth + 1, .sigma (some x) A B =>
+      s!"(Σ {lfReplayNameString x} : {checkedLFExprSourceStringWithDepth depth A}, " ++
+        s!"{checkedLFExprSourceStringWithDepth depth B})"
+  | depth + 1, .pair a b =>
+      s!"⟨{checkedLFExprSourceStringWithDepth depth a}, " ++
+        s!"{checkedLFExprSourceStringWithDepth depth b}⟩"
+  | depth + 1, .fst e => s!"(fst {checkedLFExprSourceStringWithDepth depth e})"
+  | depth + 1, .snd e => s!"(snd {checkedLFExprSourceStringWithDepth depth e})"
   | depth + 1, .lam xs body =>
       let binders := String.intercalate " " (xs.toList.map lfReplayNameString)
       s!"(fun {binders} => {checkedLFExprSourceStringWithDepth depth body})"

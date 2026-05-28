@@ -255,6 +255,12 @@ partial def objectExprEq (a b : ObjExpr) : Bool :=
   | .arrow x A B, .funArrow y A' B' | .funArrow x A B, .arrow y A' B' =>
       x.map (·.eraseMacroScopes) == y.map (·.eraseMacroScopes) && objectExprEq A A'
         && objectExprEq B B'
+  | .sigma x A B, .sigma y A' B' =>
+      x.map (·.eraseMacroScopes) == y.map (·.eraseMacroScopes) && objectExprEq A A'
+        && objectExprEq B B'
+  | .pair a b, .pair a' b' => objectExprEq a a' && objectExprEq b b'
+  | .fst e, .fst e' => objectExprEq e e'
+  | .snd e, .snd e' => objectExprEq e e'
   | .lam xs body, .lam ys body' =>
       xs.map (·.eraseMacroScopes) == ys.map (·.eraseMacroScopes) && objectExprEq body body'
   | .jeq l r, .jeq l' r' => objectExprEq l l' && objectExprEq r r'
@@ -301,6 +307,28 @@ partial def matchObjectPattern (vars : NameSet) (pattern actual : ObjExpr)
             let subst ← matchObjectPattern vars A A' subst
             matchObjectPattern vars B B' subst
           else none
+      | _ => none
+  | .sigma x A B =>
+      match actual with
+      | .sigma y A' B' =>
+          if x.map (·.eraseMacroScopes) == y.map (·.eraseMacroScopes) then do
+            let subst ← matchObjectPattern vars A A' subst
+            matchObjectPattern vars B B' subst
+          else none
+      | _ => none
+  | .pair a b =>
+      match actual with
+      | .pair a' b' => do
+          let subst ← matchObjectPattern vars a a' subst
+          matchObjectPattern vars b b' subst
+      | _ => none
+  | .fst e =>
+      match actual with
+      | .fst e' => matchObjectPattern vars e e' subst
+      | _ => none
+  | .snd e =>
+      match actual with
+      | .snd e' => matchObjectPattern vars e e' subst
       | _ => none
   | .lam xs body =>
       match actual with
@@ -423,6 +451,12 @@ partial def objectExprToConversionRaw (sig : HLSignature) (locals : NameSet) : O
       .tyApp `arrow [objectExprToConversionRaw sig locals A, objectExprToConversionRaw sig locals B]
   | .funArrow _ A B =>
       .tyApp `arrow [objectExprToConversionRaw sig locals A, objectExprToConversionRaw sig locals B]
+  | .sigma _ A B =>
+      .tyApp `sigma [objectExprToConversionRaw sig locals A, objectExprToConversionRaw sig locals B]
+  | .pair a b =>
+      .tmApp `pair [objectExprToConversionRaw sig locals a, objectExprToConversionRaw sig locals b]
+  | .fst e => .tmApp `fst [objectExprToConversionRaw sig locals e]
+  | .snd e => .tmApp `snd [objectExprToConversionRaw sig locals e]
   | .lam xs body =>
       let locals := xs.foldl (fun acc x => acc.insert x.eraseMacroScopes) locals
       .tmApp `lam ((xs.toList.map fun x => Raw.leanParam x.eraseMacroScopes) ++
@@ -650,6 +684,24 @@ partial def rewriteFirstObjectSubexprWithSubst? (vars : NameSet) (lhs rhs target
           | none => do
               let (subst, B') ← rewriteFirstObjectSubexprWithSubst? vars lhs rhs B
               some (subst, .funArrow x A B')
+      | .sigma x A B =>
+          match rewriteFirstObjectSubexprWithSubst? vars lhs rhs A with
+          | some (subst, A') => some (subst, .sigma x A' B)
+          | none => do
+              let (subst, B') ← rewriteFirstObjectSubexprWithSubst? vars lhs rhs B
+              some (subst, .sigma x A B')
+      | .pair a b =>
+          match rewriteFirstObjectSubexprWithSubst? vars lhs rhs a with
+          | some (subst, a') => some (subst, .pair a' b)
+          | none => do
+              let (subst, b') ← rewriteFirstObjectSubexprWithSubst? vars lhs rhs b
+              some (subst, .pair a b')
+      | .fst e => do
+          let (subst, e') ← rewriteFirstObjectSubexprWithSubst? vars lhs rhs e
+          some (subst, .fst e')
+      | .snd e => do
+          let (subst, e') ← rewriteFirstObjectSubexprWithSubst? vars lhs rhs e
+          some (subst, .snd e')
       | .lam xs body => do
           let (subst, body') ← rewriteFirstObjectSubexprWithSubst? vars lhs rhs body
           some (subst, .lam xs body')
@@ -1364,6 +1416,32 @@ partial def objectBetaReduceOne? (e : ObjExpr) : Option ObjectPluginReduction :=
           match objectBetaReduceOne? B with
           | some r => some { r with newGoal := .funArrow x A r.newGoal }
           | none => none
+  | .sigma x A B =>
+      match objectBetaReduceOne? A with
+      | some r => some { r with newGoal := .sigma x r.newGoal B }
+      | none =>
+          match objectBetaReduceOne? B with
+          | some r => some { r with newGoal := .sigma x A r.newGoal }
+          | none => none
+  | .pair a b =>
+      match objectBetaReduceOne? a with
+      | some r => some { r with newGoal := .pair r.newGoal b }
+      | none =>
+          match objectBetaReduceOne? b with
+          | some r => some { r with newGoal := .pair a r.newGoal }
+          | none => none
+  | .fst (.pair a _) =>
+      some { redex := e, reduct := a, newGoal := a }
+  | .fst e' =>
+      match objectBetaReduceOne? e' with
+      | some r => some { r with newGoal := .fst r.newGoal }
+      | none => none
+  | .snd (.pair _ b) =>
+      some { redex := e, reduct := b, newGoal := b }
+  | .snd e' =>
+      match objectBetaReduceOne? e' with
+      | some r => some { r with newGoal := .snd r.newGoal }
+      | none => none
   | .lam xs body =>
       match objectBetaReduceOne? body with
       | some r => some { r with newGoal := .lam xs r.newGoal }
@@ -1557,8 +1635,10 @@ partial def internalObjExprMentionsName (needle : Name) : ObjExpr → Bool
   | .ident n => sameObjectName n needle
   | .sort | .univ .. => false
   | .app f a => internalObjExprMentionsName needle f || internalObjExprMentionsName needle a
-  | .arrow _ A B | .funArrow _ A B => internalObjExprMentionsName needle A
+  | .arrow _ A B | .funArrow _ A B | .sigma _ A B => internalObjExprMentionsName needle A
     || internalObjExprMentionsName needle B
+  | .pair a b => internalObjExprMentionsName needle a || internalObjExprMentionsName needle b
+  | .fst e | .snd e => internalObjExprMentionsName needle e
   | .lam _ body => internalObjExprMentionsName needle body
   | .jeq lhs rhs => internalObjExprMentionsName needle lhs || internalObjExprMentionsName needle rhs
 
