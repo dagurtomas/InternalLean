@@ -295,6 +295,30 @@ initialize checkedTheoryExt :
           | .sig checked => m.insert checked.name checked
   }
 
+/-- Persistent entries for cached high-level signatures reconstructed from checked artifacts. -/
+inductive CheckedHLSignatureEntry where
+  /-- Store a flattened checked high-level signature for one theory. -/
+  | sig : Name → HLSignature → CheckedHLSignatureEntry
+
+/-- Environment extension storing checked high-level signatures by theory name.
+
+The cache is a performance aid for long files with many small `extend_type_theory` or
+`internal def` commands: it avoids reconstructing the whole high-level checking baseline from the
+full `CheckedSignature` after every small update. The checked artifact remains authoritative. -/
+initialize checkedHLSignatureExt :
+  SimplePersistentEnvExtension CheckedHLSignatureEntry (NameMap HLSignature) ←
+  registerSimplePersistentEnvExtension {
+    name := `InternalLean.checkedHLSignatureExt
+    addEntryFn := fun m e =>
+      match e with
+      | .sig theoryName sig => m.insert theoryName sig
+    addImportedFn := fun entries =>
+      entries.foldl (init := {}) fun m es =>
+        es.foldl (init := m) fun m e =>
+          match e with
+          | .sig theoryName sig => m.insert theoryName sig
+  }
+
 /-- Persistent profile record for a theory or internal-declaration registration event. -/
 structure InternalRegistrationProfile where
   /-- Owning object theory. -/
@@ -591,6 +615,18 @@ def getCheckedTheory? (nm : Name) : CoreM (Option CheckedSignature) := do
 /-- Register or replace a checked theory artifact. -/
 def registerCheckedTheory (checked : CheckedSignature) : CoreM Unit := do
   modifyEnv fun env => checkedTheoryExt.addEntry env (.sig checked)
+
+/-- Return cached checked high-level signatures. -/
+def getCheckedHLSignatures : CoreM (NameMap HLSignature) := do
+  return checkedHLSignatureExt.getState (← getEnv)
+
+/-- Look up a cached checked high-level signature. -/
+def getCheckedHLSignature? (nm : Name) : CoreM (Option HLSignature) := do
+  return (← getCheckedHLSignatures).find? nm
+
+/-- Register or replace a cached checked high-level signature. -/
+def registerCheckedHLSignature (theoryName : Name) (sig : HLSignature) : CoreM Unit := do
+  modifyEnv fun env => checkedHLSignatureExt.addEntry env (.sig theoryName sig)
 
 /-- Return registration profile entries. -/
 def getInternalRegistrationProfiles : CoreM InternalRegistrationProfileState := do

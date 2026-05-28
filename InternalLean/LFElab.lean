@@ -789,6 +789,36 @@ partial def freeLFObjectIdentifiers : ObjExpr → NameSet
       xs.foldl (fun free x => free.erase x.eraseMacroScopes) free
   | .jeq lhs rhs => freeLFObjectIdentifiers lhs ++ freeLFObjectIdentifiers rhs
 
+/-- Free object-level identifiers as a duplicate-free worklist, respecting local binders. -/
+partial def freeLFObjectIdentifierArrayWithLocals (locals : NameSet) (seen : NameSet)
+    (acc : Array Name) : ObjExpr → NameSet × Array Name
+  | .ident n =>
+      let n := n.eraseMacroScopes
+      if locals.contains n || seen.contains n then
+        (seen, acc)
+      else
+        (seen.insert n, acc.push n)
+  | .sort | .univ _ => (seen, acc)
+  | .app f a =>
+      let (seen, acc) := freeLFObjectIdentifierArrayWithLocals locals seen acc f
+      freeLFObjectIdentifierArrayWithLocals locals seen acc a
+  | .arrow x A B | .funArrow x A B =>
+      let (seen, acc) := freeLFObjectIdentifierArrayWithLocals locals seen acc A
+      let locals := match x with
+        | some x => locals.insert x.eraseMacroScopes
+        | none => locals
+      freeLFObjectIdentifierArrayWithLocals locals seen acc B
+  | .lam xs body =>
+      let locals := xs.foldl (fun locals x => locals.insert x.eraseMacroScopes) locals
+      freeLFObjectIdentifierArrayWithLocals locals seen acc body
+  | .jeq lhs rhs =>
+      let (seen, acc) := freeLFObjectIdentifierArrayWithLocals locals seen acc lhs
+      freeLFObjectIdentifierArrayWithLocals locals seen acc rhs
+
+/-- Free object-level identifiers as a duplicate-free worklist. -/
+def freeLFObjectIdentifierArray (e : ObjExpr) : Array Name :=
+  (freeLFObjectIdentifierArrayWithLocals {} {} #[] e).2
+
 /-- Lookup the canonical representative for a locally-bound LF name. -/
 def lookupLFAlphaLocal? : List (Name × Name) → Name → Option Name
   | [], _ => none
@@ -1116,26 +1146,46 @@ def lfDefinitionValuesOfSignature (sig : HLSignature) : LFDefinitionValueMap := 
     out := out.insert d.name.eraseMacroScopes (eraseObjExprScopes d.value)
   return out
 
+/-- LF-definition values from `allDefs` reachable while unfolding a particular expression. -/
+partial def lfDefinitionValuesFromMapForWorklist (allDefs : LFDefinitionValueMap)
+    (seen : NameSet) (out : LFDefinitionValueMap) : List Name → LFDefinitionValueMap
+  | [] => out
+  | n :: rest =>
+      let n := n.eraseMacroScopes
+      if seen.contains n then
+        lfDefinitionValuesFromMapForWorklist allDefs seen out rest
+      else
+        let seen := seen.insert n
+        match allDefs.find? n with
+        | none => lfDefinitionValuesFromMapForWorklist allDefs seen out rest
+        | some value =>
+            let deps := freeLFObjectIdentifierArray value
+            lfDefinitionValuesFromMapForWorklist allDefs seen (out.insert n value)
+              (deps.toList ++ rest)
+
+/-- LF-definition values from `allDefs` reachable while unfolding a particular expression. -/
+def lfDefinitionValuesOfMapForExpr (allDefs : LFDefinitionValueMap) (e : ObjExpr) :
+    LFDefinitionValueMap :=
+  lfDefinitionValuesFromMapForWorklist allDefs {} {} (freeLFObjectIdentifierArray e).toList
+
 /-- LF-definition values that may be reached while unfolding a particular expression. -/
 def lfDefinitionValuesOfSignatureForExpr (sig : HLSignature) (e : ObjExpr) : LFDefinitionValueMap :=
-  Id.run do
-    let mut needed := freeLFObjectIdentifiers e
-    let mut out : LFDefinitionValueMap := {}
-    let mut changed := true
-    while changed do
-      changed := false
-      for d in sig.lfObjectDefs do
-        let name := d.name.eraseMacroScopes
-        if needed.contains name && !out.contains name then
-          let value := eraseObjExprScopes d.value
-          out := out.insert name value
-          needed := needed ++ freeLFObjectIdentifiers value
-          changed := true
-    return out
+  lfDefinitionValuesOfMapForExpr (lfDefinitionValuesOfSignature sig) e
+
+/-- Normalize an LF expression for shallow type comparisons using an available definition map. -/
+def normalizeLFExprForTypeComparisonWithDefs (defs : LFDefinitionValueMap) (e : ObjExpr) :
+    ObjExpr :=
+  unfoldLFDefinitionsInExpr (lfDefinitionValuesOfMapForExpr defs e) e
 
 /-- Normalize an LF expression for shallow type comparisons. -/
 def normalizeLFExprForTypeComparison (sig : HLSignature) (e : ObjExpr) : ObjExpr :=
   unfoldLFDefinitionsInExpr (lfDefinitionValuesOfSignatureForExpr sig e) e
+
+/-- Shallow equality of LF types after beta-reduction and LF-definition unfolding using an
+available definition map. -/
+def lfTypeCompareEqWithDefs (defs : LFDefinitionValueMap) (actual expected : ObjExpr) : Bool :=
+  lfExprAlphaEq (normalizeLFExprForTypeComparisonWithDefs defs actual)
+    (normalizeLFExprForTypeComparisonWithDefs defs expected)
 
 /-- Shallow equality of LF types after beta-reduction and LF-definition unfolding. -/
 def lfTypeCompareEq (sig : HLSignature) (actual expected : ObjExpr) : Bool :=
@@ -5030,6 +5080,14 @@ def checkedSignatureToHLSignature (sourceBase : HLSignature) (checked : CheckedS
     macros := sourceBase.macros
     roles := sourceBase.roles }
 
+/-- Reconstruct the high-level checking signature for a checked signature.
+
+Callers should prefer `getCheckedHLSignature?` when available; this function is the fallback for
+older imports or manually constructed checked artifacts. -/
+def checkedSignatureIncrementalHLSignature (sourceBase : HLSignature)
+    (checked : CheckedSignature) : HLSignature :=
+  checkedSignatureToHLSignature sourceBase checked
+
 /-- Return a fallback reason when a block still needs the full checker. -/
 def unsupportedIncrementalTheoryBlockReason? (block : HLTheoryBlock) : Option String :=
   if !block.rewriteRelations.isEmpty then
@@ -5792,18 +5850,22 @@ def checkTheoryBlockDeltaStreaming (flatForCheck : HLSignature) (checkedBase : C
       let (_, ctx') ← checkLFJudgmentTheoremInContext ctx t
       ctx := ctx'
     pure ctx
-  let replayCtx := mkIntraBlockKernelReplayContext flatForCheck checkedBase metadataDelta
-    ctx.newObjectDefs ctx.newJudgmentTheorems
-  let (checkedTheorems, _) ← profileLFCheckPhase m!"{flatForCheck.name}: theorem replay block" do
-    validateLFTheoremKernelReplayBlock flatForCheck replayCtx ctx.newJudgmentTheorems
+  let checkedTheorems ←
+    if ctx.newJudgmentTheorems.isEmpty then
+      pure #[]
+    else
+      let replayCtx := mkIntraBlockKernelReplayContext flatForCheck checkedBase metadataDelta
+        ctx.newObjectDefs ctx.newJudgmentTheorems
+      Prod.fst <$> profileLFCheckPhase m!"{flatForCheck.name}: theorem replay block" do
+        validateLFTheoremKernelReplayBlock flatForCheck replayCtx ctx.newJudgmentTheorems
   pure { metadataDelta with
     objectDefs := ctx.newObjectDefs
     judgmentTheorems := checkedTheorems }
 
 /-- Incrementally check a supported `extend_type_theory` block against a checked baseline. -/
 def checkTheoryBlockExtensionIncremental (theoryName : Name) (sig : HLSignature)
-    (checked : CheckedSignature) (block : HLTheoryBlock) :
-    CoreM (HLTheoryBlock × CheckedSignature) := do
+    (checked : CheckedSignature) (block : HLTheoryBlock) (checkBase? : Option HLSignature := none) :
+    CoreM (HLTheoryBlock × CheckedSignature × HLSignature) := do
   if let some reason := unsupportedIncrementalTheoryBlockReason? block then
     throwError "cannot incrementally register extension for type theory '{theoryName}': {reason}"
   let flatSourceBase ← profileLFCheckPhase m!"{theoryName}: flatten source base" do
@@ -5814,7 +5876,9 @@ def checkTheoryBlockExtensionIncremental (theoryName : Name) (sig : HLSignature)
   let blockForRegistry ← profileLFCheckPhase m!"{theoryName}: elaborate implicit apps" do
     elaborateImplicitAppsInTheoryBlockExtension flatSourceBase priorKnownTypes block
   let checkedBase ← profileLFCheckPhase m!"{theoryName}: checked-to-HL baseline" do
-    pure (checkedSignatureToHLSignature flatSourceBase checked)
+    match checkBase? with
+    | some checkedBase => pure checkedBase
+    | none => pure (checkedSignatureIncrementalHLSignature flatSourceBase checked)
   let blockForCheck ← profileLFCheckPhase m!"{theoryName}: expand syntax abbrevs" do
     expandSyntaxAbbrevsInTheoryBlockExtension checkedBase blockForRegistry
   let flatForCheck ← profileLFCheckPhase m!"{theoryName}: append checked block" do
@@ -5827,7 +5891,7 @@ def checkTheoryBlockExtensionIncremental (theoryName : Name) (sig : HLSignature)
     checkTheoryBlockDeltaStreaming flatForCheck checked blockForCheck
   let checked ← profileLFCheckPhase m!"{theoryName}: append checked delta" do
     pure (appendCheckedTheoryDelta checked delta)
-  pure (blockForRegistry, checked)
+  pure (blockForRegistry, checked, flatForCheck)
 
 /-- Check a candidate signature with the direct-LF checker and report command errors. -/
 def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature := do
