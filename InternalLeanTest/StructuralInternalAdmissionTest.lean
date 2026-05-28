@@ -97,17 +97,17 @@ internal def viaAbbrev : Pack := sorry
 end SigmaAdmission
 
 #check_model_obligations SigmaAdmission
-#guard_structural_model_field_count SigmaAdmission 10
+#guard_structural_model_field_count SigmaAdmission 6
 #guard_structural_no_model_field_for SigmaAdmission packObj
+#guard_structural_no_model_field_for SigmaAdmission pack
+#guard_structural_no_model_field_for SigmaAdmission choose
+#guard_structural_no_model_field_for SigmaAdmission chooseDep
+#guard_structural_no_model_field_for SigmaAdmission viaAbbrev
 #guard_structural_no_model_field_for SigmaAdmission derivedBase
 #guard_structural_no_model_field_for SigmaAdmission sameBlockBase
 
 generate_lf_model_structure SigmaAdmission as SigmaAdmissionModel
 
-#check SigmaAdmission.SigmaAdmissionModel.pack
-#check SigmaAdmission.SigmaAdmissionModel.choose
-#check SigmaAdmission.SigmaAdmissionModel.chooseDep
-#check SigmaAdmission.SigmaAdmissionModel.viaAbbrev
 #check SigmaAdmission.SigmaAdmissionModel.derivedFam
 #check SigmaAdmission.SigmaAdmissionModel.sameBlockFam
 
@@ -116,10 +116,6 @@ def sigmaAdmissionModel : SigmaAdmission.SigmaAdmissionModel where
   Fam := fun _ => Unit
   base := ()
   mkFam := fun _ => ()
-  pack := ⟨(), ()⟩
-  choose := fun _ => ⟨(), ()⟩
-  chooseDep := fun _ => ⟨(), ()⟩
-  viaAbbrev := ⟨(), ()⟩
   derivedFam := ()
   sameBlockFam := ()
 
@@ -155,10 +151,11 @@ internal def beta : NatIso C D F G := sorry
 
 end NatIsoAdmission
 
-#guard_structural_model_field_count NatIsoAdmission 8
+#guard_structural_model_field_count NatIsoAdmission 7
+
+#guard_structural_no_model_field_for NatIsoAdmission beta
 
 generate_lf_model_structure NatIsoAdmission as NatIsoAdmissionModel
-#check NatIsoAdmission.NatIsoAdmissionModel.beta
 
 declare_type_theory JudgmentAdmissionClassification where
   syntax_sort Obj : Type
