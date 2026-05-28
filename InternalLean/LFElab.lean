@@ -2668,6 +2668,29 @@ def checkLFBinderTypesInBindings (sig : HLSignature)
     knownTypes := knownTypes.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
     locals := locals.insert b.name.eraseMacroScopes
 
+/-- Check an `lf_def` type annotation and return its final rigid LF head, when it has one.
+
+This combines the recursive LF type-expression discipline with the object-definition result-shape
+check, so `lf_def` checking does not also need separate syntax-sort and inferable-application
+passes over the same annotation. -/
+def checkLFObjectDefTypeAndResultHead? (sig : HLSignature)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (knownLFDefTypes : LFLocalTypes)
+    (d : LFObjectDefDecl) : CoreM (Option CheckedLFHead) := do
+  checkLFBinderType sig globalHeads "lf_def" d.name "type" knownLFDefTypes {} false d.typeExpr
+  let resultTypeExpr := eraseObjExprScopes (lfFunctionTypeResult d.typeExpr)
+  let typeHead? := checkedLFHead? globalHeads {} resultTypeExpr
+  match typeHead? with
+  | some typeHead =>
+      if typeHead.kind != .syntaxSort then
+        throwError "lf_def '{d.name}' in type theory '{sig.name}' has result type headed by \
+          {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-headed or structural \
+            record/Sigma type"
+  | none =>
+      unless lfObjectDefResultIsStructuralRecord resultTypeExpr do
+        throwError "lf_def '{d.name}' in type theory '{sig.name}' has type not ending in a known \
+          LF identifier or structural record/Sigma type: {d.typeExpr}"
+  pure typeHead?
+
 /-- Classify a declared side-condition solver name into the executable hook registry.
 
 Only `trivial_side_condition` is executable. Other declared solvers remain opaque handles for
@@ -3823,9 +3846,7 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
     checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "type" d.typeExpr
     checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "type"
       (locals := {}) d.typeExpr
-    checkLFSyntaxSortArgumentsInExpr sig "lf_def" d.name "type" knownLFDefTypes d.typeExpr
-    checkLFInferableApplicationArguments sig "lf_def" d.name "type" knownLFDefTypes d.typeExpr
-    checkLFBinderType sig globalHeads "lf_def" d.name "type" knownLFDefTypes {} false d.typeExpr
+    let typeHead? ← checkLFObjectDefTypeAndResultHead? sig globalHeads knownLFDefTypes d
     checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "value" d.value
     checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "value" d.value
     checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "value"
@@ -3835,18 +3856,6 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
     checkLFExprHasType sig "lf_def" d.name "value" knownLFDefTypes d.value d.typeExpr
     let checkedType ← resolveLFExpr sig globalHeads {} "lf_def" d.name "type" d.typeExpr
     let checkedValue ← resolveLFExpr sig globalHeads {} "lf_def" d.name "value" d.value
-    let resultTypeExpr := eraseObjExprScopes (lfFunctionTypeResult d.typeExpr)
-    let typeHead? := checkedLFHead? globalHeads {} resultTypeExpr
-    match typeHead? with
-    | some typeHead =>
-        if typeHead.kind != .syntaxSort then
-          throwError "lf_def '{d.name}' in type theory '{sig.name}' has result type headed by \
-            {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-headed or \
-              structural record/Sigma type"
-    | none =>
-        unless lfObjectDefResultIsStructuralRecord resultTypeExpr do
-          throwError "lf_def '{d.name}' in type theory '{sig.name}' has type not ending in a \
-            known LF identifier or structural record/Sigma type: {d.typeExpr}"
     let valueHead? := checkedLFHead? globalHeads {} d.value
     if let some valueHead := valueHead? then
       if valueHead.kind == .lfDefinition then
@@ -4092,38 +4101,25 @@ def checkLFObjectDefInContext (ctx : IntraBlockLFCheckContext) (d : LFObjectDefD
   let opaqueArities := ctx.opaqueArities
   let globalHeads := ctx.globalHeads
   let knownLFDefTypes := ctx.knownLFDefTypes
-  profileLFCheckPhase m!"{d.name}: metadata prechecks" do
+  let typeHead? ← profileLFCheckPhase m!"{d.name}: metadata prechecks" do
     checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "type" d.typeExpr
     checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "type" d.typeExpr
     checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "type"
       (locals := {}) d.typeExpr
-    checkLFSyntaxSortArgumentsInExpr sig "lf_def" d.name "type" knownLFDefTypes d.typeExpr
-    checkLFInferableApplicationArguments sig "lf_def" d.name "type" knownLFDefTypes d.typeExpr
-    checkLFBinderType sig globalHeads "lf_def" d.name "type" knownLFDefTypes {} false d.typeExpr
+    let typeHead? ← checkLFObjectDefTypeAndResultHead? sig globalHeads knownLFDefTypes d
     checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "value" d.value
     checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "value" d.value
     checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "value"
       (locals := {}) d.value
     checkLFSyntaxSortArgumentsInExpr sig "lf_def" d.name "value" knownLFDefTypes d.value
     checkLFInferableApplicationArguments sig "lf_def" d.name "value" knownLFDefTypes d.value
+    pure typeHead?
   profileLFCheckPhase m!"{d.name}: value has expected type" do
     checkLFExprHasType sig "lf_def" d.name "value" knownLFDefTypes d.value d.typeExpr
   let checkedType ← profileLFCheckPhase m!"{d.name}: resolve type" do
     resolveLFExpr sig globalHeads {} "lf_def" d.name "type" d.typeExpr
   let checkedValue ← profileLFCheckPhase m!"{d.name}: resolve value" do
     resolveLFExpr sig globalHeads {} "lf_def" d.name "value" d.value
-  let resultTypeExpr := eraseObjExprScopes (lfFunctionTypeResult d.typeExpr)
-  let typeHead? := checkedLFHead? globalHeads {} resultTypeExpr
-  match typeHead? with
-  | some typeHead =>
-      if typeHead.kind != .syntaxSort then
-        throwError "lf_def '{d.name}' in type theory '{sig.name}' has result type headed by \
-          {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-headed or structural \
-            record/Sigma type"
-  | none =>
-      unless lfObjectDefResultIsStructuralRecord resultTypeExpr do
-        throwError "lf_def '{d.name}' in type theory '{sig.name}' has type not ending in a known \
-          LF identifier or structural record/Sigma type: {d.typeExpr}"
   let valueHead? := checkedLFHead? globalHeads {} d.value
   if let some valueHead := valueHead? then
     if valueHead.kind == .lfDefinition then

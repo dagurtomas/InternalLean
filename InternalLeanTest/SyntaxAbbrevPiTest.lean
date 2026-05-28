@@ -143,6 +143,16 @@ declare_type_theory BadSigmaAbbrevValueTest where
   syntax_abbrev Bad := Σ x : Obj, raw
 
 /--
+error: lf_def 'bad' in type theory 'BadLFDefRecordTypeTest' has type as term-shaped record
+expression '⟨base, base⟩', expected an LF type expression
+-/
+#guard_msgs (whitespace := lax) in
+declare_type_theory BadLFDefRecordTypeTest where
+  syntax_sort Obj : Type
+  lf_opaque base : Obj
+  lf_def bad : ⟨base, base⟩ := base
+
+/--
 error: syntax_abbrev 'Bad' in type theory 'BadSyntaxAbbrevValueTest' has value whose type
 cannot be inferred: 'raw', expected an LF type expression
 -/
