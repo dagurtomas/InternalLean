@@ -200,7 +200,8 @@ lf_opaque c (x : A) {y : B} : C
 
 - The untyped form declares an opaque name with no type information.
 - The arity form declares an untyped opaque name with an expected number of arguments.
-- The typed form declares a constant with an LF telescope and result type.
+- The typed form declares a constant with an LF telescope and result type. The result may be headed
+  by a syntax sort or local family, or may be a structural function/Sigma package type.
 
 Typed `lf_opaque` declarations usually become model-interface obligations unless hidden by model
 visibility metadata.

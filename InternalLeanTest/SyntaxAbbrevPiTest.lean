@@ -113,6 +113,38 @@ def sigmaAbbrevModel : SigmaAbbrevTest.SigmaAbbrevModel where
   mkFam := fun _ => ()
   takeWitness := fun _ => ()
 
+declare_type_theory OpaqueStructuralResultTest where
+  syntax_sort Obj : Type
+  syntax_sort Fam (x : Obj) : Type
+  syntax_abbrev PiWitness := (x : Obj) → Fam x
+  syntax_abbrev SigmaWitness := Σ x : Obj, Fam x
+  lf_opaque base : Obj
+  lf_opaque mkFam (x : Obj) : Fam x
+  lf_opaque opaquePi : PiWitness
+  lf_opaque opaqueSigma : SigmaWitness
+  lf_def sigmaBase : Obj := fst opaqueSigma
+  lf_def sigmaFiber : Fam (fst opaqueSigma) := snd opaqueSigma
+
+#check_model_obligations OpaqueStructuralResultTest
+#guard_model_field_count OpaqueStructuralResultTest 6
+#guard_no_model_field_for OpaqueStructuralResultTest sigmaBase
+#guard_no_model_field_for OpaqueStructuralResultTest sigmaFiber
+
+generate_lf_model_structure OpaqueStructuralResultTest as OpaqueStructuralResultModel
+generate_model_transports OpaqueStructuralResultTest for OpaqueStructuralResultModel
+#check OpaqueStructuralResultTest.OpaqueStructuralResultModel.opaquePi
+#check OpaqueStructuralResultTest.OpaqueStructuralResultModel.opaqueSigma
+#check OpaqueStructuralResultTest.OpaqueStructuralResultModel.sigmaBase
+#check OpaqueStructuralResultTest.OpaqueStructuralResultModel.sigmaFiber
+
+def opaqueStructuralResultModel : OpaqueStructuralResultTest.OpaqueStructuralResultModel where
+  Obj := Unit
+  Fam := fun _ => Unit
+  base := ()
+  mkFam := fun _ => ()
+  opaquePi := fun _ => ()
+  opaqueSigma := ⟨(), ()⟩
+
 declare_type_theory SigmaTheoremReplayTest where
   syntax_sort Obj : Type
   syntax_sort Fam (x : Obj) : Type

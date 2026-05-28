@@ -631,6 +631,15 @@ def lfObjectDefResultIsStructuralRecord : ObjExpr → Bool
   | .sigma .. => true
   | _ => false
 
+/-- Whether a typed opaque constant has a structural result type that can be rendered as a model
+field even though it is not headed by a syntax sort.
+
+Opaque constants may be primitive package constructors whose result is a public abbreviation
+expanding to a function or Sigma type. These still correspond to ordinary model fields. -/
+def lfOpaqueResultIsStructuralType : ObjExpr → Bool
+  | .arrow .. | .funArrow .. | .sigma .. => true
+  | _ => false
+
 /-- Build the explicit framework function type for a binder-style `internal def`. -/
 def mkInternalDefFunctionType (params : Array HLBinding) (result : ObjExpr) : ObjExpr :=
   params.foldr (init := result) fun b acc => .funArrow (some b.name) b.typeExpr acc
@@ -4395,13 +4404,17 @@ def checkOneLFOpaqueConstMetadataInSignature (sig : HLSignature) (lfGlobals : Na
         opaqueLocalTypes typeExpr
       checkLFBinderType sig globalHeads "lf_opaque" opaqueDecl.name "result type"
         opaqueLocalTypes opaqueLocals false typeExpr
-      let some typeHead := checkedLFHead? globalHeads opaqueLocals typeExpr
-        | throwError "lf_opaque '{opaqueDecl.name}' in type theory '{sig.name}' has result type \
-          not headed by a known LF identifier: {typeExpr}"
-      if typeHead.kind != .syntaxSort && typeHead.kind != .local then
-        throwError "lf_opaque '{opaqueDecl.name}' in type theory '{sig.name}' has result type \
-          headed by {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort- or \
-            local-family-headed type"
+      let typeHead? := checkedLFHead? globalHeads opaqueLocals typeExpr
+      match typeHead? with
+      | some typeHead =>
+          if typeHead.kind != .syntaxSort && typeHead.kind != .local then
+            throwError "lf_opaque '{opaqueDecl.name}' in type theory '{sig.name}' has result type \
+              headed by {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-, \
+                local-family-, or structural package type"
+      | none =>
+          unless lfOpaqueResultIsStructuralType typeExpr do
+            throwError "lf_opaque '{opaqueDecl.name}' in type theory '{sig.name}' has result type \
+              not headed by a known LF identifier or structural package type: {typeExpr}"
 
 /-- Check one conversion-plugin declaration's step metadata. -/
 def checkOneConversionPluginMetadataInSignature (sig : HLSignature)
