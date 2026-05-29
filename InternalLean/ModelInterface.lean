@@ -228,6 +228,18 @@ def checkedLFExprBetaApply (fn : CheckedLFExpr) (args : Array CheckedLFExpr) : C
       consume 0 body
   | _ => checkedLFExprAppOfArgs fn args
 
+/-- Reduce a checked LF lambda when it appears as an application head. -/
+def reduceCheckedLFLambdaHeadApp? (e : CheckedLFExpr) : Option CheckedLFExpr :=
+  let (head, args) := splitCheckedLFExprApp e
+  if args.isEmpty then
+    none
+  else
+    match head with
+    | .lam .. =>
+        let reduced := checkedLFExprBetaApply head args
+        if reduced == e then none else some reduced
+    | _ => none
+
 /-- Unfold a checked LF definition when it appears as the head of an application and perform the
 corresponding LF beta-reduction. This mirrors the old generated Lean beta-redex but avoids Lean
 elaboration failures for dependent Sigma result types. -/
@@ -250,12 +262,60 @@ def reduceCheckedLFDefinitionHeadApp? (defs : CheckedLFDefinitionValueMap) (loca
           none
     | _ => none
 
+/-- Unfold a nullary checked LF definition at a value occurrence. -/
+def reduceCheckedLFDefinitionValue? (defs : CheckedLFDefinitionValueMap) (locals : NameSet)
+    (e : CheckedLFExpr) : Option CheckedLFExpr :=
+  match e with
+  | .ident h =>
+      let key := h.name.eraseMacroScopes
+      if h.kind == .lfDefinition && !locals.contains key then
+        match defs.find? key with
+        | some value => if value == e then none else some value
+        | none => none
+      else
+        none
+  | _ => none
+
+/-- Reduce one LF-level redex that matters before rendering model syntax. -/
+def reduceCheckedLFHeadRedex? (defs : CheckedLFDefinitionValueMap) (locals : NameSet)
+    (e : CheckedLFExpr) : Option CheckedLFExpr :=
+  match reduceCheckedLFLambdaHeadApp? e with
+  | some reduced => some reduced
+  | none =>
+      match reduceCheckedLFDefinitionHeadApp? defs locals e with
+      | some reduced => some reduced
+      | none => reduceCheckedLFDefinitionValue? defs locals e
+
+/-- Normalize the LF redexes that Lean should not have to infer while rendering model code.
+
+This reducer is projection-aware: it unfolds checked LF definitions or lambda applications only
+when they are at the current head, then contracts `fst`/`snd` from checked pairs and repeats. It is
+used at rendering sites for checked LF expressions, so local identifiers shadowing global checked
+definitions remain opaque. -/
+partial def normalizeCheckedLFExprForModel (defs : CheckedLFDefinitionValueMap)
+    (locals : NameSet) (e : CheckedLFExpr) : CheckedLFExpr :=
+  match reduceCheckedLFHeadRedex? defs locals e with
+  | some reduced => normalizeCheckedLFExprForModel defs locals reduced
+  | none =>
+      match e with
+      | .fst value =>
+          let value := normalizeCheckedLFExprForModel defs locals value
+          match value with
+          | .pair first _ => normalizeCheckedLFExprForModel defs locals first
+          | _ => .fst value
+      | .snd value =>
+          let value := normalizeCheckedLFExprForModel defs locals value
+          match value with
+          | .pair _ second => normalizeCheckedLFExprForModel defs locals second
+          | _ => .snd value
+      | _ => e
+
 /-- Model field types keep most LF-definition applications as generated Lean beta-redexes for
 compactness, but pair-valued definitions must be reduced before Lean sees a dependent Sigma
 expected type. -/
 def reduceCheckedLFDefinitionHeadPairApp? (defs : CheckedLFDefinitionValueMap)
     (locals : NameSet) (e : CheckedLFExpr) : Option CheckedLFExpr := do
-  let reduced ← reduceCheckedLFDefinitionHeadApp? defs locals e
+  let reduced ← reduceCheckedLFHeadRedex? defs locals e
   match reduced with
   | .pair .. => some reduced
   | _ => none
@@ -520,10 +580,14 @@ partial def lfExprSyntaxInModel (defValues : NameMap CheckedLFExpr)
       | _, _ => pure <| (findLFLocalIdent? locals h.name).getD (mkIdent h.name)
   | .sort => `(Type)
   | .univ u => typeSyntaxOfLevel u
-  | .app f a => do
-      let f ← lfExprSyntaxInModel defValues locals f
-      let a ← lfExprSyntaxInModel defValues locals a
-      `($f $a)
+  | e@(.app f a) => do
+      if let some reduced := reduceCheckedLFHeadRedex? defValues
+          (lfLocalSyntaxSourceNames locals) e then
+        lfExprSyntaxInModel defValues locals reduced
+      else
+        let f ← lfExprSyntaxInModel defValues locals f
+        let a ← lfExprSyntaxInModel defValues locals a
+        `($f $a)
   | .arrow none A B => do
       let A ← lfExprSyntaxInModel defValues locals A
       let B ← lfExprSyntaxInModel defValues locals B
@@ -546,12 +610,20 @@ partial def lfExprSyntaxInModel (defValues : NameMap CheckedLFExpr)
       let a ← lfExprSyntaxInModel defValues locals a
       let b ← lfExprSyntaxInModel defValues locals b
       `(⟨$a, $b⟩)
-  | .fst e => do
-      let e ← lfExprSyntaxInModel defValues locals e
-      `(($e).1)
-  | .snd e => do
-      let e ← lfExprSyntaxInModel defValues locals e
-      `(($e).2)
+  | e@(.fst value) => do
+      let reduced := normalizeCheckedLFExprForModel defValues (lfLocalSyntaxSourceNames locals) e
+      if reduced != e then
+        lfExprSyntaxInModel defValues locals reduced
+      else
+        let value ← lfExprSyntaxInModel defValues locals value
+        `(($value).1)
+  | e@(.snd value) => do
+      let reduced := normalizeCheckedLFExprForModel defValues (lfLocalSyntaxSourceNames locals) e
+      if reduced != e then
+        lfExprSyntaxInModel defValues locals reduced
+      else
+        let value ← lfExprSyntaxInModel defValues locals value
+        `(($value).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
@@ -582,10 +654,14 @@ partial def lfExprSyntaxInModelInstance (defValues : NameMap CheckedLFExpr)
               `($modelIdent.$field:ident)
   | .sort => `(Type)
   | .univ u => typeSyntaxOfLevel u
-  | .app f a => do
-      let f ← lfExprSyntaxInModelInstance defValues modelIdent locals f
-      let a ← lfExprSyntaxInModelInstance defValues modelIdent locals a
-      `($f $a)
+  | e@(.app f a) => do
+      if let some reduced := reduceCheckedLFHeadRedex? defValues
+          (lfLocalSyntaxSourceNames locals) e then
+        lfExprSyntaxInModelInstance defValues modelIdent locals reduced
+      else
+        let f ← lfExprSyntaxInModelInstance defValues modelIdent locals f
+        let a ← lfExprSyntaxInModelInstance defValues modelIdent locals a
+        `($f $a)
   | .arrow none A B => do
       let A ← lfExprSyntaxInModelInstance defValues modelIdent locals A
       let B ← lfExprSyntaxInModelInstance defValues modelIdent locals B
@@ -608,12 +684,20 @@ partial def lfExprSyntaxInModelInstance (defValues : NameMap CheckedLFExpr)
       let a ← lfExprSyntaxInModelInstance defValues modelIdent locals a
       let b ← lfExprSyntaxInModelInstance defValues modelIdent locals b
       `(⟨$a, $b⟩)
-  | .fst e => do
-      let e ← lfExprSyntaxInModelInstance defValues modelIdent locals e
-      `(($e).1)
-  | .snd e => do
-      let e ← lfExprSyntaxInModelInstance defValues modelIdent locals e
-      `(($e).2)
+  | e@(.fst value) => do
+      let reduced := normalizeCheckedLFExprForModel defValues (lfLocalSyntaxSourceNames locals) e
+      if reduced != e then
+        lfExprSyntaxInModelInstance defValues modelIdent locals reduced
+      else
+        let value ← lfExprSyntaxInModelInstance defValues modelIdent locals value
+        `(($value).1)
+  | e@(.snd value) => do
+      let reduced := normalizeCheckedLFExprForModel defValues (lfLocalSyntaxSourceNames locals) e
+      if reduced != e then
+        lfExprSyntaxInModelInstance defValues modelIdent locals reduced
+      else
+        let value ← lfExprSyntaxInModelInstance defValues modelIdent locals value
+        `(($value).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
@@ -2220,12 +2304,20 @@ partial def lfExprSyntaxInModelWithFields (fieldNames : NameMap Name)
       let a ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis a
       let b ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis b
       `(⟨$a, $b⟩)
-  | .fst e => do
-      let e ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis e
-      `(($e).1)
-  | .snd e => do
-      let e ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis e
-      `(($e).2)
+  | e@(.fst value) => do
+      let reduced := normalizeCheckedLFExprForModel defValues (lfLocalSyntaxSourceNames locals) e
+      if reduced != e then
+        lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis reduced
+      else
+        let value ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis value
+        `(($value).1)
+  | e@(.snd value) => do
+      let reduced := normalizeCheckedLFExprForModel defValues (lfLocalSyntaxSourceNames locals) e
+      if reduced != e then
+        lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis reduced
+      else
+        let value ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis value
+        `(($value).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
@@ -2334,7 +2426,7 @@ partial def lfExprSyntaxInModelInstanceWithFields (fieldNames : NameMap Name)
   | .sort => `(Type)
   | .univ u => typeSyntaxOfLevel u
   | e@(.app ..) => do
-      if let some reduced := reduceCheckedLFDefinitionHeadApp? defValues
+      if let some reduced := reduceCheckedLFHeadRedex? defValues
           (lfLocalSyntaxSourceNames locals) e then
         lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis
           reduced
@@ -2390,14 +2482,26 @@ partial def lfExprSyntaxInModelInstanceWithFields (fieldNames : NameMap Name)
       let b ←
         lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis b
       `(⟨$a, $b⟩)
-  | .fst e => do
-      let e ←
-        lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis e
-      `(($e).1)
-  | .snd e => do
-      let e ←
-        lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis e
-      `(($e).2)
+  | e@(.fst value) => do
+      let reduced := normalizeCheckedLFExprForModel defValues (lfLocalSyntaxSourceNames locals) e
+      if reduced != e then
+        lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis
+          reduced
+      else
+        let value ←
+          lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis
+            value
+        `(($value).1)
+  | e@(.snd value) => do
+      let reduced := normalizeCheckedLFExprForModel defValues (lfLocalSyntaxSourceNames locals) e
+      if reduced != e then
+        lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis
+          reduced
+      else
+        let value ←
+          lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis
+            value
+        `(($value).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
@@ -2560,7 +2664,7 @@ partial def lfExprSyntaxInModelInstanceWithTermLocals (fieldNames : NameMap Name
   | .sort => `(Type)
   | .univ u => typeSyntaxOfLevel u
   | e@(.app ..) => do
-      if let some reduced := reduceCheckedLFDefinitionHeadApp? defValues
+      if let some reduced := reduceCheckedLFHeadRedex? defValues
           (lfLocalTermSourceNames locals) e then
         lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals paramVis
           reduced
@@ -2621,14 +2725,24 @@ partial def lfExprSyntaxInModelInstanceWithTermLocals (fieldNames : NameMap Name
       let b ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
         paramVis b
       `(⟨$a, $b⟩)
-  | .fst e => do
-      let e ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
-        paramVis e
-      `(($e).1)
-  | .snd e => do
-      let e ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
-        paramVis e
-      `(($e).2)
+  | e@(.fst value) => do
+      let reduced := normalizeCheckedLFExprForModel defValues (lfLocalTermSourceNames locals) e
+      if reduced != e then
+        lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals paramVis
+          reduced
+      else
+        let value ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+          paramVis value
+        `(($value).1)
+  | e@(.snd value) => do
+      let reduced := normalizeCheckedLFExprForModel defValues (lfLocalTermSourceNames locals) e
+      if reduced != e then
+        lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals paramVis
+          reduced
+      else
+        let value ← lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+          paramVis value
+        `(($value).2)
   | .lam xs body => do
       let rec go (i : Nat) (locals : LFLocalTermCtx) : CommandElabM (TSyntax `term) := do
         if h : i < xs.size then
@@ -3384,6 +3498,10 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
     | .sort => `(Type)
     | .univ u => typeSyntaxOfLevel u
     | e@(.app ..) => do
+        if let some reduced := reduceCheckedLFDefinitionHeadPairApp? defValues
+            (lfLocalSyntaxSourceNames locals) e then
+          expr locals reduced
+        else
         let (head, args) := splitCheckedLFExprApp e
         if let some n := checkedLFExprHeadName? head then
           if lfHeadHasImplicitParams paramVis n then
@@ -3421,12 +3539,20 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
         let a ← expr locals a
         let b ← expr locals b
         `(⟨$a, $b⟩)
-    | .fst e => do
-        let e ← expr locals e
-        `(($e).1)
-    | .snd e => do
-        let e ← expr locals e
-        `(($e).2)
+    | e@(.fst value) => do
+        let reduced := normalizeCheckedLFExprForModel defValues (lfLocalSyntaxSourceNames locals) e
+        if reduced != e then
+          expr locals reduced
+        else
+          let value ← expr locals value
+          `(($value).1)
+    | e@(.snd value) => do
+        let reduced := normalizeCheckedLFExprForModel defValues (lfLocalSyntaxSourceNames locals) e
+        if reduced != e then
+          expr locals reduced
+        else
+          let value ← expr locals value
+          `(($value).2)
     | .lam xs body => do
         let rec go (i : Nat) (locals : LFLocalSyntaxCtx) : CommandElabM (TSyntax `term) := do
           if h : i < xs.size then

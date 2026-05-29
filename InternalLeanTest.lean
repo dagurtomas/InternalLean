@@ -18,6 +18,7 @@ import InternalLeanTest.ModelStructureDependencyOrderTest
 import InternalLeanTest.ModelStructuralEquivTest
 import InternalLeanTest.ModelUniverseLevelsTest
 import InternalLeanTest.ModelWorkflowUXTest
+import InternalLeanTest.ModelRenderingNormalizationTest
 import InternalLeanTest.NaturalNumbersTest
 import InternalLeanTest.RawConversionCaptureTest
 import InternalLeanTest.RawConversionTest
