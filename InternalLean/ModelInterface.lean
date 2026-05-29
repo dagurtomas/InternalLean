@@ -150,6 +150,10 @@ def typeSyntaxOfLevel (u : LevelExpr) : CommandElabM (TSyntax `term) := do
 
 abbrev LFLocalSyntaxCtx := List (Name × Ident)
 
+/-- Source LF names bound in the current generated-code rendering context. -/
+def lfLocalSyntaxSourceNames (locals : LFLocalSyntaxCtx) : NameSet :=
+  locals.foldl (init := {}) fun names entry => names.insert entry.fst.eraseMacroScopes
+
 /-- Names reserved by Lean syntax or by generated model renderers for local binders. -/
 def lfReservedLeanLocalNames : NameSet :=
   [`Type, `fun, `let, `match, `if, `then, `else, `by, `where, `do, `forall].foldl
@@ -200,6 +204,61 @@ partial def splitCheckedLFExprApp : CheckedLFExpr → CheckedLFExpr × Array Che
       let (h, args) := splitCheckedLFExprApp f
       (h, args.push a)
   | e => (e, #[])
+
+/-- Rebuild a checked LF application from a head and argument spine. -/
+def checkedLFExprAppOfArgs (head : CheckedLFExpr) (args : Array CheckedLFExpr) :
+    CheckedLFExpr :=
+  args.foldl (init := head) fun f a => .app f a
+
+/-- Apply a checked LF lambda to arguments, using LF-level substitution instead of relying on
+Lean to elaborate a generated beta-redex under a dependent expected type. -/
+def checkedLFExprBetaApply (fn : CheckedLFExpr) (args : Array CheckedLFExpr) : CheckedLFExpr :=
+  match fn with
+  | .lam binders body =>
+      let rec consume (i : Nat) (body : CheckedLFExpr) : CheckedLFExpr :=
+        if hArg : i < args.size then
+          if hBinder : i < binders.size then
+            consume (i + 1) (substSingleCheckedLFParam binders[i] args[i] body)
+          else
+            checkedLFExprAppOfArgs body (args.extract i args.size)
+        else if hBinder : i < binders.size then
+          .lam (binders.extract i binders.size) body
+        else
+          body
+      consume 0 body
+  | _ => checkedLFExprAppOfArgs fn args
+
+/-- Unfold a checked LF definition when it appears as the head of an application and perform the
+corresponding LF beta-reduction. This mirrors the old generated Lean beta-redex but avoids Lean
+elaboration failures for dependent Sigma result types. -/
+def reduceCheckedLFDefinitionHeadApp? (defs : CheckedLFDefinitionValueMap) (locals : NameSet)
+    (e : CheckedLFExpr) : Option CheckedLFExpr :=
+  let (head, args) := splitCheckedLFExprApp e
+  if args.isEmpty then
+    none
+  else
+    match head with
+    | .ident h =>
+        let key := h.name.eraseMacroScopes
+        if h.kind == .lfDefinition && !locals.contains key then
+          match defs.find? key with
+          | some value =>
+              let reduced := checkedLFExprBetaApply value args
+              if reduced == e then none else some reduced
+          | none => none
+        else
+          none
+    | _ => none
+
+/-- Model field types keep most LF-definition applications as generated Lean beta-redexes for
+compactness, but pair-valued definitions must be reduced before Lean sees a dependent Sigma
+expected type. -/
+def reduceCheckedLFDefinitionHeadPairApp? (defs : CheckedLFDefinitionValueMap)
+    (locals : NameSet) (e : CheckedLFExpr) : Option CheckedLFExpr := do
+  let reduced ← reduceCheckedLFDefinitionHeadApp? defs locals e
+  match reduced with
+  | .pair .. => some reduced
+  | _ => none
 
 /-- Split a source LF expression into head and argument spine. -/
 partial def splitObjExprAppForModel : ObjExpr → ObjExpr × Array ObjExpr
@@ -2122,6 +2181,10 @@ partial def lfExprSyntaxInModelWithFields (fieldNames : NameMap Name)
   | .sort => `(Type)
   | .univ u => typeSyntaxOfLevel u
   | e@(.app ..) => do
+      if let some reduced := reduceCheckedLFDefinitionHeadPairApp? defValues
+          (lfLocalSyntaxSourceNames locals) e then
+        lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis reduced
+      else
       let (head, args) := splitCheckedLFExprApp e
       if let some n := checkedLFExprHeadName? head then
         if lfHeadHasImplicitParams paramVis n then
@@ -2271,6 +2334,11 @@ partial def lfExprSyntaxInModelInstanceWithFields (fieldNames : NameMap Name)
   | .sort => `(Type)
   | .univ u => typeSyntaxOfLevel u
   | e@(.app ..) => do
+      if let some reduced := reduceCheckedLFDefinitionHeadApp? defValues
+          (lfLocalSyntaxSourceNames locals) e then
+        lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis
+          reduced
+      else
       let (head, args) := splitCheckedLFExprApp e
       if let some n := checkedLFExprHeadName? head then
         if lfHeadHasImplicitParams paramVis n then
@@ -2465,6 +2533,10 @@ partial def lfTelescopeSyntaxInModelWithFields (fieldNames : NameMap Name)
 /-- Local terms used while rendering structural-equivalence fields. -/
 abbrev LFLocalTermCtx := List (Name × TSyntax `term)
 
+/-- Source LF names bound in a rendering context whose locals are arbitrary Lean terms. -/
+def lfLocalTermSourceNames (locals : LFLocalTermCtx) : NameSet :=
+  locals.foldl (init := {}) fun names entry => names.insert entry.fst.eraseMacroScopes
+
 /-- Look up a rendered local term by checked LF source name. -/
 def findLFLocalTerm? (locals : LFLocalTermCtx) (n : Name) : Option (TSyntax `term) :=
   (locals.find? (fun p => p.fst == n.eraseMacroScopes)).map (·.snd)
@@ -2488,6 +2560,11 @@ partial def lfExprSyntaxInModelInstanceWithTermLocals (fieldNames : NameMap Name
   | .sort => `(Type)
   | .univ u => typeSyntaxOfLevel u
   | e@(.app ..) => do
+      if let some reduced := reduceCheckedLFDefinitionHeadApp? defValues
+          (lfLocalTermSourceNames locals) e then
+        lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals paramVis
+          reduced
+      else
       let (head, args) := splitCheckedLFExprApp e
       if let some n := checkedLFExprHeadName? head then
         if lfHeadHasImplicitParams paramVis n then

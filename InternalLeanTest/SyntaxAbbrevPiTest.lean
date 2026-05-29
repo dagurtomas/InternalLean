@@ -113,6 +113,34 @@ def sigmaAbbrevModel : SigmaAbbrevTest.SigmaAbbrevModel where
   mkFam := fun _ => ()
   takeWitness := fun _ => ()
 
+declare_type_theory DependentSigmaDefinitionApplicationTest where
+  syntax_sort A : Type
+  syntax_sort D : Type
+  syntax_sort Hom (X : A) (Y : A) : Type
+  lf_opaque obj (C : D) : A
+  lf_opaque core (X : A) : A
+  lf_opaque incl (X : A) : Hom (core X) X
+  syntax_abbrev Sub (X : A) := Σ Y : A, Hom Y X
+  syntax_abbrev Coll (C : D) := Sub (obj C)
+  lf_def total : (X : A) ⇒ Sub X := fun X => ⟨core X, incl X⟩
+  lf_def all : (C : D) ⇒ Coll C := fun C => total (obj C)
+
+generate_model_interface DependentSigmaDefinitionApplicationTest as
+  DependentSigmaDefinitionApplicationModel
+generate_model_transports DependentSigmaDefinitionApplicationTest for
+  DependentSigmaDefinitionApplicationModel
+#check DependentSigmaDefinitionApplicationTest.DependentSigmaDefinitionApplicationModel.total
+#check DependentSigmaDefinitionApplicationTest.DependentSigmaDefinitionApplicationModel.all
+
+def dependentSigmaDefinitionApplicationModel :
+    DependentSigmaDefinitionApplicationTest.DependentSigmaDefinitionApplicationModel where
+  A := Unit
+  D := Unit
+  Hom := fun _ _ => Unit
+  obj := fun _ => ()
+  core := fun _ => ()
+  incl := fun _ => ()
+
 declare_type_theory OpaqueStructuralResultTest where
   syntax_sort Obj : Type
   syntax_sort Fam (x : Obj) : Type
