@@ -175,6 +175,7 @@ def HLSignature.appendBlock (sig : HLSignature) (block : HLTheoryBlock) : HLSign
   { sig with
     syntaxSorts := sig.syntaxSorts ++ block.syntaxSorts
     syntaxAbbrevs := sig.syntaxAbbrevs ++ block.syntaxAbbrevs
+    judgmentAbbrevs := sig.judgmentAbbrevs ++ block.judgmentAbbrevs
     syntaxSortRoles := sig.syntaxSortRoles ++ block.syntaxSortRoles
     contextZones := sig.contextZones ++ block.contextZones
     binderClasses := sig.binderClasses ++ block.binderClasses
@@ -494,6 +495,7 @@ inductive SourceDocRole where
   | primitiveEq
   | syntaxSort
   | syntaxAbbrev
+  | judgmentAbbrev
   | contextZone
   | binderClass
   | judgment
@@ -516,6 +518,7 @@ def label : SourceDocRole → String
   | .primitiveEq => "primitive equality"
   | .syntaxSort => "syntax sort"
   | .syntaxAbbrev => "syntax abbreviation"
+  | .judgmentAbbrev => "judgment abbreviation"
   | .contextZone => "context zone"
   | .binderClass => "binder class"
   | .judgment => "judgment"

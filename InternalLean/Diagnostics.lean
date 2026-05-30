@@ -158,6 +158,8 @@ def docLintItems (sig : HLSignature) : CoreM (Array DocLintItem) := do
   let mut out := #[theoryItem]
   for s in sig.syntaxSorts do out := out.push { role := .syntaxSort, sourceName := s.name }
   for a in sig.syntaxAbbrevs do out := out.push { role := .syntaxAbbrev, sourceName := a.name }
+  for a in sig.judgmentAbbrevs do
+    out := out.push { role := .judgmentAbbrev, sourceName := a.name }
   for z in sig.contextZones do out := out.push { role := .contextZone, sourceName := z.name }
   for b in sig.binderClasses do out := out.push { role := .binderClass, sourceName := b.name }
   for j in sig.judgments do out := out.push { role := .judgment, sourceName := j.name }
@@ -345,7 +347,8 @@ def CheckedSignature.summary (checked : CheckedSignature) : MessageData :=
     checked.lfRewriteSymmetries.size + checked.lfRewriteCongruences.size +
     checked.lfTransportRules.size + checked.lfTransportPositions.size
   m!"{levels}, {checked.lfSyntaxSorts.size} checked LF syntax sorts, \
-    {checked.lfSyntaxAbbrevs.size} checked syntax abbreviation(s), {roleCount} role(s), \
+    {checked.lfSyntaxAbbrevs.size} checked syntax abbreviation(s), \
+    {checked.lfJudgmentAbbrevs.size} checked judgment abbreviation(s), {roleCount} role(s), \
     {rewriteMetadataCount} rewrite/transport metadata item(s), \
     {checked.lfContextZones.size} checked LF context zones, \
     {checked.lfBinderClasses.size} checked LF binder classes, \
@@ -375,6 +378,8 @@ elab "#print_checked_type_theory " nm:ident : command => do
     logInfo m!"LF syntax_sort {s.name}: {s.arity} parameter(s), result {result}"
   for a in checked.lfSyntaxAbbrevs do
     logInfo m!"LF syntax_abbrev {a.name}: {a.params.size} parameter(s), expands to {a.value}"
+  for a in checked.lfJudgmentAbbrevs do
+    logInfo m!"LF judgment_abbrev {a.name}: {a.params.size} parameter(s), expands to {a.value}"
   for role in checked.lfSyntaxSortRoles do
     logInfo m!"LF syntax_sort_role {role.sortName} : {role.kind}"
   for j in checked.lfJudgments do
@@ -464,8 +469,10 @@ elab "#print_checked_logical_framework_metadata " nm:ident : command => do
   let some checked ← liftCoreM <| getCheckedTheory? nm.getId
     | throwError "no checked artifact stored for type theory '{nm.getId}'"
   logInfo m!"checked LF metadata for {checked.name} ({checked.lfSyntaxSorts.size} syntax sort(s), \
-    {checked.lfSyntaxAbbrevs.size} syntax abbreviation(s), {checked.lfContextZones.size} context \
-      zone(s), {checked.lfBinderClasses.size} binder class(es), {checked.lfJudgments.size} \
+    {checked.lfSyntaxAbbrevs.size} syntax abbreviation(s), \
+      {checked.lfJudgmentAbbrevs.size} judgment abbreviation(s), \
+        {checked.lfContextZones.size} context zone(s), {checked.lfBinderClasses.size} binder \
+          class(es), {checked.lfJudgments.size} \
         judgment(s), {checked.lfOpaqueConsts.size} opaque placeholder(s), \
           {checked.lfSideConditionSolvers.size} side-condition solver(s), \
             {checked.lfConversionPlugins.size} conversion plugin(s), {checked.lfRules.size} \
@@ -478,6 +485,10 @@ elab "#print_checked_logical_framework_metadata " nm:ident : command => do
       s!"({b.name} : {b.typeExpr})")
     let head := match a.head? with | some h => m!" headed by {h.summary}" | none => m!""
     logInfo m!"syntax_abbrev {a.name} {params} := {a.value}{head}"
+  for a in checked.lfJudgmentAbbrevs do
+    let params := String.intercalate " " (a.params.toList.map fun b =>
+      s!"({b.name} : {b.typeExpr})")
+    logInfo m!"judgment_abbrev {a.name} {params} := {a.value} headed by {a.head.summary}"
   for z in checked.lfContextZones do
     let deps := if z.dependsOn.isEmpty then "" else " depends_on "
       ++ String.intercalate ", " (z.dependsOn.toList.map toString)
@@ -530,7 +541,8 @@ elab "#print_checked_logical_framework_environment " nm:ident : command => do
     String.intercalate ", " (env.levelParams.toList.map toString)
   logInfo m!"checked LF environment for {env.theoryName}: level parameter(s): {levels}; \
     {env.syntaxSorts.size} syntax sort(s), {env.syntaxAbbrevs.size} syntax abbreviation(s), \
-      {env.contextZones.size} context zone(s), {env.binderClasses.size} binder class(es), \
+      {env.judgmentAbbrevs.size} judgment abbreviation(s), {env.contextZones.size} context \
+        zone(s), {env.binderClasses.size} binder class(es), \
         {env.judgments.size} judgment(s), {env.opaqueConsts.size} opaque placeholder(s), \
           {env.sideConditionSolvers.size} side-condition solver(s), {env.conversionPlugins.size} \
             conversion plugin(s), {env.rules.size} checked rule(s), {env.ruleSchemas.size} \
@@ -890,8 +902,8 @@ elab "#print_logical_framework_metadata " nm:ident : command => do
     | throwError "unknown type theory '{nm.getId}'"
   let sig ← liftCoreM <| flattenSignature sig
   let lfCount :=
-    sig.syntaxSorts.size + sig.syntaxAbbrevs.size + sig.syntaxSortRoles.size +
-      sig.contextZones.size +
+    sig.syntaxSorts.size + sig.syntaxAbbrevs.size + sig.judgmentAbbrevs.size +
+      sig.syntaxSortRoles.size + sig.contextZones.size +
     sig.binderClasses.size + sig.judgments.size + sig.judgmentRoles.size + sig.rules.size +
     sig.ruleRoles.size + sig.rewriteRelations.size + sig.rewriteSymmetries.size +
     sig.rewriteCongruences.size + sig.transportRules.size + sig.transportPositions.size +
@@ -903,6 +915,8 @@ elab "#print_logical_framework_metadata " nm:ident : command => do
   for s in sig.syntaxSorts do
     logInfo s.summary
   for a in sig.syntaxAbbrevs do
+    logInfo a.summary
+  for a in sig.judgmentAbbrevs do
     logInfo a.summary
   for role in sig.syntaxSortRoles do
     logInfo role.summary
@@ -1067,8 +1081,8 @@ elab "#print_type_theory " nm:ident : command => do
     if sig.parents.isEmpty then ""
     else s!" extends {String.intercalate ", " (sig.parents.toList.map toString)}"
   let lfCount :=
-    sig.syntaxSorts.size + sig.syntaxAbbrevs.size + sig.syntaxSortRoles.size +
-      sig.contextZones.size +
+    sig.syntaxSorts.size + sig.syntaxAbbrevs.size + sig.judgmentAbbrevs.size +
+      sig.syntaxSortRoles.size + sig.contextZones.size +
     sig.binderClasses.size + sig.judgments.size + sig.judgmentRoles.size + sig.rules.size +
     sig.ruleRoles.size + sig.rewriteRelations.size + sig.rewriteSymmetries.size +
     sig.rewriteCongruences.size + sig.transportRules.size + sig.transportPositions.size +
@@ -1081,6 +1095,8 @@ elab "#print_type_theory " nm:ident : command => do
   for s in sig.syntaxSorts do
     logInfo s.summary
   for a in sig.syntaxAbbrevs do
+    logInfo a.summary
+  for a in sig.judgmentAbbrevs do
     logInfo a.summary
   for role in sig.syntaxSortRoles do
     logInfo role.summary

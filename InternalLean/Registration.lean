@@ -28,7 +28,7 @@ register_option internalLean.profileInternalDef : Bool := {
 
 /-- Count checked LF metadata declarations represented in a checked signature. -/
 def checkedLFMetadataDeclCount (checked : CheckedSignature) : Nat :=
-  checked.lfSyntaxSorts.size + checked.lfSyntaxAbbrevs.size +
+  checked.lfSyntaxSorts.size + checked.lfSyntaxAbbrevs.size + checked.lfJudgmentAbbrevs.size +
     checked.lfSyntaxSortRoles.size + checked.lfContextZones.size +
     checked.lfBinderClasses.size + checked.lfJudgments.size + checked.lfJudgmentRoles.size +
     checked.lfOpaqueConsts.size + checked.lfSideConditionSolvers.size +
@@ -85,6 +85,7 @@ def theoryAnchorSummaryString (sig : HLSignature) (sourceDoc? : Option String :=
     levelLine,
     s!"Syntax sorts: {sig.syntaxSorts.size}",
     s!"Syntax abbreviations: {sig.syntaxAbbrevs.size}",
+    s!"Judgment abbreviations: {sig.judgmentAbbrevs.size}",
     s!"Judgments: {sig.judgments.size}",
     s!"Rules: {sig.rules.size}",
     s!"LF opaque constants: {sig.lfOpaqueConsts.size}",
@@ -540,7 +541,7 @@ def registerAdmittedInternalLFJudgmentTheorem (theoryName anchorName localName :
   let locals := params.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
   let typeExpr ←
     expandSyntaxAbbrevsInExpr checkedBase "admitted internal declaration" localName
-      "statement" locals (checkedBase.syntaxAbbrevs.size + 1) typeExpr
+      "statement" locals (lfAbbrevExpansionFuel checkedBase) typeExpr
   let flatForCheck := checkedBase
   for b in params do
     checkNoLFLocalBinderShadowingInBinding flatForCheck "admitted internal declaration"
@@ -655,10 +656,10 @@ def registerLFObjectDef (theoryName : Name) (d : LFObjectDefDecl) : CoreM Unit :
   let dForRegistry ← elaborateImplicitAppsInLFObjectDef flatSigWithNew knownTypes d
   let typeExpr ←
     expandSyntaxAbbrevsInExpr flatSigWithNew "lf_def" dForRegistry.name "type" {}
-      (flatSigWithNew.syntaxAbbrevs.size + 1) dForRegistry.typeExpr
+      (lfAbbrevExpansionFuel flatSigWithNew) dForRegistry.typeExpr
   let value ←
     expandSyntaxAbbrevsInExpr flatSigWithNew "lf_def" dForRegistry.name "value" {}
-      (flatSigWithNew.syntaxAbbrevs.size + 1) dForRegistry.value
+      (lfAbbrevExpansionFuel flatSigWithNew) dForRegistry.value
   let dForCheck := {
     dForRegistry with
     name := dForRegistry.name.eraseMacroScopes
@@ -705,10 +706,10 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
   let locals := binders.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
   let judgmentExpr ←
     expandSyntaxAbbrevsInExpr flatSigWithNew "judgment_theorem" tForRegistry.name "statement"
-      locals (flatSigWithNew.syntaxAbbrevs.size + 1) tForRegistry.judgmentExpr
+      locals (lfAbbrevExpansionFuel flatSigWithNew) tForRegistry.judgmentExpr
   let proof ←
     expandSyntaxAbbrevsInExpr flatSigWithNew "judgment_theorem" tForRegistry.name "proof"
-      locals (flatSigWithNew.syntaxAbbrevs.size + 1) tForRegistry.proof
+      locals (lfAbbrevExpansionFuel flatSigWithNew) tForRegistry.proof
   let tForCheck := {
     tForRegistry with
     name := tForRegistry.name.eraseMacroScopes
@@ -784,6 +785,7 @@ def checkNoDuplicateBlockNames (block : HLTheoryBlock) : CommandElabM Unit := do
   for (kind, n) in
       (block.syntaxSorts.map (fun d => ("syntax-sort", d.name)) ++
         block.syntaxAbbrevs.map (fun d => ("syntax abbreviation", d.name)) ++
+        block.judgmentAbbrevs.map (fun d => ("judgment abbreviation", d.name)) ++
         block.contextZones.map (fun d => ("context-zone", d.name)) ++
         block.binderClasses.map (fun d => ("binder class", d.name)) ++
         block.judgments.map (fun d => ("judgment", d.name)) ++
@@ -802,6 +804,7 @@ def signatureWithBlock (sig : HLSignature) (block : HLTheoryBlock) : HLSignature
   { sig with
     syntaxSorts := block.syntaxSorts
     syntaxAbbrevs := block.syntaxAbbrevs
+    judgmentAbbrevs := block.judgmentAbbrevs
     syntaxSortRoles := block.syntaxSortRoles
     contextZones := block.contextZones
     binderClasses := block.binderClasses
@@ -898,6 +901,12 @@ def sourceDocRoleAndNameOfTTDecl? (decl : TSyntax `ttDecl) :
   | `(ttDecl| $doc:docComment syntax_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) =>
       let _ := doc.raw; let _ := bs.size; let _ := value.raw
       pure <| some (.syntaxAbbrev, n.getId)
+  | `(ttDecl| judgment_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) =>
+      let _ := bs.size; let _ := value.raw
+      pure <| some (.judgmentAbbrev, n.getId)
+  | `(ttDecl| $doc:docComment judgment_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) =>
+      let _ := doc.raw; let _ := bs.size; let _ := value.raw
+      pure <| some (.judgmentAbbrev, n.getId)
   | `(ttDecl| context_zone $n:ident : $sortName:ident) =>
       let _ := sortName.getId
       pure <| some (.contextZone, n.getId)

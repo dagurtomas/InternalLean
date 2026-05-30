@@ -172,6 +172,16 @@ judgment J (x : A) {y : B}
 A judgment declares a predicate or relation in the declared type theory.
 
 ```lean
+judgment_abbrev Alias (x : A) {y : B} := J x y
+```
+
+A judgment abbreviation is public notation for a judgment-headed expression. It expands before LF
+checking and model-obligation generation, so it does not become a separate model field. Use it
+when two judgment notations should share the same underlying judgment; use `judgment` only for a
+new primitive judgment/model obligation. `syntax_abbrev` remains for LF type expressions and does
+not alias judgments.
+
+```lean
 judgment_role J : role
 ```
 

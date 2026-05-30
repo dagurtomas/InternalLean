@@ -1903,8 +1903,9 @@ def lfModelObligationSummaryString (checked : CheckedSignature) (admittedNames :
   let expanded := countLFModelObligations obs (fun o => o.generatedRole == .metadataExpansion
     && o.renderable)
   let omitted := countLFModelObligations obs (fun o => o.generatedRole == .omitted || !o.renderable)
-  let abbrevText := if checked.lfSyntaxAbbrevs.isEmpty then "" else
-    s!", {checked.lfSyntaxAbbrevs.size} syntax abbreviation(s) expanded before fields"
+  let abbrevCount := checked.lfSyntaxAbbrevs.size + checked.lfJudgmentAbbrevs.size
+  let abbrevText := if abbrevCount == 0 then "" else
+    s!", {abbrevCount} LF abbreviation(s) expanded before fields"
   let modeText := if mode == .full then "" else s!" [{mode.label}]"
   s!"LF model obligations for {nameString checked.name}{modeText}: {obs.size} obligation(s), \
     {fields} user field(s), {derived} generated method/declaration(s), {params} theorem-local \
@@ -1996,10 +1997,11 @@ def lfModelInterfaceGuideString (theoryName structureName : Name) (checked : Che
     s!"user-provided fields: {fields.size} ({lfModelFieldSourceBreakdown obs})",
     s!"generated methods/declarations: {derived.size}; theorem-local certificate parameters: \
       {params.size}; blocked/omitted: {omitted.size}"]
-  if !checked.lfSyntaxAbbrevs.isEmpty then
+  let abbrevCount := checked.lfSyntaxAbbrevs.size + checked.lfJudgmentAbbrevs.size
+  if abbrevCount != 0 then
     lines :=
-      lines.push s!"syntax abbreviations expanded before fields: {checked.lfSyntaxAbbrevs.size}; \
-        they are public notation, not model obligations."
+      lines.push s!"LF abbreviations expanded before fields: {abbrevCount}; they are public \
+        notation, not model obligations."
   if let some warning := lfModelTemporaryAdmissionWarningStringFromObligations checked obs then
     lines := lines.push s!"WARNING: {warning}"
   if !heavy.isEmpty then
@@ -2051,7 +2053,8 @@ def lfModelContractString (checked : CheckedSignature) : String :=
     "  omitted: blocked obligation with an actionable diagnostic",
     "source classes:",
     "  syntax_sort/judgment/typed lf_opaque/rule: normally become model fields",
-    "  syntax_abbrev: public notation expanded before model obligations, not a model field",
+    "  syntax_abbrev/judgment_abbrev: public notation expanded before model obligations, not a \
+      model field",
     "  admitted lf_opaque: admissions stay generated declarations unless needed by \
       model-field dependencies, including structural package-shaped admissions",
     "  side-condition predicate: inferred model predicate field used by rule evidence arguments",
@@ -3836,8 +3839,9 @@ def lfModelSummaryString (checked : CheckedSignature) (admittedNames : NameSet :
   let renderableRules := countFields .rule
   let tempText := if tempAdmissions == 0 then "" else
     s!", {tempAdmissions} temporary admitted-definition field(s)"
-  let abbrevText := if checked.lfSyntaxAbbrevs.isEmpty then "" else
-    s!", {checked.lfSyntaxAbbrevs.size} syntax abbreviation(s) expanded"
+  let abbrevCount := checked.lfSyntaxAbbrevs.size + checked.lfJudgmentAbbrevs.size
+  let abbrevText := if abbrevCount == 0 then "" else
+    s!", {abbrevCount} LF abbreviation(s) expanded"
   s!"LF model summary for {nameString checked.name}: {checked.lfSyntaxSorts.size} syntax sort \
     field(s){abbrevText}, {checked.lfJudgments.size} judgment field(s), {typedOpaque} typed \
       opaque constant field(s){tempText}, {sidePredicates} side-condition predicate field(s), \
@@ -4740,6 +4744,7 @@ def theoryWorkflowSummaryString (sig : HLSignature) (checked : CheckedSignature)
     "LF metadata: " ++
       s!"{checked.lfSyntaxSorts.size} syntax sort(s), " ++
       s!"{checked.lfSyntaxAbbrevs.size} syntax abbreviation(s), " ++
+      s!"{checked.lfJudgmentAbbrevs.size} judgment abbreviation(s), " ++
       s!"{checked.lfJudgments.size} judgment(s), {checked.lfRules.size} rule(s), " ++
       s!"{lfTheorems} checked judgment theorem(s)",
     s!"generated admitted transports recorded: {transports}",
@@ -4865,15 +4870,20 @@ def modelTemplateString (theoryName structureName : Name) (checked : CheckedSign
       blocked/omitted in this mode: {omitted.size}"
   if let some warning := lfModelTemporaryAdmissionWarningStringFromObligations checked obs then
     lines := lines.push s!"  -- WARNING: {warning.replace "\n" "\n  -- "}"
-  if !checked.lfSyntaxAbbrevs.isEmpty then
+  if !checked.lfSyntaxAbbrevs.isEmpty || !checked.lfJudgmentAbbrevs.isEmpty then
     lines :=
-      lines.push "  -- derived notation (non-field syntax_abbrev item(s), expanded before model \
+      lines.push "  -- derived notation (non-field LF abbreviation item(s), expanded before model \
         obligations)"
     for a in checked.lfSyntaxAbbrevs do
       let params := String.intercalate " " (a.params.toList.map fun b =>
         s!"({nameString b.name} : {b.typeExpr})")
       let params := if params.isEmpty then "" else " " ++ params
-      lines := lines.push s!"  --   {nameString a.name}{params} := {a.value}"
+      lines := lines.push s!"  --   syntax_abbrev {nameString a.name}{params} := {a.value}"
+    for a in checked.lfJudgmentAbbrevs do
+      let params := String.intercalate " " (a.params.toList.map fun b =>
+        s!"({nameString b.name} : {b.typeExpr})")
+      let params := if params.isEmpty then "" else " " ++ params
+      lines := lines.push s!"  --   judgment_abbrev {nameString a.name}{params} := {a.value}"
   if fields.isEmpty then
     lines := lines.push "  -- no LF model fields were generated"
   else

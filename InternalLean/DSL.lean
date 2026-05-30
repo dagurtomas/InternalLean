@@ -384,6 +384,20 @@ structure SyntaxAbbrevDecl where
   value : ObjExpr
   deriving Inhabited, Repr, BEq
 
+/-- User-facing abbreviation for a judgment-shaped LF expression.
+
+A `judgment_abbrev` is expanded in later metadata before LF checking and model obligations are
+computed, so it can be used as public notation without becoming an independent model-interface
+field. -/
+structure JudgmentAbbrevDecl where
+  /-- Abbreviation name. -/
+  name : Name
+  /-- Parameters of the abbreviation. -/
+  params : Array HLBinding := #[]
+  /-- Judgment-shaped expansion body. -/
+  value : ObjExpr
+  deriving Inhabited, Repr, BEq
+
 /-- Non-semantic role metadata for a user-declared syntactic category. -/
 structure SyntaxSortRoleDecl where
   /-- Syntactic category being described. -/
@@ -795,6 +809,20 @@ structure CheckedLFSyntaxAbbrev where
   head? : Option CheckedLFHead := none
   deriving Inhabited, Repr, BEq
 
+/-- A checked judgment-shaped abbreviation artifact. -/
+structure CheckedLFJudgmentAbbrev where
+  /-- Abbreviation name, with macro scopes erased. -/
+  name : Name
+  /-- Checked parameter telescope. -/
+  params : Array CheckedLFBinding := #[]
+  /-- Expanded source body. -/
+  value : ObjExpr
+  /-- Resolved expanded body. -/
+  checkedValue : CheckedLFExpr := default
+  /-- Resolved body head. -/
+  head : CheckedLFHead
+  deriving Inhabited, Repr, BEq
+
 /-- A checked LF context-zone declaration artifact. -/
 structure CheckedLFContextZone where
   /-- Zone name, with macro scopes erased. -/
@@ -1143,6 +1171,8 @@ structure CheckedLFEnvironment where
   syntaxSorts : Array CheckedLFSyntaxSort := #[]
   /-- Checked syntax-sort-shaped abbreviations. -/
   syntaxAbbrevs : Array CheckedLFSyntaxAbbrev := #[]
+  /-- Checked judgment-shaped abbreviations. -/
+  judgmentAbbrevs : Array CheckedLFJudgmentAbbrev := #[]
   /-- Checked syntax-sort role metadata, with names scope-normalized. -/
   syntaxSortRoles : Array SyntaxSortRoleDecl := #[]
   /-- Checked context-zone declarations. -/
@@ -1193,6 +1223,8 @@ structure CheckedSignature where
   lfSyntaxSorts : Array CheckedLFSyntaxSort := #[]
   /-- Checked syntax-sort-shaped abbreviations, expanded before model obligation generation. -/
   lfSyntaxAbbrevs : Array CheckedLFSyntaxAbbrev := #[]
+  /-- Checked judgment-shaped abbreviations, expanded before model obligation generation. -/
+  lfJudgmentAbbrevs : Array CheckedLFJudgmentAbbrev := #[]
   /-- Checked syntax-sort role metadata, with names scope-normalized. -/
   lfSyntaxSortRoles : Array SyntaxSortRoleDecl := #[]
   /-- Checked context-zone declarations. -/
@@ -1544,6 +1576,8 @@ inductive HLTheoryItem where
   | syntaxSort : SyntaxSortDecl → HLTheoryItem
   /-- Public syntax-sort-shaped abbreviation; expanded before model obligation generation. -/
   | syntaxAbbrev : SyntaxAbbrevDecl → HLTheoryItem
+  /-- Public judgment-shaped abbreviation; expanded before LF checking/model generation. -/
+  | judgmentAbbrev : JudgmentAbbrevDecl → HLTheoryItem
   /-- Non-semantic role metadata for a syntactic category. -/
   | syntaxSortRole : SyntaxSortRoleDecl → HLTheoryItem
   /-- Future multi-context-zone metadata. -/
@@ -1597,6 +1631,8 @@ structure HLSignature where
   syntaxSorts : Array SyntaxSortDecl := #[]
   /-- Public syntax-sort-shaped abbreviations expanded before checking/model generation. -/
   syntaxAbbrevs : Array SyntaxAbbrevDecl := #[]
+  /-- Public judgment-shaped abbreviations expanded before checking/model generation. -/
+  judgmentAbbrevs : Array JudgmentAbbrevDecl := #[]
   /-- Non-semantic role metadata for syntactic categories. -/
   syntaxSortRoles : Array SyntaxSortRoleDecl := #[]
   /-- User-declared context zones for future multi-zone judgments. -/
@@ -1722,6 +1758,9 @@ syntax (name := ttSyntaxSortTypedDocDeclStx)
 syntax (name := ttSyntaxAbbrevDeclStx) "syntax_abbrev" ident ttBinder* " := " ttExpr : ttDecl
 syntax (name := ttSyntaxAbbrevDocDeclStx)
   atomic(docComment "syntax_abbrev") ident ttBinder* " := " ttExpr : ttDecl
+syntax (name := ttJudgmentAbbrevDeclStx) "judgment_abbrev" ident ttBinder* " := " ttExpr : ttDecl
+syntax (name := ttJudgmentAbbrevDocDeclStx)
+  atomic(docComment "judgment_abbrev") ident ttBinder* " := " ttExpr : ttDecl
 syntax (name := ttSyntaxSortRoleDeclStx) "syntax_sort_role" ident " : " ident : ttDecl
 syntax (name := ttSyntaxSortRoleDocDeclStx)
   atomic(docComment "syntax_sort_role") ident " : " ident : ttDecl
@@ -2032,6 +2071,13 @@ meta def elabHLTheoryItem : TSyntax `ttDecl → CommandElabM HLTheoryItem
       let _ := doc.raw
       let bs ← bs.mapM elabHLBinding
       pure <| .syntaxAbbrev { name := n.getId, params := bs, value := (← elabObjExpr value) }
+  | `(ttDecl| judgment_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
+      let bs ← bs.mapM elabHLBinding
+      pure <| .judgmentAbbrev { name := n.getId, params := bs, value := (← elabObjExpr value) }
+  | `(ttDecl| $doc:docComment judgment_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
+      let _ := doc.raw
+      let bs ← bs.mapM elabHLBinding
+      pure <| .judgmentAbbrev { name := n.getId, params := bs, value := (← elabObjExpr value) }
   | `(ttDecl| syntax_sort_role $sortName:ident : $kind:ident) =>
       pure <| .syntaxSortRole { sortName := sortName.getId, kind := kind.getId }
   | `(ttDecl| $doc:docComment syntax_sort_role $sortName:ident : $kind:ident) =>
@@ -2300,6 +2346,7 @@ meta def elabHLTheoryItem : TSyntax `ttDecl → CommandElabM HLTheoryItem
 structure HLTheoryBlock where
   syntaxSorts : Array SyntaxSortDecl := #[]
   syntaxAbbrevs : Array SyntaxAbbrevDecl := #[]
+  judgmentAbbrevs : Array JudgmentAbbrevDecl := #[]
   syntaxSortRoles : Array SyntaxSortRoleDecl := #[]
   contextZones : Array ContextZoneDecl := #[]
   binderClasses : Array BinderClassDecl := #[]
@@ -2342,6 +2389,9 @@ meta def HLTheoryBlock.ofItems (items : Array HLTheoryItem) : HLTheoryBlock := I
     | .syntaxAbbrev d =>
         block := assignCurrentSection currentSection?
           { block with syntaxAbbrevs := block.syntaxAbbrevs.push d } d.name
+    | .judgmentAbbrev d =>
+        block := assignCurrentSection currentSection?
+          { block with judgmentAbbrevs := block.judgmentAbbrevs.push d } d.name
     | .syntaxSortRole d => block := { block with syntaxSortRoles := block.syntaxSortRoles.push d }
     | .contextZone d => block := { block with contextZones := block.contextZones.push d }
     | .binderClass d => block := { block with binderClasses := block.binderClasses.push d }
@@ -2417,6 +2467,15 @@ def summary (d : SyntaxAbbrevDecl) : MessageData :=
   m!"syntax_abbrev {d.name} {params} := {d.value}"
 
 end SyntaxAbbrevDecl
+
+namespace JudgmentAbbrevDecl
+
+/-- Render a judgment-shaped abbreviation. -/
+def summary (d : JudgmentAbbrevDecl) : MessageData :=
+  let params := String.intercalate " " (d.params.toList.map HLBinding.summary)
+  m!"judgment_abbrev {d.name} {params} := {d.value}"
+
+end JudgmentAbbrevDecl
 
 namespace SyntaxSortRoleDecl
 

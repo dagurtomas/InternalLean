@@ -188,6 +188,7 @@ def expandSurfaceFunctionsInSignature (sig : HLSignature) : CoreM HLSignature :=
 /-- Return whether a name is already used directly in a high-level signature. -/
 def HLSignature.containsName (sig : HLSignature) (n : Name) : Bool :=
   sig.syntaxSorts.any (fun d => d.name == n) || sig.syntaxAbbrevs.any (fun d => d.name == n) ||
+    sig.judgmentAbbrevs.any (fun d => d.name == n) ||
     sig.contextZones.any (fun d => d.name == n) || sig.binderClasses.any (fun d => d.name == n) ||
     sig.judgments.any (fun d => d.name == n) || sig.rules.any (fun d => d.name == n) ||
     sig.sideConditionSolvers.any (fun d => d.name == n) ||
@@ -207,6 +208,7 @@ partial def flattenSignature (sig : HLSignature) (seen : NameSet := {}) : CoreM 
   let mut syntaxSorts := #[]
   let mut syntaxAbbrevs := #[]
   let mut syntaxSortRoles := #[]
+  let mut judgmentAbbrevs := #[]
   let mut contextZones := #[]
   let mut binderClasses := #[]
   let mut judgments := #[]
@@ -236,6 +238,7 @@ partial def flattenSignature (sig : HLSignature) (seen : NameSet := {}) : CoreM 
     syntaxSorts := syntaxSorts ++ parentFlat.syntaxSorts
     syntaxAbbrevs := syntaxAbbrevs ++ parentFlat.syntaxAbbrevs
     syntaxSortRoles := syntaxSortRoles ++ parentFlat.syntaxSortRoles
+    judgmentAbbrevs := judgmentAbbrevs ++ parentFlat.judgmentAbbrevs
     contextZones := contextZones ++ parentFlat.contextZones
     binderClasses := binderClasses ++ parentFlat.binderClasses
     judgments := judgments ++ parentFlat.judgments
@@ -264,6 +267,7 @@ partial def flattenSignature (sig : HLSignature) (seen : NameSet := {}) : CoreM 
     levelParams := levelParams ++ sig.levelParams
     syntaxSorts := syntaxSorts ++ sig.syntaxSorts
     syntaxAbbrevs := syntaxAbbrevs ++ sig.syntaxAbbrevs
+    judgmentAbbrevs := judgmentAbbrevs ++ sig.judgmentAbbrevs
     syntaxSortRoles := syntaxSortRoles ++ sig.syntaxSortRoles
     contextZones := contextZones ++ sig.contextZones
     binderClasses := binderClasses ++ sig.binderClasses
@@ -304,6 +308,7 @@ def HLSignature.nameSet (sig : HLSignature) : NameSet := Id.run do
   let mut out : NameSet := {}
   for d in sig.syntaxSorts do out := out.insert d.name.eraseMacroScopes
   for d in sig.syntaxAbbrevs do out := out.insert d.name.eraseMacroScopes
+  for d in sig.judgmentAbbrevs do out := out.insert d.name.eraseMacroScopes
   for d in sig.contextZones do out := out.insert d.name.eraseMacroScopes
   for d in sig.binderClasses do out := out.insert d.name.eraseMacroScopes
   for d in sig.judgments do out := out.insert d.name.eraseMacroScopes
@@ -349,6 +354,7 @@ def checkNoDuplicateNamesInSignature (sig : HLSignature) : CoreM Unit := do
   for (kind, n) in
       (sig.syntaxSorts.map (fun d => ("syntax-sort", d.name)) ++
         sig.syntaxAbbrevs.map (fun d => ("syntax abbreviation", d.name)) ++
+        sig.judgmentAbbrevs.map (fun d => ("judgment abbreviation", d.name)) ++
         sig.contextZones.map (fun d => ("context-zone", d.name)) ++
         sig.binderClasses.map (fun d => ("binder class", d.name)) ++
         sig.judgments.map (fun d => ("judgment", d.name)) ++
@@ -453,6 +459,10 @@ def checkLFLocalBinderHygieneMetadata (sig : HLSignature) : CoreM Unit := do
     for b in a.params do
       checkNoLFLocalBinderShadowingInBinding sig "syntax_abbrev" a.name b
     checkNoLFLocalBinderShadowingInExpr sig "syntax_abbrev" a.name "value" a.value
+  for a in sig.judgmentAbbrevs do
+    for b in a.params do
+      checkNoLFLocalBinderShadowingInBinding sig "judgment_abbrev" a.name b
+    checkNoLFLocalBinderShadowingInExpr sig "judgment_abbrev" a.name "value" a.value
   for j in sig.judgments do
     for b in j.params do
       checkNoLFLocalBinderShadowingInBinding sig "judgment" j.name b
@@ -496,6 +506,10 @@ def checkLFUniverseLevelMetadata (sig : HLSignature) : CoreM Unit := do
     for b in a.params do
       checkDeclaredLevelParamsInLFBinding sig "syntax_abbrev" a.name b
     checkDeclaredLevelParamsInLFExpr sig "syntax_abbrev" a.name "value" a.value
+  for a in sig.judgmentAbbrevs do
+    for b in a.params do
+      checkDeclaredLevelParamsInLFBinding sig "judgment_abbrev" a.name b
+    checkDeclaredLevelParamsInLFExpr sig "judgment_abbrev" a.name "value" a.value
   for j in sig.judgments do
     for b in j.params do
       checkDeclaredLevelParamsInLFBinding sig "judgment" j.name b
@@ -588,6 +602,8 @@ def lfKnownGlobalNames (sig : HLSignature) : NameSet := Id.run do
   for s in sig.syntaxSorts do
     known := known.insert s.name.eraseMacroScopes
   for a in sig.syntaxAbbrevs do
+    known := known.insert a.name.eraseMacroScopes
+  for a in sig.judgmentAbbrevs do
     known := known.insert a.name.eraseMacroScopes
   for j in sig.judgments do
     known := known.insert j.name.eraseMacroScopes
@@ -1357,28 +1373,52 @@ def findSyntaxAbbrevDecl? (sig : HLSignature) (name : Name) : Option SyntaxAbbre
   let name := name.eraseMacroScopes
   sig.syntaxAbbrevs.find? (fun a => a.name.eraseMacroScopes == name)
 
-/-- Expand public syntax abbreviations in an LF expression.
+/-- Look up a declared judgment abbreviation by name. -/
+def findJudgmentAbbrevDecl? (sig : HLSignature) (name : Name) : Option JudgmentAbbrevDecl :=
+  let name := name.eraseMacroScopes
+  sig.judgmentAbbrevs.find? (fun a => a.name.eraseMacroScopes == name)
+
+/-- Lightweight common view of source-level LF abbreviations. -/
+structure LFAbbrevExpansionInfo where
+  kindLabel : String
+  params : Array HLBinding := #[]
+  value : ObjExpr
+
+/-- Look up any source-level LF abbreviation by name. -/
+def findLFAbbrevExpansion? (sig : HLSignature) (name : Name) : Option LFAbbrevExpansionInfo :=
+  match findSyntaxAbbrevDecl? sig name with
+  | some a => some { kindLabel := "syntax_abbrev", params := a.params, value := a.value }
+  | none =>
+      match findJudgmentAbbrevDecl? sig name with
+      | some a => some { kindLabel := "judgment_abbrev", params := a.params, value := a.value }
+      | none => none
+
+/-- Fuel bound for source-level LF abbreviation expansion. -/
+def lfAbbrevExpansionFuel (sig : HLSignature) : Nat :=
+  sig.syntaxAbbrevs.size + sig.judgmentAbbrevs.size + 1
+
+/-- Expand public syntax and judgment abbreviations in an LF expression.
 
 Expansion respects local binders and checks abbreviation arity. The fuel bound turns cycles
 such as `syntax_abbrev A := A` into an explicit diagnostic instead of nontermination. -/
 partial def expandSyntaxAbbrevsInExpr (sig : HLSignature) (ownerKind : String)
     (ownerName : Name) (where_ : String) (locals : NameSet)
     (fuel : Nat) (e : ObjExpr) : CoreM ObjExpr := do
-  if fuel == 0 then
-    throwError "cyclic or too-deep syntax_abbrev expansion in {where_} of {ownerKind} \
-      '{ownerName}' in type theory '{sig.name}'"
   match e with
   | .ident n =>
       let n := n.eraseMacroScopes
       if locals.contains n then
         pure (.ident n)
       else
-        match findSyntaxAbbrevDecl? sig n with
+        match findLFAbbrevExpansion? sig n with
         | none => pure (.ident n)
         | some a =>
+            if fuel == 0 then
+              throwError "cyclic or too-deep LF abbreviation expansion in {where_} of \
+                {ownerKind} '{ownerName}' in type theory '{sig.name}'"
             if a.params.size != 0 then
-              throwError "{ownerKind} '{ownerName}' uses syntax_abbrev '{n}' in {where_} with 0 \
-                argument(s), expected {a.params.size}"
+              throwError "{ownerKind} '{ownerName}' uses {a.kindLabel} '{n}' in {where_} with \
+                0 argument(s), expected {a.params.size}"
             expandSyntaxAbbrevsInExpr sig ownerKind ownerName where_ locals (fuel - 1) a.value
   | .sort => pure .sort
   | .univ u => pure (.univ u)
@@ -1392,10 +1432,13 @@ partial def expandSyntaxAbbrevsInExpr (sig : HLSignature) (ownerKind : String)
               args.mapM (expandSyntaxAbbrevsInExpr sig ownerKind ownerName where_ locals fuel)
             pure (mkObjApp (.ident headName) args)
           else
-            match findSyntaxAbbrevDecl? sig headName with
+            match findLFAbbrevExpansion? sig headName with
             | some a =>
+                if fuel == 0 then
+                  throwError "cyclic or too-deep LF abbreviation expansion in {where_} of \
+                    {ownerKind} '{ownerName}' in type theory '{sig.name}'"
                 if args.size != a.params.size then
-                  throwError "{ownerKind} '{ownerName}' uses syntax_abbrev '{headName}' in \
+                  throwError "{ownerKind} '{ownerName}' uses {a.kindLabel} '{headName}' in \
                     {where_} with {args.size} argument(s), expected {a.params.size}"
                 let mut subst : NameMap ObjExpr := {}
                 for _h : i in [:args.size] do
@@ -1451,23 +1494,30 @@ def expandSyntaxAbbrevsInBindings (sig : HLSignature) (ownerKind : String) (owne
   let mut locals : NameSet := {}
   for b in bs do
     let typeExpr ← expandSyntaxAbbrevsInExpr sig ownerKind ownerName
-      s!"parameter '{b.name.eraseMacroScopes}' type" locals (sig.syntaxAbbrevs.size + 1) b.typeExpr
+      s!"parameter '{b.name.eraseMacroScopes}' type" locals (lfAbbrevExpansionFuel sig) b.typeExpr
     let b := { b with name := b.name.eraseMacroScopes, typeExpr }
     out := out.push b
     locals := locals.insert b.name.eraseMacroScopes
   pure out
 
-/-- Expand syntax abbreviations throughout a high-level signature while keeping the abbreviation
-metadata for diagnostics/templates. -/
+/-- Expand syntax and judgment abbreviations throughout a high-level signature while keeping the
+abbreviation metadata for diagnostics/templates. -/
 def expandSyntaxAbbrevsInSignature (sig : HLSignature) : CoreM HLSignature := do
   let syntaxAbbrevs ← sig.syntaxAbbrevs.mapM fun a => do
     let params ← expandSyntaxAbbrevsInBindings sig "syntax_abbrev" a.name a.params
     let locals := params.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
     let value ←
-      expandSyntaxAbbrevsInExpr sig "syntax_abbrev" a.name "value" locals (sig.syntaxAbbrevs.size +
-        1) a.value
+      expandSyntaxAbbrevsInExpr sig "syntax_abbrev" a.name "value" locals
+        (lfAbbrevExpansionFuel sig) a.value
     pure { a with name := a.name.eraseMacroScopes, params, value }
-  let sigForRest := { sig with syntaxAbbrevs }
+  let judgmentAbbrevs ← sig.judgmentAbbrevs.mapM fun a => do
+    let params ← expandSyntaxAbbrevsInBindings sig "judgment_abbrev" a.name a.params
+    let locals := params.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
+    let value ←
+      expandSyntaxAbbrevsInExpr sig "judgment_abbrev" a.name "value" locals
+        (lfAbbrevExpansionFuel sig) a.value
+    pure { a with name := a.name.eraseMacroScopes, params, value }
+  let sigForRest := { sig with syntaxAbbrevs, judgmentAbbrevs }
   let syntaxSorts ← sigForRest.syntaxSorts.mapM fun s => do
     let params ← expandSyntaxAbbrevsInBindings sigForRest "syntax_sort" s.name s.params
     pure { s with name := s.name.eraseMacroScopes, params }
@@ -1479,7 +1529,7 @@ def expandSyntaxAbbrevsInSignature (sig : HLSignature) : CoreM HLSignature := do
     let locals := params.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
     let typeExpr? ←
       o.typeExpr?.mapM (expandSyntaxAbbrevsInExpr sigForRest "lf_opaque" o.name "result type"
-        locals (sigForRest.syntaxAbbrevs.size + 1))
+        locals (lfAbbrevExpansionFuel sigForRest))
     pure { o with name := o.name.eraseMacroScopes, params, typeExpr? }
   let rules ← sigForRest.rules.mapM fun r => do
     let params ← expandSyntaxAbbrevsInBindings sigForRest "rule" r.name r.params
@@ -1487,22 +1537,22 @@ def expandSyntaxAbbrevsInSignature (sig : HLSignature) : CoreM HLSignature := do
     let premises ← r.premises.mapM fun p => do
       let judgmentExpr ←
         expandSyntaxAbbrevsInExpr sigForRest "rule" r.name s!"premise '{p.name.eraseMacroScopes}'"
-          locals (sigForRest.syntaxAbbrevs.size + 1) p.judgmentExpr
+          locals (lfAbbrevExpansionFuel sigForRest) p.judgmentExpr
       pure { p with judgmentExpr }
     let sideConditions ← r.sideConditions.mapM fun sc => do
       let input ←
         expandSyntaxAbbrevsInExpr sigForRest "rule" r.name s!"side-condition \
-          '{sc.name.eraseMacroScopes}'" locals (sigForRest.syntaxAbbrevs.size + 1) sc.input
+          '{sc.name.eraseMacroScopes}'" locals (lfAbbrevExpansionFuel sigForRest) sc.input
       pure { sc with input }
     let paramEvidences ← r.paramEvidences.mapM fun ev => do
       let judgmentExpr ←
         expandSyntaxAbbrevsInExpr sigForRest "rule" r.name
-          s!"evidence '{ev.name.eraseMacroScopes}'" locals (sigForRest.syntaxAbbrevs.size + 1)
+          s!"evidence '{ev.name.eraseMacroScopes}'" locals (lfAbbrevExpansionFuel sigForRest)
           ev.judgmentExpr
       pure { ev with judgmentExpr }
     let conclusionExpr ←
       expandSyntaxAbbrevsInExpr sigForRest "rule" r.name "conclusion" locals
-        (sigForRest.syntaxAbbrevs.size + 1) r.conclusionExpr
+        (lfAbbrevExpansionFuel sigForRest) r.conclusionExpr
     pure {
       r with
       name := r.name.eraseMacroScopes
@@ -1514,24 +1564,25 @@ def expandSyntaxAbbrevsInSignature (sig : HLSignature) : CoreM HLSignature := do
     }
   let lfObjectDefs ← sigForRest.lfObjectDefs.mapM fun d => do
     let typeExpr ←
-      expandSyntaxAbbrevsInExpr sigForRest "lf_def" d.name "type" {} (sigForRest.syntaxAbbrevs.size
-        + 1) d.typeExpr
+      expandSyntaxAbbrevsInExpr sigForRest "lf_def" d.name "type" {}
+        (lfAbbrevExpansionFuel sigForRest) d.typeExpr
     let value ←
       expandSyntaxAbbrevsInExpr sigForRest "lf_def" d.name "value" {}
-        (sigForRest.syntaxAbbrevs.size + 1) d.value
+        (lfAbbrevExpansionFuel sigForRest) d.value
     pure { d with name := d.name.eraseMacroScopes, typeExpr, value }
   let lfJudgmentTheorems ← sigForRest.lfJudgmentTheorems.mapM fun t => do
     let binders ← expandSyntaxAbbrevsInBindings sigForRest "judgment_theorem" t.name t.binders
     let locals := binders.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
     let judgmentExpr ←
       expandSyntaxAbbrevsInExpr sigForRest "judgment_theorem" t.name "statement" locals
-        (sigForRest.syntaxAbbrevs.size + 1) t.judgmentExpr
+        (lfAbbrevExpansionFuel sigForRest) t.judgmentExpr
     let proof ←
       expandSyntaxAbbrevsInExpr sigForRest "judgment_theorem" t.name "proof" locals
-        (sigForRest.syntaxAbbrevs.size + 1) t.proof
+        (lfAbbrevExpansionFuel sigForRest) t.proof
     pure { t with name := t.name.eraseMacroScopes, binders, judgmentExpr, proof }
   pure { sigForRest with
     syntaxSorts := syntaxSorts
+    judgmentAbbrevs := judgmentAbbrevs
     judgments := judgments
     lfOpaqueConsts := lfOpaqueConsts
     modelSections := sigForRest.modelSections.map (fun s => { s with name :=
@@ -1862,6 +1913,9 @@ def findImplicitCallableInfo? (sig : HLSignature) (name : Name) : Option Implici
   for a in sig.syntaxAbbrevs do
     if a.name.eraseMacroScopes == name then
       out := some { params := a.params, result? := some a.value }
+  for a in sig.judgmentAbbrevs do
+    if a.name.eraseMacroScopes == name then
+      out := some { params := a.params, result? := some a.value }
   for j in sig.judgments do
     if j.name.eraseMacroScopes == name then
       out := some { params := j.params }
@@ -2165,6 +2219,15 @@ def elaborateImplicitAppsInSyntaxAbbrevDecl (sig : HLSignature) (d : SyntaxAbbre
     elaborateImplicitAppsInExpr sig knownTypes locals "syntax_abbrev" d.name "value" none d.value
   pure { d with params, value }
 
+/-- Elaborate implicit applications in a judgment abbreviation declaration. -/
+def elaborateImplicitAppsInJudgmentAbbrevDecl (sig : HLSignature) (d : JudgmentAbbrevDecl) :
+  CoreM JudgmentAbbrevDecl := do
+  let (params, knownTypes, locals) ←
+    elaborateImplicitAppsInBindings sig {} {} "judgment_abbrev" d.name d.params
+  let value ←
+    elaborateImplicitAppsInExpr sig knownTypes locals "judgment_abbrev" d.name "value" none d.value
+  pure { d with params, value }
+
 /-- Elaborate implicit applications in an LF judgment declaration. -/
 def elaborateImplicitAppsInJudgmentDecl (sig : HLSignature) (d : JudgmentDecl) :
   CoreM JudgmentDecl := do
@@ -2233,10 +2296,19 @@ def elaborateImplicitAppsInSignatureWithEnv (headSig sig : HLSignature) : CoreM 
   let sig0 := headSig
   let syntaxSorts ← sig.syntaxSorts.mapM (elaborateImplicitAppsInSyntaxSortDecl sig0)
   let syntaxAbbrevs ← sig.syntaxAbbrevs.mapM (elaborateImplicitAppsInSyntaxAbbrevDecl sig0)
+  let judgmentAbbrevs ←
+    sig.judgmentAbbrevs.mapM (elaborateImplicitAppsInJudgmentAbbrevDecl sig0)
   let judgments ← sig.judgments.mapM (elaborateImplicitAppsInJudgmentDecl sig0)
   let lfOpaqueConsts ← sig.lfOpaqueConsts.mapM (elaborateImplicitAppsInLFOpaqueConstDecl sig0)
   let rules ← sig.rules.mapM (elaborateImplicitAppsInRuleDecl sig0)
-  let sig1 := { sig with syntaxSorts, syntaxAbbrevs, judgments, lfOpaqueConsts, rules }
+  let sig1 := {
+    sig with
+    syntaxSorts := syntaxSorts
+    syntaxAbbrevs := syntaxAbbrevs
+    judgmentAbbrevs := judgmentAbbrevs
+    judgments := judgments
+    lfOpaqueConsts := lfOpaqueConsts
+    rules := rules }
   let mut knownTypes : LFLocalTypes := {}
   let mut lfObjectDefs := #[]
   for d in sig.lfObjectDefs do
@@ -2718,6 +2790,21 @@ def checkedLFSyntaxAbbrevDeclArtifact (sig : HLSignature)
     checkedValue := checkedValue
     head? := head? }
 
+/-- Build the checked artifact for one judgment-abbreviation declaration. -/
+def checkedLFJudgmentAbbrevDeclArtifact (sig : HLSignature)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (a : JudgmentAbbrevDecl) :
+    CoreM CheckedLFJudgmentAbbrev := do
+  let (params, locals) ← checkedLFBindings sig globalHeads "judgment_abbrev" a.name a.params
+  let checkedValue ← resolveLFExpr sig globalHeads locals "judgment_abbrev" a.name "value" a.value
+  let some head := checkedLFHead? globalHeads locals a.value
+    | throwError "internal error: checked judgment_abbrev '{a.name}' has no resolved head"
+  pure {
+    name := a.name.eraseMacroScopes
+    params := params
+    value := a.value
+    checkedValue := checkedValue
+    head := head }
+
 /-- Build the checked artifact for one context-zone declaration. -/
 def checkedLFContextZoneDeclArtifact (z : ContextZoneDecl) : CheckedLFContextZone :=
   { name := z.name.eraseMacroScopes
@@ -2769,23 +2856,26 @@ def checkedLFConversionPluginDeclArtifact (p : ConversionPluginDecl) : CheckedLF
     trust := p.trust
     supportedSteps := p.supportedSteps }
 
-/-- Build checked LF declaration artifacts for syntax sorts, context zones, binder classes,
-judgments, and opaque placeholders. -/
+/-- Build checked LF declaration artifacts for syntax sorts, abbreviations, context zones,
+binder classes, judgments, and opaque placeholders. -/
 def checkedLFDeclarations (sig : HLSignature) :
-    CoreM (Array CheckedLFSyntaxSort × Array CheckedLFSyntaxAbbrev × Array CheckedLFContextZone ×
-      Array CheckedLFBinderClass × Array CheckedLFJudgment × Array CheckedLFOpaqueConst ×
-      Array CheckedLFSideConditionSolver × Array CheckedLFConversionPlugin) := do
+    CoreM (Array CheckedLFSyntaxSort × Array CheckedLFSyntaxAbbrev ×
+      Array CheckedLFJudgmentAbbrev × Array CheckedLFContextZone × Array CheckedLFBinderClass ×
+      Array CheckedLFJudgment × Array CheckedLFOpaqueConst × Array CheckedLFSideConditionSolver ×
+      Array CheckedLFConversionPlugin) := do
   let globalHeads := lfGlobalHeadInfo sig
   let syntaxSorts ← sig.syntaxSorts.mapM (checkedLFSyntaxSortDeclArtifact sig globalHeads)
   let syntaxAbbrevs ← sig.syntaxAbbrevs.mapM (checkedLFSyntaxAbbrevDeclArtifact sig globalHeads)
+  let judgmentAbbrevs ←
+    sig.judgmentAbbrevs.mapM (checkedLFJudgmentAbbrevDeclArtifact sig globalHeads)
   let contextZones := sig.contextZones.map checkedLFContextZoneDeclArtifact
   let binderClasses := sig.binderClasses.map checkedLFBinderClassDeclArtifact
   let judgments ← sig.judgments.mapM (checkedLFJudgmentDeclArtifact sig globalHeads)
   let opaques ← sig.lfOpaqueConsts.mapM (checkedLFOpaqueConstDeclArtifact sig globalHeads)
   let solvers := sig.sideConditionSolvers.map checkedLFSideConditionSolverDeclArtifact
   let plugins := sig.conversionPlugins.map checkedLFConversionPluginDeclArtifact
-  pure (syntaxSorts, syntaxAbbrevs, contextZones, binderClasses, judgments, opaques, solvers,
-    plugins)
+  pure (syntaxSorts, syntaxAbbrevs, judgmentAbbrevs, contextZones, binderClasses, judgments,
+    opaques, solvers, plugins)
 
 /-- Check that identifiers in an LF metadata expression are known globals or local binders.
 
@@ -4418,6 +4508,39 @@ def checkOneSyntaxAbbrevMetadataInSignature (sig : HLSignature) (lfGlobals : Nam
   checkLFBinderType sig globalHeads "syntax_abbrev" abbr.name "value" abbrLocalTypes
     abbrLocals false abbr.value
 
+/-- Check one judgment-abbreviation declaration's metadata. -/
+def checkOneJudgmentAbbrevMetadataInSignature (sig : HLSignature) (lfGlobals : NameSet)
+    (opaqueArities : NameMap (Option Nat)) (syntaxSortArities : NameMap Nat)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (abbr : JudgmentAbbrevDecl) :
+    CoreM Unit := do
+  checkNoDuplicateMetadataBinders sig "judgment_abbrev" abbr.name abbr.params
+  let abbrLocals ←
+    checkKnownNamesInMetadataBindings sig lfGlobals opaqueArities "judgment_abbrev" abbr.name
+      abbr.params
+  checkSyntaxSortApplicationsInBindings sig syntaxSortArities "judgment_abbrev" abbr.name
+    abbr.params
+  checkLFSyntaxSortArgumentsInBindings sig "judgment_abbrev" abbr.name abbr.params
+  checkLFBinderTypesInBindings sig globalHeads "judgment_abbrev" abbr.name abbr.params
+  let abbrLocalTypes := lfLocalTypesOfBindings abbr.params
+  checkKnownNamesInLFExpr sig lfGlobals abbrLocals opaqueArities "judgment_abbrev" abbr.name
+    "value" abbr.value
+  checkSyntaxSortApplicationsInExpr sig syntaxSortArities "judgment_abbrev" abbr.name "value"
+    abbr.value
+  checkLFSyntaxSortArgumentsInExpr sig "judgment_abbrev" abbr.name "value" abbrLocalTypes
+    abbr.value
+  checkLFInferableApplicationArguments sig "judgment_abbrev" abbr.name "value" abbrLocalTypes
+    abbr.value
+  checkLFBinderType sig globalHeads "judgment_abbrev" abbr.name "value" abbrLocalTypes
+    abbrLocals true abbr.value
+  match checkedLFHead? globalHeads abbrLocals abbr.value with
+  | some head =>
+      unless head.kind == .judgment do
+        throwError "judgment_abbrev '{abbr.name}' in type theory '{sig.name}' has value headed \
+          by {head.kind.label} '{head.name}', expected a judgment-headed expression"
+  | none =>
+      throwError "judgment_abbrev '{abbr.name}' in type theory '{sig.name}' has value not headed \
+        by a known judgment: {diagnosticObjExprString abbr.value}"
+
 /-- Check one judgment declaration's metadata. -/
 def checkOneJudgmentMetadataInSignature (sig : HLSignature) (lfGlobals : NameSet)
     (opaqueArities : NameMap (Option Nat))
@@ -4619,6 +4742,9 @@ def checkRuleMetadataInSignature (sig : HLSignature) : CoreM (Array CheckedLFRul
       syntaxSortArities sort
   for abbr in sig.syntaxAbbrevs do
     checkOneSyntaxAbbrevMetadataInSignature sig lfGlobals opaqueArities syntaxSortArities
+      globalHeads abbr
+  for abbr in sig.judgmentAbbrevs do
+    checkOneJudgmentAbbrevMetadataInSignature sig lfGlobals opaqueArities syntaxSortArities
       globalHeads abbr
   let mut seenSortRoles : NameMap NameSet := {}
   for role in sig.syntaxSortRoles do
@@ -5393,6 +5519,10 @@ def checkedLFSyntaxSortToHLDecl (s : CheckedLFSyntaxSort) : SyntaxSortDecl :=
 def checkedLFSyntaxAbbrevToHLDecl (a : CheckedLFSyntaxAbbrev) : SyntaxAbbrevDecl :=
   { name := a.name, params := a.params.map checkedLFBindingToHLBinding, value := a.value }
 
+/-- Convert a checked judgment-abbreviation artifact to a high-level declaration. -/
+def checkedLFJudgmentAbbrevToHLDecl (a : CheckedLFJudgmentAbbrev) : JudgmentAbbrevDecl :=
+  { name := a.name, params := a.params.map checkedLFBindingToHLBinding, value := a.value }
+
 /-- Convert a checked context-zone artifact to a high-level declaration. -/
 def checkedLFContextZoneToHLDecl (z : CheckedLFContextZone) : ContextZoneDecl :=
   { name := z.name, sortName := z.sortName, dependsOn := z.dependsOn }
@@ -5458,6 +5588,7 @@ def checkedSignatureToHLSignature (sourceBase : HLSignature) (checked : CheckedS
     levelParams := checked.levelParams
     syntaxSorts := checked.lfSyntaxSorts.map checkedLFSyntaxSortToHLDecl
     syntaxAbbrevs := checked.lfSyntaxAbbrevs.map checkedLFSyntaxAbbrevToHLDecl
+    judgmentAbbrevs := checked.lfJudgmentAbbrevs.map checkedLFJudgmentAbbrevToHLDecl
     syntaxSortRoles := checked.lfSyntaxSortRoles
     contextZones := checked.lfContextZones.map checkedLFContextZoneToHLDecl
     binderClasses := checked.lfBinderClasses.map checkedLFBinderClassToHLDecl
@@ -5507,8 +5638,9 @@ def unsupportedIncrementalTheoryBlockReason? (block : HLTheoryBlock) : Option St
 
 /-- Count declarations/metadata entries handled by the incremental extension checker. -/
 def theoryBlockIncrementalDeclCount (block : HLTheoryBlock) : Nat :=
-  block.syntaxSorts.size + block.syntaxAbbrevs.size + block.syntaxSortRoles.size +
-    block.contextZones.size + block.binderClasses.size + block.judgments.size +
+  block.syntaxSorts.size + block.syntaxAbbrevs.size + block.judgmentAbbrevs.size +
+    block.syntaxSortRoles.size + block.contextZones.size + block.binderClasses.size +
+    block.judgments.size +
     block.judgmentRoles.size + block.rules.size + block.ruleRoles.size +
     block.sideConditionSolvers.size + block.conversionPlugins.size + block.lfOpaqueConsts.size +
     block.modelVisibilities.size + block.modelSections.size + block.lfObjectDefs.size +
@@ -5531,6 +5663,8 @@ def checkNoExtensionNameCollisions (flatBase : HLSignature) (block : HLTheoryBlo
     seen ← checkName seen "syntax-sort" d.name
   for d in block.syntaxAbbrevs do
     seen ← checkName seen "syntax abbreviation" d.name
+  for d in block.judgmentAbbrevs do
+    seen ← checkName seen "judgment abbreviation" d.name
   for d in block.contextZones do
     seen ← checkName seen "context zone" d.name
   for d in block.binderClasses do
@@ -5557,6 +5691,8 @@ def elaborateImplicitAppsInTheoryBlockExtension (flatBase : HLSignature)
   let syntaxSorts ← block.syntaxSorts.mapM (elaborateImplicitAppsInSyntaxSortDecl headSig)
   let syntaxAbbrevs ←
     block.syntaxAbbrevs.mapM (elaborateImplicitAppsInSyntaxAbbrevDecl headSig)
+  let judgmentAbbrevs ←
+    block.judgmentAbbrevs.mapM (elaborateImplicitAppsInJudgmentAbbrevDecl headSig)
   let judgments ← block.judgments.mapM (elaborateImplicitAppsInJudgmentDecl headSig)
   let lfOpaqueConsts ←
     block.lfOpaqueConsts.mapM (elaborateImplicitAppsInLFOpaqueConstDecl headSig)
@@ -5565,6 +5701,7 @@ def elaborateImplicitAppsInTheoryBlockExtension (flatBase : HLSignature)
     block with
     syntaxSorts := syntaxSorts
     syntaxAbbrevs := syntaxAbbrevs
+    judgmentAbbrevs := judgmentAbbrevs
     judgments := judgments
     lfOpaqueConsts := lfOpaqueConsts
     rules := rules }
@@ -5582,7 +5719,7 @@ def elaborateImplicitAppsInTheoryBlockExtension (flatBase : HLSignature)
       (elaborateImplicitAppsInLFJudgmentTheorem sigForTheorems knownTypes)
   pure { blockForTheorems with lfJudgmentTheorems := lfJudgmentTheorems }
 
-/-- Expand syntax abbreviations in just the new extension block. -/
+/-- Expand syntax and judgment abbreviations in just the new extension block. -/
 def expandSyntaxAbbrevsInTheoryBlockExtension (checkedBase : HLSignature)
     (block : HLTheoryBlock) : CoreM HLTheoryBlock := do
   let sigWithRawBlock := checkedBase.appendBlock block
@@ -5591,9 +5728,19 @@ def expandSyntaxAbbrevsInTheoryBlockExtension (checkedBase : HLSignature)
     let locals := params.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
     let value ←
       expandSyntaxAbbrevsInExpr sigWithRawBlock "syntax_abbrev" a.name "value" locals
-        (sigWithRawBlock.syntaxAbbrevs.size + 1) a.value
+        (lfAbbrevExpansionFuel sigWithRawBlock) a.value
     pure { a with name := a.name.eraseMacroScopes, params, value }
-  let blockWithAbbrevs := { block with syntaxAbbrevs := syntaxAbbrevs }
+  let judgmentAbbrevs ← block.judgmentAbbrevs.mapM fun a => do
+    let params ← expandSyntaxAbbrevsInBindings sigWithRawBlock "judgment_abbrev" a.name a.params
+    let locals := params.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
+    let value ←
+      expandSyntaxAbbrevsInExpr sigWithRawBlock "judgment_abbrev" a.name "value" locals
+        (lfAbbrevExpansionFuel sigWithRawBlock) a.value
+    pure { a with name := a.name.eraseMacroScopes, params, value }
+  let blockWithAbbrevs := {
+    block with
+    syntaxAbbrevs := syntaxAbbrevs
+    judgmentAbbrevs := judgmentAbbrevs }
   let sigForRest := checkedBase.appendBlock blockWithAbbrevs
   let syntaxSorts ← block.syntaxSorts.mapM fun s => do
     let params ← expandSyntaxAbbrevsInBindings sigForRest "syntax_sort" s.name s.params
@@ -5606,7 +5753,7 @@ def expandSyntaxAbbrevsInTheoryBlockExtension (checkedBase : HLSignature)
     let locals := params.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
     let typeExpr? ←
       o.typeExpr?.mapM (expandSyntaxAbbrevsInExpr sigForRest "lf_opaque" o.name
-        "result type" locals (sigForRest.syntaxAbbrevs.size + 1))
+        "result type" locals (lfAbbrevExpansionFuel sigForRest))
     pure { o with name := o.name.eraseMacroScopes, params, typeExpr? }
   let rules ← block.rules.mapM fun r => do
     let params ← expandSyntaxAbbrevsInBindings sigForRest "rule" r.name r.params
@@ -5615,23 +5762,23 @@ def expandSyntaxAbbrevsInTheoryBlockExtension (checkedBase : HLSignature)
       let judgmentExpr ←
         expandSyntaxAbbrevsInExpr sigForRest "rule" r.name
           s!"premise '{p.name.eraseMacroScopes}'" locals
-          (sigForRest.syntaxAbbrevs.size + 1) p.judgmentExpr
+          (lfAbbrevExpansionFuel sigForRest) p.judgmentExpr
       pure { p with judgmentExpr }
     let sideConditions ← r.sideConditions.mapM fun sc => do
       let input ←
         expandSyntaxAbbrevsInExpr sigForRest "rule" r.name
           s!"side-condition '{sc.name.eraseMacroScopes}'" locals
-          (sigForRest.syntaxAbbrevs.size + 1) sc.input
+          (lfAbbrevExpansionFuel sigForRest) sc.input
       pure { sc with input }
     let paramEvidences ← r.paramEvidences.mapM fun ev => do
       let judgmentExpr ←
         expandSyntaxAbbrevsInExpr sigForRest "rule" r.name
           s!"evidence '{ev.name.eraseMacroScopes}'" locals
-          (sigForRest.syntaxAbbrevs.size + 1) ev.judgmentExpr
+          (lfAbbrevExpansionFuel sigForRest) ev.judgmentExpr
       pure { ev with judgmentExpr }
     let conclusionExpr ←
       expandSyntaxAbbrevsInExpr sigForRest "rule" r.name "conclusion" locals
-        (sigForRest.syntaxAbbrevs.size + 1) r.conclusionExpr
+        (lfAbbrevExpansionFuel sigForRest) r.conclusionExpr
     pure {
       r with
       name := r.name.eraseMacroScopes
@@ -5643,24 +5790,25 @@ def expandSyntaxAbbrevsInTheoryBlockExtension (checkedBase : HLSignature)
   let lfObjectDefs ← block.lfObjectDefs.mapM fun d => do
     let typeExpr ←
       expandSyntaxAbbrevsInExpr sigForRest "lf_def" d.name "type" {}
-        (sigForRest.syntaxAbbrevs.size + 1) d.typeExpr
+        (lfAbbrevExpansionFuel sigForRest) d.typeExpr
     let value ←
       expandSyntaxAbbrevsInExpr sigForRest "lf_def" d.name "value" {}
-        (sigForRest.syntaxAbbrevs.size + 1) d.value
+        (lfAbbrevExpansionFuel sigForRest) d.value
     pure { d with name := d.name.eraseMacroScopes, typeExpr, value }
   let lfJudgmentTheorems ← block.lfJudgmentTheorems.mapM fun t => do
     let binders ← expandSyntaxAbbrevsInBindings sigForRest "judgment_theorem" t.name t.binders
     let locals := binders.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
     let judgmentExpr ←
       expandSyntaxAbbrevsInExpr sigForRest "judgment_theorem" t.name "statement" locals
-        (sigForRest.syntaxAbbrevs.size + 1) t.judgmentExpr
+        (lfAbbrevExpansionFuel sigForRest) t.judgmentExpr
     let proof ←
       expandSyntaxAbbrevsInExpr sigForRest "judgment_theorem" t.name "proof" locals
-        (sigForRest.syntaxAbbrevs.size + 1) t.proof
+        (lfAbbrevExpansionFuel sigForRest) t.proof
     pure { t with name := t.name.eraseMacroScopes, binders, judgmentExpr, proof }
   pure {
     blockWithAbbrevs with
     syntaxSorts := syntaxSorts
+    judgmentAbbrevs := judgmentAbbrevs
     judgments := judgments
     lfOpaqueConsts := lfOpaqueConsts
     modelVisibilities := block.modelVisibilities.map fun v =>
@@ -5721,6 +5869,13 @@ def checkLFLocalBinderHygieneInSyntaxAbbrevDecl (sig : HLSignature) (a : SyntaxA
     checkNoLFLocalBinderShadowingInBinding sig "syntax_abbrev" a.name b
   checkNoLFLocalBinderShadowingInExpr sig "syntax_abbrev" a.name "value" a.value
 
+/-- Check binder hygiene for one judgment-abbreviation declaration. -/
+def checkLFLocalBinderHygieneInJudgmentAbbrevDecl (sig : HLSignature)
+    (a : JudgmentAbbrevDecl) : CoreM Unit := do
+  for b in a.params do
+    checkNoLFLocalBinderShadowingInBinding sig "judgment_abbrev" a.name b
+  checkNoLFLocalBinderShadowingInExpr sig "judgment_abbrev" a.name "value" a.value
+
 /-- Check binder hygiene for one judgment declaration. -/
 def checkLFLocalBinderHygieneInJudgmentDecl (sig : HLSignature) (j : JudgmentDecl) :
     CoreM Unit := do
@@ -5779,6 +5934,13 @@ def checkLFUniverseLevelInSyntaxAbbrevDecl (sig : HLSignature) (a : SyntaxAbbrev
     checkDeclaredLevelParamsInLFBinding sig "syntax_abbrev" a.name b
   checkDeclaredLevelParamsInLFExpr sig "syntax_abbrev" a.name "value" a.value
 
+/-- Check universe parameters for one judgment-abbreviation declaration. -/
+def checkLFUniverseLevelInJudgmentAbbrevDecl (sig : HLSignature) (a : JudgmentAbbrevDecl) :
+    CoreM Unit := do
+  for b in a.params do
+    checkDeclaredLevelParamsInLFBinding sig "judgment_abbrev" a.name b
+  checkDeclaredLevelParamsInLFExpr sig "judgment_abbrev" a.name "value" a.value
+
 /-- Check universe parameters for one judgment declaration. -/
 def checkLFUniverseLevelInJudgmentDecl (sig : HLSignature) (j : JudgmentDecl) : CoreM Unit := do
   for b in j.params do
@@ -5825,6 +5987,7 @@ def checkLFUniverseLevelInLFJudgmentTheoremDecl (sig : HLSignature)
 structure CheckedTheoryDelta where
   syntaxSorts : Array CheckedLFSyntaxSort := #[]
   syntaxAbbrevs : Array CheckedLFSyntaxAbbrev := #[]
+  judgmentAbbrevs : Array CheckedLFJudgmentAbbrev := #[]
   syntaxSortRoles : Array SyntaxSortRoleDecl := #[]
   contextZones : Array CheckedLFContextZone := #[]
   binderClasses : Array CheckedLFBinderClass := #[]
@@ -5854,6 +6017,7 @@ def appendCheckedTheoryDelta (checked : CheckedSignature) (delta : CheckedTheory
     CheckedSignature :=
   let lfSyntaxSorts := checked.lfSyntaxSorts ++ delta.syntaxSorts
   let lfSyntaxAbbrevs := checked.lfSyntaxAbbrevs ++ delta.syntaxAbbrevs
+  let lfJudgmentAbbrevs := checked.lfJudgmentAbbrevs ++ delta.judgmentAbbrevs
   let lfSyntaxSortRoles := checked.lfSyntaxSortRoles ++ delta.syntaxSortRoles
   let lfContextZones := checked.lfContextZones ++ delta.contextZones
   let lfBinderClasses := checked.lfBinderClasses ++ delta.binderClasses
@@ -5888,6 +6052,7 @@ def appendCheckedTheoryDelta (checked : CheckedSignature) (delta : CheckedTheory
     checked.lfEnvironment with
     syntaxSorts := lfSyntaxSorts
     syntaxAbbrevs := lfSyntaxAbbrevs
+    judgmentAbbrevs := lfJudgmentAbbrevs
     syntaxSortRoles := lfSyntaxSortRoles
     contextZones := lfContextZones
     binderClasses := lfBinderClasses
@@ -5910,6 +6075,7 @@ def appendCheckedTheoryDelta (checked : CheckedSignature) (delta : CheckedTheory
   { checked with
     lfSyntaxSorts := lfSyntaxSorts
     lfSyntaxAbbrevs := lfSyntaxAbbrevs
+    lfJudgmentAbbrevs := lfJudgmentAbbrevs
     lfSyntaxSortRoles := lfSyntaxSortRoles
     lfContextZones := lfContextZones
     lfBinderClasses := lfBinderClasses
@@ -6171,6 +6337,14 @@ def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : Ch
       syntaxSortArities globalHeads a
     checkedSyntaxAbbrevs :=
       checkedSyntaxAbbrevs.push (← checkedLFSyntaxAbbrevDeclArtifact flatForCheck globalHeads a)
+  let mut checkedJudgmentAbbrevs : Array CheckedLFJudgmentAbbrev := #[]
+  for a in block.judgmentAbbrevs do
+    checkLFLocalBinderHygieneInJudgmentAbbrevDecl flatForCheck a
+    checkLFUniverseLevelInJudgmentAbbrevDecl flatForCheck a
+    checkOneJudgmentAbbrevMetadataInSignature flatForCheck lfGlobals opaqueArities
+      syntaxSortArities globalHeads a
+    checkedJudgmentAbbrevs := checkedJudgmentAbbrevs.push
+      (← checkedLFJudgmentAbbrevDeclArtifact flatForCheck globalHeads a)
   let (checkedSyntaxSortRoles, checkedJudgmentRoles, checkedRuleRoles) ←
     checkIncrementalRoleMetadataDelta flatForCheck checkedBase block
   let (checkedContextZones, checkedBinderClasses) ←
@@ -6214,6 +6388,7 @@ def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : Ch
   pure {
     syntaxSorts := checkedSyntaxSorts
     syntaxAbbrevs := checkedSyntaxAbbrevs
+    judgmentAbbrevs := checkedJudgmentAbbrevs
     syntaxSortRoles := checkedSyntaxSortRoles
     contextZones := checkedContextZones
     binderClasses := checkedBinderClasses
@@ -6313,8 +6488,9 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
     checkLFObjectArtifactsInSignatureStreaming flat lfRules
   let lfObjectDefs := lfObjectDefsFromDecls
   let lfJudgmentTheoremsRaw := lfJudgmentTheoremsFromDecls
-  let (lfSyntaxSorts, lfSyntaxAbbrevs, lfContextZones, lfBinderClasses, lfJudgments, lfOpaqueConsts,
-    lfSideConditionSolvers, lfConversionPlugins) ← checkedLFDeclarations flat
+  let (lfSyntaxSorts, lfSyntaxAbbrevs, lfJudgmentAbbrevs, lfContextZones, lfBinderClasses,
+    lfJudgments, lfOpaqueConsts, lfSideConditionSolvers, lfConversionPlugins) ←
+      checkedLFDeclarations flat
   let lfSyntaxSortRoles := flat.syntaxSortRoles.map fun r =>
     { sortName := r.sortName.eraseMacroScopes, kind := r.kind.eraseMacroScopes }
   let lfJudgmentRoles := flat.judgmentRoles.map fun r =>
@@ -6351,6 +6527,7 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
   let replayDelta : CheckedTheoryDelta := {
     syntaxSorts := lfSyntaxSorts
     syntaxAbbrevs := lfSyntaxAbbrevs
+    judgmentAbbrevs := lfJudgmentAbbrevs
     syntaxSortRoles := lfSyntaxSortRoles
     contextZones := lfContextZones
     binderClasses := lfBinderClasses
@@ -6381,6 +6558,7 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
       levelParams := flat.levelParams.map Name.eraseMacroScopes
       syntaxSorts := lfSyntaxSorts
       syntaxAbbrevs := lfSyntaxAbbrevs
+      judgmentAbbrevs := lfJudgmentAbbrevs
       syntaxSortRoles := lfSyntaxSortRoles
       contextZones := lfContextZones
       binderClasses := lfBinderClasses
@@ -6405,6 +6583,7 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
     levelParams := flat.levelParams.map Name.eraseMacroScopes
     lfSyntaxSorts := lfSyntaxSorts
     lfSyntaxAbbrevs := lfSyntaxAbbrevs
+    lfJudgmentAbbrevs := lfJudgmentAbbrevs
     lfSyntaxSortRoles := lfSyntaxSortRoles
     lfContextZones := lfContextZones
     lfBinderClasses := lfBinderClasses
