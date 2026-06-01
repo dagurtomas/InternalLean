@@ -6389,6 +6389,170 @@ def appendCheckedTheoryDelta (checked : CheckedSignature) (delta : CheckedTheory
     lfObjectDefs := lfObjectDefs
     lfJudgmentTheorems := lfJudgmentTheorems }
 
+namespace CompiledLFCheckCache
+
+/-- Extend cached LF global names with all globally visible names from one checked delta. -/
+def appendDeltaGlobals (globals : NameSet) (delta : CheckedTheoryDelta) : NameSet := Id.run do
+  let mut globals := globals
+  for s in delta.syntaxSorts do globals := globals.insert s.name.eraseMacroScopes
+  for a in delta.syntaxAbbrevs do globals := globals.insert a.name.eraseMacroScopes
+  for a in delta.judgmentAbbrevs do globals := globals.insert a.name.eraseMacroScopes
+  for j in delta.judgments do globals := globals.insert j.name.eraseMacroScopes
+  for o in delta.opaqueConsts do globals := globals.insert o.name.eraseMacroScopes
+  for r in delta.rules do globals := globals.insert r.name.eraseMacroScopes
+  for d in delta.objectDefs do globals := globals.insert d.name.eraseMacroScopes
+  for t in delta.judgmentTheorems do globals := globals.insert t.name.eraseMacroScopes
+  return globals
+
+/-- Extend cached opaque arities with typed/untyped opaque constants from one checked delta. -/
+def appendDeltaOpaqueArities (arities : NameMap (Option Nat))
+    (delta : CheckedTheoryDelta) : NameMap (Option Nat) := Id.run do
+  let mut arities := arities
+  for o in delta.opaqueConsts do
+    let arity? := match o.typeExpr? with
+      | some _ => some o.params.size
+      | none => o.arity?
+    arities := arities.insert o.name.eraseMacroScopes arity?
+  return arities
+
+/-- Extend cached global-head metadata with heads from one checked delta. -/
+def appendDeltaGlobalHeads (heads : NameMap (CheckedLFHeadKind × Option Nat))
+    (delta : CheckedTheoryDelta) : NameMap (CheckedLFHeadKind × Option Nat) := Id.run do
+  let mut heads := heads
+  for s in delta.syntaxSorts do
+    heads := heads.insert s.name.eraseMacroScopes (.syntaxSort, some s.arity)
+  for j in delta.judgments do
+    heads := heads.insert j.name.eraseMacroScopes (.judgment, some j.arity)
+  for o in delta.opaqueConsts do
+    let arity? := match o.typeExpr? with
+      | some _ => some o.params.size
+      | none => o.arity?
+    heads := heads.insert o.name.eraseMacroScopes (.opaque, arity?)
+  for r in delta.rules do
+    heads := heads.insert r.name.eraseMacroScopes (.lfRule, none)
+  for d in delta.objectDefs do
+    heads := heads.insert d.name.eraseMacroScopes (.lfDefinition,
+      some (lfFunctionTypeArity d.typeExpr))
+  for t in delta.judgmentTheorems do
+    heads := heads.insert t.name.eraseMacroScopes (.lfTheorem, some t.binders.size)
+  return heads
+
+/-- Extend cached syntax-sort arities with checked syntax sorts from one delta. -/
+def appendDeltaSyntaxSortArities (arities : NameMap Nat)
+    (delta : CheckedTheoryDelta) : NameMap Nat :=
+  delta.syntaxSorts.foldl (init := arities) fun arities s =>
+    arities.insert s.name.eraseMacroScopes s.arity
+
+/-- Extend cached judgment arities with checked judgments from one delta. -/
+def appendDeltaJudgmentArities (arities : NameMap Nat)
+    (delta : CheckedTheoryDelta) : NameMap Nat :=
+  delta.judgments.foldl (init := arities) fun arities j =>
+    arities.insert j.name.eraseMacroScopes j.arity
+
+/-- Extend cached side-condition solver names with checked solvers from one delta. -/
+def appendDeltaSolvers (solvers : NameSet) (delta : CheckedTheoryDelta) : NameSet :=
+  delta.sideConditionSolvers.foldl (init := solvers) fun solvers s =>
+    solvers.insert s.name.eraseMacroScopes
+
+/-- Extend cached LF definition type/value maps with checked object definitions from one delta. -/
+def appendDeltaLFDefMaps (typeMap : LFLocalTypes) (valueMap : LFDefinitionValueMap)
+    (checkedValueMap : CheckedLFDefinitionValueMap) (delta : CheckedTheoryDelta) :
+    LFLocalTypes × LFDefinitionValueMap × CheckedLFDefinitionValueMap := Id.run do
+  let mut typeMap := typeMap
+  let mut valueMap := valueMap
+  let mut checkedValueMap := checkedValueMap
+  for d in delta.objectDefs do
+    let defName := d.name.eraseMacroScopes
+    typeMap := typeMap.insert defName (eraseObjExprScopes d.typeExpr)
+    valueMap := valueMap.insert defName (eraseObjExprScopes d.value)
+    checkedValueMap := checkedValueMap.insert defName d.checkedValue
+  return (typeMap, valueMap, checkedValueMap)
+
+/-- Extend cached theorem availability maps with checked judgment theorems from one delta. -/
+def appendDeltaTheoremAvailability (statementMap : NameMap ObjExpr) (nameSet : NameSet)
+    (delta : CheckedTheoryDelta) : NameMap ObjExpr × NameSet := Id.run do
+  let mut statementMap := statementMap
+  let mut nameSet := nameSet
+  for t in delta.judgmentTheorems do
+    let theoremName := t.name.eraseMacroScopes
+    if t.binders.isEmpty then
+      let stmt := match t.derivation? with
+        | some derivation => checkedLFDerivationStatement derivation
+        | none => t.judgmentExpr
+      statementMap := statementMap.insert theoremName (eraseObjExprScopes stmt)
+    nameSet := nameSet.insert theoremName
+  return (statementMap, nameSet)
+
+/-- Extend cached replay context with certificates and binder-free theorem entries from one
+checked delta. -/
+def appendDeltaKernelReplayBase (replayCtx : KernelLFCheckContext)
+    (delta : CheckedTheoryDelta) : KernelLFCheckContext := Id.run do
+  let certificateEntries := kernelLFCertificateEntriesOfTheorems delta.judgmentTheorems
+  let mut replayCtx := { replayCtx with
+    certificates := replayCtx.certificates ++ certificateEntries }
+  for t in delta.judgmentTheorems do
+    if t.binders.isEmpty then
+      if let some kernelDeriv := t.kernelDerivation? then
+        replayCtx := replayCtx.addTheorem t.name (KernelLFDerivation.statement kernelDeriv)
+  return replayCtx
+
+/-- Append one checked extension delta to a compiled LF checking cache without rebuilding old
+kernel constants, rule schemas, or replay entries. -/
+def appendDelta (cache : CompiledLFCheckCache) (checkedHLAfter : HLSignature)
+    (checkedAfter : CheckedSignature) (delta : CheckedTheoryDelta) : CompiledLFCheckCache :=
+  let (knownLFDefTypes, knownLFDefValues, checkedLFDefValues) :=
+    appendDeltaLFDefMaps cache.knownLFDefTypes cache.knownLFDefValues cache.checkedLFDefValues
+      delta
+  let newOpaqueConstants :=
+    delta.opaqueConsts.filterMap (checkedLFOpaqueConstToKernelConstant? checkedLFDefValues)
+  let newObjectConstants :=
+    delta.objectDefs.map (checkedLFObjectDefToKernelConstant checkedLFDefValues)
+  let newRuleSchemas := checkedLFRuleSchemasToKernel checkedLFDefValues delta.ruleSchemas
+  let newTheoremSchemas := kernelLFRuleSchemasOfTheorems checkedLFDefValues
+    delta.judgmentTheorems
+  let oldObjectDefCount := cache.stamp.objectDefCount
+  let oldTypedOpaqueCount := cache.kernelSig.constants.length - oldObjectDefCount
+  let oldOpaqueConstants := cache.kernelSig.constants.take oldTypedOpaqueCount
+  let oldObjectConstants := cache.kernelSig.constants.drop oldTypedOpaqueCount
+  let oldPrimitiveRuleCount := cache.checkedRuleSchemas.size
+  let oldPrimitiveRules := cache.kernelSig.rules.take oldPrimitiveRuleCount
+  let oldTheoremRules := cache.kernelSig.rules.drop oldPrimitiveRuleCount
+  let (availableStatements, availableNames) :=
+    appendDeltaTheoremAvailability cache.availableLFTheoremStatements
+      cache.availableLFTheoremNames delta
+  { cache with
+    stamp := CompiledLFCheckCacheStamp.ofCheckedSignature checkedAfter
+    checkedHL := checkedHLAfter
+    lfGlobals := appendDeltaGlobals cache.lfGlobals delta
+    opaqueArities := appendDeltaOpaqueArities cache.opaqueArities delta
+    globalHeads := appendDeltaGlobalHeads cache.globalHeads delta
+    syntaxSortArities := appendDeltaSyntaxSortArities cache.syntaxSortArities delta
+    judgmentArities := appendDeltaJudgmentArities cache.judgmentArities delta
+    solvers := appendDeltaSolvers cache.solvers delta
+    checkedRules := cache.checkedRules ++ delta.rules
+    checkedRuleSchemas := cache.checkedRuleSchemas ++ delta.ruleSchemas
+    checkedSideConditionCertificates :=
+      cache.checkedSideConditionCertificates ++ delta.sideConditionCertificates
+    knownLFDefTypes := knownLFDefTypes
+    knownLFDefValues := knownLFDefValues
+    checkedLFDefValues := checkedLFDefValues
+    availableLFTheoremStatements := availableStatements
+    availableLFTheoremNames := availableNames
+    kernelSig := { cache.kernelSig with
+      constants := oldOpaqueConstants ++ newOpaqueConstants.toList ++ oldObjectConstants ++
+        newObjectConstants.toList
+      contextZones := cache.kernelSig.contextZones ++
+        delta.contextZones.toList.map checkedLFContextZoneToKernel
+      binderClasses := cache.kernelSig.binderClasses ++
+        delta.binderClasses.toList.map checkedLFBinderClassToKernel
+      conversionPlugins := cache.kernelSig.conversionPlugins ++
+        delta.conversionPlugins.toList.map checkedLFConversionPluginToKernel
+      rules := oldPrimitiveRules ++ newRuleSchemas.toList ++ oldTheoremRules ++
+        newTheoremSchemas.toList }
+    kernelReplayBase := appendDeltaKernelReplayBase cache.kernelReplayBase delta }
+
+end CompiledLFCheckCache
+
 /-- Cached kernel-facing replay state shared by all theorem checks in one block. -/
 structure IntraBlockKernelReplayContext where
   /-- Low-level kernel signature built once for the candidate block. -/
@@ -6730,10 +6894,22 @@ def checkTheoryBlockDeltaStreaming (flatForCheck : HLSignature) (checkedBase : C
     objectDefs := ctx.newObjectDefs
     judgmentTheorems := checkedTheorems }
 
+/-- Result of incrementally checking a supported `extend_type_theory` block. -/
+structure CheckedTheoryBlockExtensionResult where
+  /-- Block shape to store in the source theory registry. -/
+  blockForRegistry : HLTheoryBlock
+  /-- Final checked signature after appending the delta. -/
+  checked : CheckedSignature
+  /-- Final checked high-level signature used by later incremental checks. -/
+  checkedHL : HLSignature
+  /-- Checked delta produced from the extension block. -/
+  delta : CheckedTheoryDelta
+  deriving Inhabited
+
 /-- Incrementally check a supported `extend_type_theory` block against a checked baseline. -/
 def checkTheoryBlockExtensionIncremental (theoryName : Name) (sig : HLSignature)
     (checked : CheckedSignature) (block : HLTheoryBlock) (checkBase? : Option HLSignature := none) :
-    CoreM (HLTheoryBlock × CheckedSignature × HLSignature) := do
+    CoreM CheckedTheoryBlockExtensionResult := do
   if let some reason := unsupportedIncrementalTheoryBlockReason? block then
     throwError "cannot incrementally register extension for type theory '{theoryName}': {reason}"
   let flatSourceBase ← profileLFCheckPhase m!"{theoryName}: flatten source base" do
@@ -6759,7 +6935,11 @@ def checkTheoryBlockExtensionIncremental (theoryName : Name) (sig : HLSignature)
     checkTheoryBlockDeltaStreaming flatForCheck checked blockForCheck
   let checked ← profileLFCheckPhase m!"{theoryName}: append checked delta" do
     pure (appendCheckedTheoryDelta checked delta)
-  pure (blockForRegistry, checked, flatForCheck)
+  pure {
+    blockForRegistry := blockForRegistry
+    checked := checked
+    checkedHL := flatForCheck
+    delta := delta }
 
 /-- Check a candidate signature with the direct-LF checker and report command errors. -/
 def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature := do

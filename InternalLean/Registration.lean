@@ -275,11 +275,13 @@ def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : C
     | throwError "no checked artifact stored for type theory '{theoryName}'"
   match unsupportedIncrementalTheoryBlockReason? block with
   | none =>
-      let checkedBase? ← getCheckedHLSignature? theoryName
-      let (blockForRegistry, checked, checkedHL) ←
-        checkTheoryBlockExtensionIncremental theoryName sig priorChecked block checkedBase?
-      let candidate := sig.appendBlock blockForRegistry
-      let compiledCache ← mkCompiledLFCheckCacheFromHL checkedHL checked
+      let cacheLookup ← getOrBuildCompiledLFCheckCache theoryName priorChecked
+      let result ←
+        checkTheoryBlockExtensionIncremental theoryName sig priorChecked block
+          (some cacheLookup.cache.checkedHL)
+      let candidate := sig.appendBlock result.blockForRegistry
+      let compiledCache :=
+        cacheLookup.cache.appendDelta result.checkedHL result.checked result.delta
       recordInternalRegistrationProfile {
         theoryName := theoryName.eraseMacroScopes
         declName := `extend_type_theory
@@ -288,11 +290,11 @@ def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : C
         priorJudgmentTheorems := priorChecked.lfJudgmentTheorems.size
         recheckedObjectDefs := 0
         recheckedJudgmentTheorems := 0
-        incrementallyChecked := theoryBlockIncrementalDeclCount blockForRegistry }
+        incrementallyChecked := theoryBlockIncrementalDeclCount result.blockForRegistry }
       modifyEnv fun env =>
         let env := theoryExt.addEntry env (.sig candidate)
-        let env := checkedTheoryExt.addEntry env (.sig checked)
-        let env := checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
+        let env := checkedTheoryExt.addEntry env (.sig result.checked)
+        let env := checkedHLSignatureExt.addEntry env (.sig theoryName result.checkedHL)
         setCompiledLFCheckCacheInEnv env theoryName compiledCache
   | some reason =>
       let candidate := sig.appendBlock block

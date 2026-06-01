@@ -65,6 +65,30 @@ elab "#guard_compiled_cache_mismatch_rebuild " theory:ident : command => do
   unless rebuilt.cache.stamp == expected do
     throwError "rebuilt compiled cache for '{theory.getId}' has an unexpected stamp"
 
+/-- Assert that an append-updated compiled cache has the same shape as a full rebuild. -/
+elab "#guard_compiled_cache_matches_rebuild " theory:ident : command => do
+  let some checked ← liftCoreM <| getCheckedTheory? theory.getId
+    | throwError "no checked artifact stored for type theory '{theory.getId}'"
+  let some cache ← liftCoreM <| getCompiledLFCheckCache? theory.getId
+    | throwError "no compiled cache stored for type theory '{theory.getId}'"
+  let rebuilt ← liftCoreM <| mkCompiledLFCheckCache theory.getId checked
+  unless cache.stamp == rebuilt.stamp do
+    throwError "compiled cache stamp for '{theory.getId}' differs from a full rebuild"
+  unless checkedHLSignatureMatchesChecked cache.checkedHL checked do
+    throwError "compiled cache checked-HL signature for '{theory.getId}' does not match"
+  unless cache.kernelSig.constants.length == rebuilt.kernelSig.constants.length do
+    throwError "compiled cache constants for '{theory.getId}' differ from a full rebuild"
+  unless cache.kernelSig.rules.length == rebuilt.kernelSig.rules.length do
+    throwError "compiled cache rules for '{theory.getId}' differ from a full rebuild"
+  unless cache.kernelSig.contextZones.length == rebuilt.kernelSig.contextZones.length do
+    throwError "compiled cache context zones for '{theory.getId}' differ from a full rebuild"
+  unless cache.kernelSig.binderClasses.length == rebuilt.kernelSig.binderClasses.length do
+    throwError "compiled cache binder classes for '{theory.getId}' differ from a full rebuild"
+  unless cache.kernelSig.conversionPlugins.length == rebuilt.kernelSig.conversionPlugins.length do
+    throwError "compiled cache conversion plugins for '{theory.getId}' differ from a full rebuild"
+  unless cache.kernelSig == rebuilt.kernelSig do
+    throwError "compiled cache kernel signature for '{theory.getId}' differs from a full rebuild"
+
 declare_type_theory IncrementalCacheSmoke where
   syntax_sort Obj
   judgment J (x : Obj)
@@ -96,6 +120,56 @@ internal theorem imported_again : J base := imported
 end ImportedCacheBase
 
 #guard_internal_profile_cache ImportedCacheBase imported_again "hit" true
+
+declare_type_theory IncrementalCacheExtensionDelta where
+  syntax_sort Obj
+  judgment J (x : Obj)
+  lf_opaque base : Obj
+
+extend_type_theory IncrementalCacheExtensionDelta where
+  lf_opaque extra : Obj
+  lf_def alias : Obj := extra
+  rule introExtra : J extra
+  rule introAlias : J alias
+  judgment_theorem ext_id (x : Obj) (h : J x) : J x := h
+  judgment_theorem ext_alias : J alias := introAlias
+
+#guard_compiled_cache_matches_rebuild IncrementalCacheExtensionDelta
+
+namespace IncrementalCacheExtensionDelta
+
+internal def alias_copy : Obj := alias
+internal theorem use_ext_rule : J alias := introAlias
+internal theorem use_ext_theorem_schema : J alias := ext_id alias ext_alias
+
+end IncrementalCacheExtensionDelta
+
+#guard_internal_profile_cache IncrementalCacheExtensionDelta alias_copy "hit" false
+#guard_internal_profile_cache IncrementalCacheExtensionDelta use_ext_rule "hit" true
+#guard_internal_profile_cache IncrementalCacheExtensionDelta use_ext_theorem_schema "hit" true
+#guard_compiled_cache_matches_rebuild IncrementalCacheExtensionDelta
+
+declare_type_theory IncrementalCacheExtensionOrder where
+  syntax_sort Obj
+  judgment J (x : Obj)
+  lf_opaque base : Obj
+  lf_opaque extra : Obj
+  rule introBase : J base
+  judgment_theorem base_ok : J base := introBase
+
+extend_type_theory IncrementalCacheExtensionOrder where
+  rule introExtra : J extra
+
+#guard_compiled_cache_matches_rebuild IncrementalCacheExtensionOrder
+
+namespace IncrementalCacheExtensionOrder
+
+internal theorem use_later_rule : J extra := introExtra
+
+end IncrementalCacheExtensionOrder
+
+#guard_internal_profile_cache IncrementalCacheExtensionOrder use_later_rule "hit" true
+#guard_compiled_cache_matches_rebuild IncrementalCacheExtensionOrder
 
 declare_type_theory IncrementalCacheSelfReferenceReject where
   syntax_sort Obj
