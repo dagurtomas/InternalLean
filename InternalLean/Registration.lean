@@ -265,7 +265,7 @@ def registerTheory (sig : HLSignature) : CoreM Unit := do
     let env := theoryExt.addEntry env (.sig sig)
     let env := checkedTheoryExt.addEntry env (.sig checked)
     let env := checkedHLSignatureExt.addEntry env (.sig sig.name checkedHL)
-    compiledLFCheckCacheExt.addEntry env (.cache sig.name compiledCache)
+    setCompiledLFCheckCacheInEnv env sig.name compiledCache
 
 /-- Reopen an existing type theory and append one declaration block. -/
 def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : CoreM Unit := do
@@ -293,7 +293,7 @@ def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : C
         let env := theoryExt.addEntry env (.sig candidate)
         let env := checkedTheoryExt.addEntry env (.sig checked)
         let env := checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
-        compiledLFCheckCacheExt.addEntry env (.cache theoryName compiledCache)
+        setCompiledLFCheckCacheInEnv env theoryName compiledCache
   | some reason =>
       let candidate := sig.appendBlock block
       let headSig ← flattenSignature candidate
@@ -321,7 +321,7 @@ def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : C
         let env := theoryExt.addEntry env (.sig candidate)
         let env := checkedTheoryExt.addEntry env (.sig checked)
         let env := checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
-        compiledLFCheckCacheExt.addEntry env (.cache theoryName compiledCache)
+        setCompiledLFCheckCacheInEnv env theoryName compiledCache
 
 /-- Split leading named function arrows in an admitted LF opaque annotation into a shallow
 LF parameter telescope. This lets users write
@@ -495,7 +495,7 @@ def registerAdmittedInternalLFOpaqueBatch (theoryName : Name)
     let env := theoryExt.addEntry env (.sig (sig.appendBlock blockForRegistry))
     let env := checkedTheoryExt.addEntry env (.sig checked')
     let env := checkedHLSignatureExt.addEntry env (.sig theoryName flatForCheck)
-    let env := compiledLFCheckCacheExt.addEntry env (.cache theoryName compiledCache)
+    let env := setCompiledLFCheckCacheInEnv env theoryName compiledCache
     admissions.foldl (init := env) fun env admission =>
       internalAdmissionExt.addEntry env (.admission admission)
 
@@ -705,7 +705,7 @@ def registerLFObjectDef (theoryName : Name) (d : LFObjectDefDecl) : CoreM Unit :
     let env := theoryExt.addEntry env (.lfObjectDef theoryName dForRegistry)
     let env := checkedTheoryExt.addEntry env (.sig checked')
     let env := checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
-    compiledLFCheckCacheExt.addEntry env (.cache theoryName compiledCache)
+    setCompiledLFCheckCacheInEnv env theoryName compiledCache
 
 /-- Register a top-level staged LF judgment theorem in an existing theory. -/
 def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : CoreM Unit := do
@@ -760,7 +760,7 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
     let env := theoryExt.addEntry env (.lfJudgmentTheorem theoryName tForRegistry)
     let env := checkedTheoryExt.addEntry env (.sig checked')
     let env := checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
-    compiledLFCheckCacheExt.addEntry env (.cache theoryName compiledCache)
+    setCompiledLFCheckCacheInEnv env theoryName compiledCache
 
 /-- Register a theory-local ergonomic object macro. -/
 def registerObjectMacro (theoryName : Name) (mac : ObjectMacro) : CoreM Unit := do
@@ -783,8 +783,7 @@ def registerObjectMacro (theoryName : Name) (mac : ObjectMacro) : CoreM Unit := 
       | none => env
     match checkedHL?, cache? with
     | some checkedHL, some cache =>
-        compiledLFCheckCacheExt.addEntry env
-          (.cache theoryName { cache with checkedHL := checkedHL })
+        setCompiledLFCheckCacheInEnv env theoryName { cache with checkedHL := checkedHL }
     | _, _ => env
 
 /-- Register non-semantic role metadata for a theory-local object constant or macro. -/
@@ -806,8 +805,7 @@ def registerObjectRole (theoryName : Name) (role : ObjectRole) : CoreM Unit := d
       | none => env
     match checkedHL?, cache? with
     | some checkedHL, some cache =>
-        compiledLFCheckCacheExt.addEntry env
-          (.cache theoryName { cache with checkedHL := checkedHL })
+        setCompiledLFCheckCacheInEnv env theoryName { cache with checkedHL := checkedHL }
     | _, _ => env
 
 /-- Check that declaration names in a single theory block are unique. -/

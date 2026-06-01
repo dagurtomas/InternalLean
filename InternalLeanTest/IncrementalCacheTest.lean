@@ -38,6 +38,16 @@ elab "#guard_internal_profile_cache " theory:ident decl:ident status:str replay:
     throwError "expected kernel replay cache hit {expectedReplay} for \
       '{theory.getId}.{declName}', found {profile.kernelReplayCacheHit}"
 
+/-- Assert local cache updates are persisted by small touch markers, not full cache snapshots. -/
+elab "#guard_no_local_full_compiled_cache_entries" : command => do
+  let entries := compiledLFCheckCacheExt.getEntries (← getEnv)
+  let fullCount := entries.foldl (init := 0) fun count entry =>
+    match entry with
+    | .cache _ _ => count + 1
+    | .touch _ => count
+  unless fullCount == 0 do
+    throwError "expected no local full compiled-cache entries, found {fullCount}"
+
 /-- Poison a cache stamp and assert lookup rebuilds instead of using the stale cache. -/
 elab "#guard_compiled_cache_mismatch_rebuild " theory:ident : command => do
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
@@ -77,6 +87,7 @@ end IncrementalCacheSmoke
 #guard_internal_profile_cache IncrementalCacheSmoke local_id "hit" true
 #guard_internal_profile_cache IncrementalCacheSmoke use_local_id "hit" true
 #guard_compiled_cache_mismatch_rebuild IncrementalCacheSmoke
+#guard_no_local_full_compiled_cache_entries
 
 namespace ImportedCacheBase
 

@@ -430,35 +430,87 @@ structure CompiledLFCheckCache where
   kernelReplayBase : KernelLFCheckContext := {}
   deriving Inhabited
 
+/-- State for compiled LF checking caches.
+
+The `dirty` set tracks theory caches updated in the current module. The persistent extension exports
+one final full cache per dirty theory instead of serializing every intermediate full-cache snapshot.
+-/
+structure CompiledLFCheckCacheStore where
+  /-- Current compiled caches by theory name, including imported and local updates. -/
+  caches : NameMap CompiledLFCheckCache := {}
+  /-- Theory names whose caches were updated in this module. -/
+  dirty : NameSet := {}
+  deriving Inhabited
+
 /-- Persistent entries for compiled LF checking caches. -/
 inductive CompiledLFCheckCacheEntry where
-  /-- Store a compiled checker cache for one theory. -/
+  /-- Store a compiled checker cache for one theory in exported `.olean` data. -/
   | cache : Name → CompiledLFCheckCache → CompiledLFCheckCacheEntry
+  /-- Mark a theory cache as changed locally; this small marker is not exported. -/
+  | touch : Name → CompiledLFCheckCacheEntry
   deriving Inhabited
+
+namespace CompiledLFCheckCacheStore
+
+/-- Add an entry produced in the current module to the in-memory cache store. -/
+def addLocalEntry (store : CompiledLFCheckCacheStore)
+    (entry : CompiledLFCheckCacheEntry) : CompiledLFCheckCacheStore :=
+  match entry with
+  | .cache theoryName cache =>
+      let theoryName := theoryName.eraseMacroScopes
+      { caches := store.caches.insert theoryName cache
+        dirty := store.dirty.insert theoryName }
+  | .touch theoryName =>
+      { store with dirty := store.dirty.insert theoryName.eraseMacroScopes }
+
+/-- Add an entry imported from another module to the cache store. Imported caches are available but
+are not dirty in the importing module. -/
+def addImportedEntry (store : CompiledLFCheckCacheStore)
+    (entry : CompiledLFCheckCacheEntry) : CompiledLFCheckCacheStore :=
+  match entry with
+  | .cache theoryName cache =>
+      { store with caches := store.caches.insert theoryName.eraseMacroScopes cache }
+  | .touch _ => store
+
+/-- Export one final cache snapshot for each theory touched in the current module. -/
+def exportEntries (store : CompiledLFCheckCacheStore) : Array CompiledLFCheckCacheEntry := Id.run do
+  let mut entries := #[]
+  for theoryName in store.dirty do
+    if let some cache := store.caches.find? theoryName then
+      entries := entries.push (.cache theoryName cache)
+  return entries
+
+end CompiledLFCheckCacheStore
 
 /-- Environment extension storing derived compiled LF checking caches by theory name. -/
 initialize compiledLFCheckCacheExt :
-    SimplePersistentEnvExtension CompiledLFCheckCacheEntry (NameMap CompiledLFCheckCache) ←
+    SimplePersistentEnvExtension CompiledLFCheckCacheEntry CompiledLFCheckCacheStore ←
   registerSimplePersistentEnvExtension {
     name := `InternalLean.compiledLFCheckCacheExt
-    addEntryFn := fun m e =>
-      match e with
-      | .cache theoryName cache => m.insert theoryName.eraseMacroScopes cache
+    addEntryFn := CompiledLFCheckCacheStore.addLocalEntry
     addImportedFn := fun entries =>
-      entries.foldl (init := {}) fun m es =>
-        es.foldl (init := m) fun m e =>
-          match e with
-          | .cache theoryName cache => m.insert theoryName.eraseMacroScopes cache
+      entries.foldl (init := {}) fun store es =>
+        es.foldl (init := store) CompiledLFCheckCacheStore.addImportedEntry
+    exportEntriesFnEx? := some fun _env store _localEntries =>
+      .uniform (CompiledLFCheckCacheStore.exportEntries store)
   }
 
 /-- Retrieve a compiled LF checking cache, if one is stored for the theory. -/
 def getCompiledLFCheckCache? (theoryName : Name) : CoreM (Option CompiledLFCheckCache) := do
-  return (compiledLFCheckCacheExt.getState (← getEnv)).find? theoryName.eraseMacroScopes
+  return (compiledLFCheckCacheExt.getState (← getEnv)).caches.find? theoryName.eraseMacroScopes
+
+/-- Store or replace a compiled LF checking cache in an environment. -/
+def setCompiledLFCheckCacheInEnv (env : Environment) (theoryName : Name)
+    (cache : CompiledLFCheckCache) : Environment :=
+  let theoryName := theoryName.eraseMacroScopes
+  let env := compiledLFCheckCacheExt.modifyState env fun store =>
+    { caches := store.caches.insert theoryName cache
+      dirty := store.dirty.insert theoryName }
+  compiledLFCheckCacheExt.addEntry env (.touch theoryName)
 
 /-- Store or replace a compiled LF checking cache for one theory. -/
 def setCompiledLFCheckCache (theoryName : Name) (cache : CompiledLFCheckCache) : CoreM Unit := do
-  modifyEnv fun env =>
-    compiledLFCheckCacheExt.addEntry env (.cache theoryName.eraseMacroScopes cache)
+  modifyEnv fun env => setCompiledLFCheckCacheInEnv env theoryName cache
 
 /-- Persistent profile record for a theory or internal-declaration registration event. -/
 structure InternalRegistrationProfile where
