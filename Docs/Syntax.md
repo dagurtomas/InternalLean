@@ -279,9 +279,13 @@ The `computation` role marks rules that prove conversion/equality consequences. 
 uses these rules as rewrite candidates when they conclude in a judgment marked `type_conversion` or
 `term_conversion`.
 
-### Diagnostic macros and roles
+### Object notation, diagnostic macros, and roles
 
 ```lean
+object_notation T "[" A "]" x "⇛" y => Arr A x y
+#print_object_notations T
+#expand_object T [ Star ] x ⇛ y
+
 object_macro T Name (x, y) => template
 object_role T Name : role
 object_role T Name : role for Related
@@ -289,6 +293,13 @@ object_role T Name : role for Related
 #print_object_roles T
 #expand_object T expr
 ```
+
+`object_notation` adds parse-only notation for later object expressions. Quoted strings are literal
+parser tokens, and identifiers are object-expression holes substituted into the expansion template.
+The notation expands before checked LF artifacts are built, so LF checking, replay, and model
+rendering see the expanded expression. The first implementation supports leading notation whose
+first pattern part is a quoted token; parser patterns are global once installed, so identical
+concrete patterns cannot currently be overloaded between theories.
 
 `object_macro` records theory-local diagnostic notation and can be expanded with `#expand_object`.
 It is not part of checked LF elaboration: checked declarations should use the expanded expression.

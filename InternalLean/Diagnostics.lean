@@ -29,6 +29,115 @@ elab "object_macro" theory:ident macroName:ident "(" params:ident,* ")" " => " t
     params := params.getElems.map (·.getId)
     template := template }
 
+/-- Syntax category for parse-only object-notation pattern entries. -/
+declare_syntax_cat objectNotationPart
+syntax str : objectNotationPart
+syntax ident : objectNotationPart
+syntax (name := objectNotationDeclStx)
+  "object_notation" ident objectNotationPart+ " => " ttExpr : command
+
+/-- Parse one `object_notation` pattern token. -/
+meta def elabObjectNotationPart : TSyntax `objectNotationPart → CommandElabM ObjectNotationPart
+  | `(objectNotationPart| $s:str) => pure (.atom s.getString)
+  | `(objectNotationPart| $x:ident) => pure (.hole x.getId)
+  | stx => throwError "unsupported object_notation pattern part:{indentD stx}"
+
+/-- String key used to detect duplicate concrete object-notation patterns. -/
+meta def objectNotationPatternKey (parts : Array ObjectNotationPart) : String :=
+  String.intercalate "\u0001" <| parts.toList.map fun
+    | .atom text => "atom:" ++ text
+    | .hole _ => "hole"
+
+/-- Render a string as a Lean string literal in a generated `syntax` command. -/
+meta def leanStringLiteralSyntax (s : String) : String :=
+  toString (repr s)
+
+/-- Generated parser command for one object notation. -/
+meta def objectNotationSyntaxCommand (syntaxName : Name) (parts : Array ObjectNotationPart) :
+    String :=
+  let items := parts.toList.map fun
+    | .atom text => leanStringLiteralSyntax text
+    | .hole _ => "ttExpr"
+  s!"syntax (name := {syntaxName}) {String.intercalate " " items} : ttExpr"
+
+/-- Free object-expression identifiers, respecting object binders. -/
+meta partial def freeObjectNotationTemplateIdentifiers (locals : NameSet) : ObjExpr → NameSet
+  | .ident n =>
+      let n := n.eraseMacroScopes
+      if locals.contains n then {} else ({} : NameSet).insert n
+  | .sort | .univ _ => {}
+  | .app f a =>
+      freeObjectNotationTemplateIdentifiers locals f ++
+        freeObjectNotationTemplateIdentifiers locals a
+  | .arrow x A B | .funArrow x A B | .sigma x A B =>
+      let free := freeObjectNotationTemplateIdentifiers locals A
+      let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
+      free ++ freeObjectNotationTemplateIdentifiers locals B
+  | .pair a b =>
+      freeObjectNotationTemplateIdentifiers locals a ++
+        freeObjectNotationTemplateIdentifiers locals b
+  | .fst e | .snd e => freeObjectNotationTemplateIdentifiers locals e
+  | .lam xs body =>
+      let locals := xs.foldl (fun locals x => locals.insert x.eraseMacroScopes) locals
+      freeObjectNotationTemplateIdentifiers locals body
+  | .jeq lhs rhs =>
+      freeObjectNotationTemplateIdentifiers locals lhs ++
+        freeObjectNotationTemplateIdentifiers locals rhs
+
+/-- Register parse-only object notation for later object expressions. -/
+elab_rules : command
+  | `(command| object_notation $theory:ident $parts:objectNotationPart* =>
+      $templateStx:ttExpr) => do
+      let some _sig ← liftCoreM <| getTheory? theory.getId
+        | throwError "unknown type theory '{theory.getId}'"
+      let parts ← parts.mapM elabObjectNotationPart
+      if parts.isEmpty then
+        throwError "object_notation for type theory '{theory.getId}' must have a nonempty pattern"
+      match parts[0]! with
+      | .atom _ => pure ()
+      | .hole _ =>
+          throwError "object_notation for type theory '{theory.getId}' must start with a literal \
+            token; notation patterns beginning with an expression hole need precedence support"
+      let mut holeNames : Array Name := #[]
+      let mut seenHoles : NameSet := {}
+      for part in parts do
+        match part with
+        | .atom _ => pure ()
+        | .hole name =>
+            let name := name.eraseMacroScopes
+            if seenHoles.contains name then
+              throwError "object_notation for type theory '{theory.getId}' has duplicate hole \
+                '{name}'"
+            seenHoles := seenHoles.insert name
+            holeNames := holeNames.push name
+      let patternKey := objectNotationPatternKey parts
+      for old in getObjectNotationDecls (← getEnv) do
+        if objectNotationPatternKey old.parts == patternKey then
+          throwError "object_notation pattern {old.patternString} is already registered for type \
+            theory '{old.theoryName}'"
+      let template ← elabObjExpr templateStx
+      let free := freeObjectNotationTemplateIdentifiers {} template
+      for holeName in holeNames do
+        unless free.contains holeName do
+          throwError "object_notation for type theory '{theory.getId}' declares hole \
+            '{holeName}', but the expansion template does not use it"
+      let syntaxName := Name.str `InternalLean.ObjectNotation
+        s!"n{(getObjectNotationDecls (← getEnv)).size + 1}"
+      let syntaxCommand := objectNotationSyntaxCommand syntaxName parts
+      let commandStx ←
+        match Lean.Parser.runParserCategory (← getEnv) `command syntaxCommand with
+        | .ok stx => pure stx
+        | .error err =>
+            throwError "failed to generate parser for object_notation in type theory \
+              '{theory.getId}':\n{err}\ngenerated command:\n{syntaxCommand}"
+      elabCommand commandStx
+      liftCoreM <| registerObjectNotationDecl {
+        theoryName := theory.getId.eraseMacroScopes
+        syntaxName := syntaxName
+        parts := parts
+        holeNames := holeNames
+        template := template }
+
 /-- Attach non-semantic role metadata to an object declaration or macro. -/
 elab "object_role" theory:ident objectName:ident " : " kind:ident : command => do
   liftCoreM <| registerObjectRole theory.getId {
@@ -52,6 +161,19 @@ elab "#print_object_macros" theory:ident : command => do
     let params := String.intercalate " " (mac.params.toList.map (toString ·.eraseMacroScopes))
     s!"{mac.name.eraseMacroScopes} ({params}) => {mac.template}"
   logInfo m!"{String.intercalate "\n" lines}"
+
+/-- Print registered parse-only object notations for a theory. -/
+elab "#print_object_notations" theory:ident : command => do
+  let some _sig ← liftCoreM <| getTheory? theory.getId
+    | throwError "unknown type theory '{theory.getId}'"
+  let theoryName := theory.getId.eraseMacroScopes
+  let notations := (getObjectNotationDecls (← getEnv)).filter fun d =>
+    d.theoryName.eraseMacroScopes == theoryName
+  let lines := notations.toList.map fun d => s!"{d.patternString} => {d.template}"
+  if lines.isEmpty then
+    logInfo m!"no object_notation declarations for {theoryName}"
+  else
+    logInfo m!"{String.intercalate "\n" lines}"
 
 /-- Print registered theory-local object roles. -/
 elab "#print_object_roles" theory:ident : command => do

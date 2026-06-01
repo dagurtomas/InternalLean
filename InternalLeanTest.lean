@@ -23,6 +23,7 @@ import InternalLeanTest.ModelUniverseLevelsTest
 import InternalLeanTest.ModelWorkflowUXTest
 import InternalLeanTest.ModelRenderingNormalizationTest
 import InternalLeanTest.NaturalNumbersTest
+import InternalLeanTest.ObjectNotationTest
 import InternalLeanTest.RawConversionCaptureTest
 import InternalLeanTest.RawConversionTest
 import InternalLeanTest.SoundnessRegressionTest

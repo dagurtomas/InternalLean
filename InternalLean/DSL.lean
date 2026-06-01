@@ -307,6 +307,100 @@ structure ObjectMacro where
   doc : String := ""
   deriving Inhabited, Repr, BEq
 
+/-- One token in a user-declared object notation pattern. -/
+inductive ObjectNotationPart where
+  /-- A literal parser atom, written as a string in `object_notation`. -/
+  | atom (text : String)
+  /-- An object-expression hole. -/
+  | hole (name : Name)
+  deriving Inhabited, Repr, BEq
+
+namespace ObjectNotationPart
+
+/-- User-facing rendering of one object-notation pattern token. -/
+meta def sourceString : ObjectNotationPart → String
+  | .atom text => s!"\"{text}\""
+  | .hole name => toString name.eraseMacroScopes
+
+end ObjectNotationPart
+
+/-- A parse-only notation declaration for object expressions.
+
+The concrete parser rule is global Lean syntax, while this registry entry records the intended
+owning theory and expansion template. Elaboration expands the parsed holes into `template` before
+LF checking. -/
+structure ObjectNotationDecl where
+  /-- Theory that owns this notation declaration. -/
+  theoryName : Name
+  /-- Name of the generated `ttExpr` syntax parser. -/
+  syntaxName : Name
+  /-- Concrete notation pattern. -/
+  parts : Array ObjectNotationPart := #[]
+  /-- Hole names, in parser order. -/
+  holeNames : Array Name := #[]
+  /-- Expansion template, with hole names used as object-expression variables. -/
+  template : ObjExpr
+  deriving Inhabited, Repr, BEq
+
+namespace ObjectNotationDecl
+
+/-- User-facing rendering of an object-notation pattern. -/
+meta def patternString (d : ObjectNotationDecl) : String :=
+  String.intercalate " " (d.parts.toList.map ObjectNotationPart.sourceString)
+
+end ObjectNotationDecl
+
+/-- Environment extension storing parse-only object notations by declaration. -/
+public meta initialize objectNotationExt : SimplePersistentEnvExtension ObjectNotationDecl
+    (Array ObjectNotationDecl) ←
+  registerSimplePersistentEnvExtension {
+    name := `InternalLean.objectNotationExt
+    addEntryFn := fun xs d => xs.push d
+    addImportedFn := fun imports => imports.foldl (init := #[]) fun acc xs => acc ++ xs
+  }
+
+/-- All currently registered object notations. -/
+meta def getObjectNotationDecls (env : Environment) : Array ObjectNotationDecl :=
+  objectNotationExt.getState env
+
+/-- Find an object notation by its generated syntax node kind. -/
+meta def findObjectNotationDeclBySyntax? (env : Environment) (syntaxName : Name) :
+    Option ObjectNotationDecl :=
+  (getObjectNotationDecls env).find? fun d => d.syntaxName == syntaxName
+
+/-- Register an object notation expansion entry. The parser rule is installed separately. -/
+meta def registerObjectNotationDecl (d : ObjectNotationDecl) : CoreM Unit := do
+  modifyEnv fun env => objectNotationExt.addEntry env d
+
+/-- Substitute object-expression notation holes in a template. -/
+meta partial def substObjectNotationParams (subst : NameMap ObjExpr) : ObjExpr → ObjExpr
+  | .ident n =>
+      match subst.find? n.eraseMacroScopes with
+      | some e => e
+      | none => .ident n
+  | .sort => .sort
+  | .univ u => .univ u
+  | .app f a => .app (substObjectNotationParams subst f) (substObjectNotationParams subst a)
+  | .arrow x A B =>
+      let A := substObjectNotationParams subst A
+      let subst := match x with | some x => subst.erase x.eraseMacroScopes | none => subst
+      .arrow x A (substObjectNotationParams subst B)
+  | .funArrow x A B =>
+      let A := substObjectNotationParams subst A
+      let subst := match x with | some x => subst.erase x.eraseMacroScopes | none => subst
+      .funArrow x A (substObjectNotationParams subst B)
+  | .sigma x A B =>
+      let A := substObjectNotationParams subst A
+      let subst := match x with | some x => subst.erase x.eraseMacroScopes | none => subst
+      .sigma x A (substObjectNotationParams subst B)
+  | .pair a b => .pair (substObjectNotationParams subst a) (substObjectNotationParams subst b)
+  | .fst e => .fst (substObjectNotationParams subst e)
+  | .snd e => .snd (substObjectNotationParams subst e)
+  | .lam xs body =>
+      let subst := xs.foldl (fun subst x => subst.erase x.eraseMacroScopes) subst
+      .lam xs (substObjectNotationParams subst body)
+  | .jeq lhs rhs => .jeq (substObjectNotationParams subst lhs) (substObjectNotationParams subst rhs)
+
 /-- Model-interface visibility for a source LF declaration.
 
 Visibility is ergonomic metadata for generated model interfaces/templates. It does not change
@@ -1913,66 +2007,87 @@ meta def elabLamBinder : TSyntax `ttLamBinder → CommandElabM Name
   | `(ttLamBinder| _) => pure `_
   | stx => throwError "unsupported lambda binder syntax:{indentD stx}"
 
+/-- Child object-expression syntax nodes captured by a generated object notation parser. -/
+meta def objectNotationChildExprSyntaxes (stx : Syntax) : Array (TSyntax `ttExpr) :=
+  stx.getArgs.filterMap fun arg =>
+    if arg.getKind == `InternalLean.ttExpr_ then some (⟨arg⟩ : TSyntax `ttExpr) else none
+
 /-- Parse a high-level object expression into an AST. -/
-meta partial def elabObjExpr : TSyntax `ttExpr → CommandElabM ObjExpr
-  | `(ttExpr| Type) => pure .sort
-  | `(ttExpr| Type max $u:ttLevel $v:ttLevel) => do
-      let u ← elabLevelExpr u
-      let v ← elabLevelExpr v
-      match u, v with
-      | .zero, v => pure (match v with | .zero => .sort | v => .univ v)
-      | u, .zero => pure (match u with | .zero => .sort | u => .univ u)
-      | .lit m, .lit n =>
-          let out : LevelExpr := if Nat.max m n == 0 then .zero else .lit (Nat.max m n)
-          pure (match out with | .zero => .sort | out => .univ out)
-      | .param u, .param v =>
-          if u.eraseMacroScopes == v.eraseMacroScopes then
-            pure (.univ (.param u))
-          else
-            pure (.univ (.max (.param u) (.param v)))
-      | u, v => pure (.univ (.max u v))
-  | `(ttExpr| Type $u:ttLevel) => do
-      let u ← elabLevelExpr u
-      match u with
-      | .zero => pure .sort
-      | u => pure (.univ u)
-  | `(ttExpr| $x:ident) => pure (.ident x.getId)
-  | `(ttExpr| _) => pure (.ident `_)
-  | `(ttExpr| ($e:ttExpr)) => elabObjExpr e
-  | `(ttExpr| {$x:ident := $value:ttExpr}) => do
-      return .app (.app (.ident `__implicitArg) (.ident x.getId)) (← elabObjExpr value)
-  | `(ttExpr| $a:ttExpr ≡ $b:ttExpr) => return .jeq (← elabObjExpr a) (← elabObjExpr b)
-  | `(ttExpr| $a:ttExpr → $b:ttExpr) => return .funArrow none (← elabObjExpr a) (← elabObjExpr b)
-  | `(ttExpr| ($x:ident : $a:ttExpr) → $b:ttExpr) =>
-      return .funArrow (some x.getId) (← elabObjExpr a) (← elabObjExpr b)
-  | `(ttExpr| $a:ttExpr ⇒ $b:ttExpr) => return .arrow none (← elabObjExpr a) (← elabObjExpr b)
-  | `(ttExpr| ($x:ident : $a:ttExpr) ⇒ $b:ttExpr) =>
-      return .arrow (some x.getId) (← elabObjExpr a) (← elabObjExpr b)
-  | `(ttExpr| $a:ttExpr × $b:ttExpr) => return .sigma none (← elabObjExpr a) (← elabObjExpr b)
-  | `(ttExpr| Σ $x:ident : $a:ttExpr, $b:ttExpr) =>
-      return .sigma (some x.getId) (← elabObjExpr a) (← elabObjExpr b)
-  | `(ttExpr| ⟨$a:ttExpr, $b:ttExpr⟩) => return .pair (← elabObjExpr a) (← elabObjExpr b)
-  | `(ttExpr| fst $e:ttExpr) => return .fst (← elabObjExpr e)
-  | `(ttExpr| snd $e:ttExpr) => return .snd (← elabObjExpr e)
-  | `(ttExpr| fun $xs:ttLamBinder* => $body:ttExpr) => do
-      let xs ← xs.mapM elabLamBinder
-      return .lam xs (← elabObjExpr body)
-  | `(ttExpr| $f:ttExpr $a:ttExpr) => do
-      let f ← elabObjExpr f
-      let a ← elabObjExpr a
-      -- The surface form `Type max u v` is parsed by the generic application grammar as
-      -- `((Type max) u) v`; recognize that shape and reinterpret it as a universe level.
-      match f, a with
-      | .app (.univ (.param maxName)) (.ident u), .ident v =>
-          if maxName.eraseMacroScopes == `max then
-            if u.eraseMacroScopes == v.eraseMacroScopes then
-              pure (.univ (.param u))
-            else
-              pure (.univ (.max (.param u) (.param v)))
-          else
-            pure (.app f a)
-      | _, _ => pure (.app f a)
-  | stx => throwError "unsupported object expression syntax:{indentD stx}"
+meta partial def elabObjExpr (stx : TSyntax `ttExpr) : CommandElabM ObjExpr := do
+  if let some notationDecl := findObjectNotationDeclBySyntax? (← getEnv) stx.raw.getKind then
+    let holeStxs := objectNotationChildExprSyntaxes stx.raw
+    if holeStxs.size != notationDecl.holeNames.size then
+      throwError "object notation '{notationDecl.patternString}' in type theory \
+        '{notationDecl.theoryName}' parsed with {holeStxs.size} hole(s), expected \
+          {notationDecl.holeNames.size}"
+    let mut subst : NameMap ObjExpr := {}
+    for holeName in notationDecl.holeNames, holeStx in holeStxs do
+      subst := subst.insert holeName.eraseMacroScopes (← elabObjExpr holeStx)
+    pure (substObjectNotationParams subst notationDecl.template)
+  else if let some stx' ← liftMacroM <| expandMacro? stx.raw then
+    elabObjExpr (⟨stx'⟩ : TSyntax `ttExpr)
+  else
+    match stx with
+      | `(ttExpr| Type) => pure .sort
+      | `(ttExpr| Type max $u:ttLevel $v:ttLevel) => do
+          let u ← elabLevelExpr u
+          let v ← elabLevelExpr v
+          match u, v with
+          | .zero, v => pure (match v with | .zero => .sort | v => .univ v)
+          | u, .zero => pure (match u with | .zero => .sort | u => .univ u)
+          | .lit m, .lit n =>
+              let out : LevelExpr := if Nat.max m n == 0 then .zero else .lit (Nat.max m n)
+              pure (match out with | .zero => .sort | out => .univ out)
+          | .param u, .param v =>
+              if u.eraseMacroScopes == v.eraseMacroScopes then
+                pure (.univ (.param u))
+              else
+                pure (.univ (.max (.param u) (.param v)))
+          | u, v => pure (.univ (.max u v))
+      | `(ttExpr| Type $u:ttLevel) => do
+          let u ← elabLevelExpr u
+          match u with
+          | .zero => pure .sort
+          | u => pure (.univ u)
+      | `(ttExpr| $x:ident) => pure (.ident x.getId)
+      | `(ttExpr| _) => pure (.ident `_)
+      | `(ttExpr| ($e:ttExpr)) => elabObjExpr e
+      | `(ttExpr| {$x:ident := $value:ttExpr}) => do
+          return .app (.app (.ident `__implicitArg) (.ident x.getId)) (← elabObjExpr value)
+      | `(ttExpr| $a:ttExpr ≡ $b:ttExpr) => return .jeq (← elabObjExpr a) (← elabObjExpr b)
+      | `(ttExpr| $a:ttExpr → $b:ttExpr) =>
+          return .funArrow none (← elabObjExpr a) (← elabObjExpr b)
+      | `(ttExpr| ($x:ident : $a:ttExpr) → $b:ttExpr) =>
+          return .funArrow (some x.getId) (← elabObjExpr a) (← elabObjExpr b)
+      | `(ttExpr| $a:ttExpr ⇒ $b:ttExpr) => return .arrow none (← elabObjExpr a) (← elabObjExpr b)
+      | `(ttExpr| ($x:ident : $a:ttExpr) ⇒ $b:ttExpr) =>
+          return .arrow (some x.getId) (← elabObjExpr a) (← elabObjExpr b)
+      | `(ttExpr| $a:ttExpr × $b:ttExpr) => return .sigma none (← elabObjExpr a) (← elabObjExpr b)
+      | `(ttExpr| Σ $x:ident : $a:ttExpr, $b:ttExpr) =>
+          return .sigma (some x.getId) (← elabObjExpr a) (← elabObjExpr b)
+      | `(ttExpr| ⟨$a:ttExpr, $b:ttExpr⟩) => return .pair (← elabObjExpr a) (← elabObjExpr b)
+      | `(ttExpr| fst $e:ttExpr) => return .fst (← elabObjExpr e)
+      | `(ttExpr| snd $e:ttExpr) => return .snd (← elabObjExpr e)
+      | `(ttExpr| fun $xs:ttLamBinder* => $body:ttExpr) => do
+          let xs ← xs.mapM elabLamBinder
+          return .lam xs (← elabObjExpr body)
+      | `(ttExpr| $f:ttExpr $a:ttExpr) => do
+          let f ← elabObjExpr f
+          let a ← elabObjExpr a
+          -- The surface form `Type max u v` is parsed by the generic application grammar as
+          -- `((Type max) u) v`; recognize that shape and reinterpret it as a universe level.
+          match f, a with
+          | .app (.univ (.param maxName)) (.ident u), .ident v =>
+              if maxName.eraseMacroScopes == `max then
+                if u.eraseMacroScopes == v.eraseMacroScopes then
+                  pure (.univ (.param u))
+                else
+                  pure (.univ (.max (.param u) (.param v)))
+              else
+                pure (.app f a)
+          | _, _ => pure (.app f a)
+      | stx => throwError "unsupported object expression syntax:{indentD stx}"
+
 
 /-- Parse a high-level binder. -/
 meta def elabHLBinding : TSyntax `ttBinder → CommandElabM HLBinding
