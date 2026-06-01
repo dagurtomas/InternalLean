@@ -320,6 +320,146 @@ initialize checkedHLSignatureExt :
           | .sig theoryName sig => m.insert theoryName sig
   }
 
+/-- Cheap consistency stamp for a derived compiled LF checking cache. -/
+structure CompiledLFCheckCacheStamp where
+  /-- Owning object theory. -/
+  theoryName : Name
+  /-- Number of opt-in LF universe parameters. -/
+  levelParamCount : Nat := 0
+  /-- Number of checked syntax sorts. -/
+  syntaxSortCount : Nat := 0
+  /-- Number of checked syntax abbreviations. -/
+  syntaxAbbrevCount : Nat := 0
+  /-- Number of checked judgment abbreviations. -/
+  judgmentAbbrevCount : Nat := 0
+  /-- Number of checked context zones. -/
+  contextZoneCount : Nat := 0
+  /-- Number of checked binder classes. -/
+  binderClassCount : Nat := 0
+  /-- Number of checked judgments. -/
+  judgmentCount : Nat := 0
+  /-- Number of checked opaque constants. -/
+  opaqueConstCount : Nat := 0
+  /-- Number of checked side-condition solvers. -/
+  sideConditionSolverCount : Nat := 0
+  /-- Number of checked conversion plugins. -/
+  conversionPluginCount : Nat := 0
+  /-- Number of checked rules. -/
+  ruleCount : Nat := 0
+  /-- Number of checked rule schemas. -/
+  ruleSchemaCount : Nat := 0
+  /-- Number of checked LF object definitions. -/
+  objectDefCount : Nat := 0
+  /-- Number of checked LF judgment theorems. -/
+  judgmentTheoremCount : Nat := 0
+  /-- Number of checked side-condition certificates. -/
+  sideConditionCertificateCount : Nat := 0
+  deriving Inhabited, Repr, BEq
+
+namespace CompiledLFCheckCacheStamp
+
+/-- Compute the cache stamp for a checked signature. -/
+def ofCheckedSignature (checked : CheckedSignature) : CompiledLFCheckCacheStamp :=
+  { theoryName := checked.name.eraseMacroScopes
+    levelParamCount := checked.levelParams.size
+    syntaxSortCount := checked.lfSyntaxSorts.size
+    syntaxAbbrevCount := checked.lfSyntaxAbbrevs.size
+    judgmentAbbrevCount := checked.lfJudgmentAbbrevs.size
+    contextZoneCount := checked.lfContextZones.size
+    binderClassCount := checked.lfBinderClasses.size
+    judgmentCount := checked.lfJudgments.size
+    opaqueConstCount := checked.lfOpaqueConsts.size
+    sideConditionSolverCount := checked.lfSideConditionSolvers.size
+    conversionPluginCount := checked.lfConversionPlugins.size
+    ruleCount := checked.lfRules.size
+    ruleSchemaCount := checked.lfRuleSchemas.size
+    objectDefCount := checked.lfObjectDefs.size
+    judgmentTheoremCount := checked.lfJudgmentTheorems.size
+    sideConditionCertificateCount := checked.lfSideConditionCertificates.size }
+
+/-- Whether a stamp still matches the current checked signature. -/
+def matchesCheckedSignature (stamp : CompiledLFCheckCacheStamp)
+    (checked : CheckedSignature) : Bool :=
+  stamp == ofCheckedSignature checked
+
+end CompiledLFCheckCacheStamp
+
+/-- Derived compiled LF checking/replay context for one checked type theory.
+
+The checked signature remains authoritative; this cache stores maps and kernel replay data derived
+from checked artifacts so small incremental declarations can avoid rebuilding full-theory staging
+structures. -/
+structure CompiledLFCheckCache where
+  /-- Owning object theory. -/
+  theoryName : Name
+  /-- Cheap consistency stamp for the checked artifacts used to build this cache. -/
+  stamp : CompiledLFCheckCacheStamp
+  /-- Flattened checked high-level signature used by incremental checking. -/
+  checkedHL : HLSignature
+  /-- Known LF global names. -/
+  lfGlobals : NameSet
+  /-- Declared LF opaque arities. -/
+  opaqueArities : NameMap (Option Nat)
+  /-- Resolved LF global-head table. -/
+  globalHeads : NameMap (CheckedLFHeadKind × Option Nat)
+  /-- Syntax-sort arities. -/
+  syntaxSortArities : NameMap Nat
+  /-- Judgment arities. -/
+  judgmentArities : NameMap Nat
+  /-- Declared side-condition solvers. -/
+  solvers : NameSet
+  /-- Checked rules available to theorem checking. -/
+  checkedRules : Array CheckedLFRule := #[]
+  /-- Checked rule schemas available to kernel replay. -/
+  checkedRuleSchemas : Array CheckedLFRuleSchema := #[]
+  /-- Checked side-condition certificates available to kernel replay. -/
+  checkedSideConditionCertificates : Array CheckedLFSideConditionCertificate := #[]
+  /-- Available LF definition result types. -/
+  knownLFDefTypes : NameMap ObjExpr := {}
+  /-- Available LF definition values. -/
+  knownLFDefValues : NameMap ObjExpr := {}
+  /-- Available checked LF definition values. -/
+  checkedLFDefValues : NameMap CheckedLFExpr := {}
+  /-- Available binder-free LF theorem statements. -/
+  availableLFTheoremStatements : NameMap ObjExpr := {}
+  /-- Available LF theorem names. -/
+  availableLFTheoremNames : NameSet := {}
+  /-- Kernel replay signature for the checked base theory. -/
+  kernelSig : Signature
+  /-- Kernel replay context containing prior theorem/certificate entries. -/
+  kernelReplayBase : KernelLFCheckContext := {}
+  deriving Inhabited
+
+/-- Persistent entries for compiled LF checking caches. -/
+inductive CompiledLFCheckCacheEntry where
+  /-- Store a compiled checker cache for one theory. -/
+  | cache : Name → CompiledLFCheckCache → CompiledLFCheckCacheEntry
+  deriving Inhabited
+
+/-- Environment extension storing derived compiled LF checking caches by theory name. -/
+initialize compiledLFCheckCacheExt :
+    SimplePersistentEnvExtension CompiledLFCheckCacheEntry (NameMap CompiledLFCheckCache) ←
+  registerSimplePersistentEnvExtension {
+    name := `InternalLean.compiledLFCheckCacheExt
+    addEntryFn := fun m e =>
+      match e with
+      | .cache theoryName cache => m.insert theoryName.eraseMacroScopes cache
+    addImportedFn := fun entries =>
+      entries.foldl (init := {}) fun m es =>
+        es.foldl (init := m) fun m e =>
+          match e with
+          | .cache theoryName cache => m.insert theoryName.eraseMacroScopes cache
+  }
+
+/-- Retrieve a compiled LF checking cache, if one is stored for the theory. -/
+def getCompiledLFCheckCache? (theoryName : Name) : CoreM (Option CompiledLFCheckCache) := do
+  return (compiledLFCheckCacheExt.getState (← getEnv)).find? theoryName.eraseMacroScopes
+
+/-- Store or replace a compiled LF checking cache for one theory. -/
+def setCompiledLFCheckCache (theoryName : Name) (cache : CompiledLFCheckCache) : CoreM Unit := do
+  modifyEnv fun env =>
+    compiledLFCheckCacheExt.addEntry env (.cache theoryName.eraseMacroScopes cache)
+
 /-- Persistent profile record for a theory or internal-declaration registration event. -/
 structure InternalRegistrationProfile where
   /-- Owning object theory. -/
@@ -350,6 +490,14 @@ structure InternalRegistrationProfile where
   recheckedMetadataDecls : Nat := 0
   /-- Number of new declarations checked incrementally. -/
   incrementallyChecked : Nat := 0
+  /-- Cache lookup/update status for this registration event, when applicable. -/
+  cacheStatus? : Option String := none
+  /-- Whether this event rebuilt the compiled LF checking cache before checking. -/
+  cacheRebuilt : Bool := false
+  /-- Number of candidate declarations overlaid on the cached checking context. -/
+  cacheOverlayDecls : Nat := 0
+  /-- Whether kernel replay validation reused the compiled replay cache. -/
+  kernelReplayCacheHit : Bool := false
   deriving Inhabited, Repr, BEq
 
 /-- Persistent entries for registration profiles. -/

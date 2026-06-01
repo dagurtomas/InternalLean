@@ -8,6 +8,7 @@ import InternalLeanTest.EndToEndTinyNatTest
 import InternalLeanTest.FrontendMacroTest
 import InternalLeanTest.GenerationHygieneTest
 import InternalLeanTest.ImplicitVariablesTest
+import InternalLeanTest.IncrementalCacheTest
 import InternalLeanTest.InternalDefScalabilityTest
 import InternalLeanTest.InternalDefTest
 import InternalLeanTest.InternalTacticTest

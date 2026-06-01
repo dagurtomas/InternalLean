@@ -47,15 +47,24 @@ def internalRegistrationProfileMetadataSuffix (p : InternalRegistrationProfile) 
       {p.priorMetadataDecls}; rechecked opaque(s)={p.recheckedOpaqueConsts}, rule(s)=\
       {p.recheckedRules}, metadata={p.recheckedMetadataDecls}"
 
+/-- Extra profile detail for compiled LF checking cache use. -/
+def internalRegistrationProfileCacheSuffix (p : InternalRegistrationProfile) : String :=
+  match p.cacheStatus? with
+  | none => ""
+  | some status =>
+      let replay := if p.kernelReplayCacheHit then ", kernel replay cache=hit" else ""
+      s!", cache={status}, cache rebuilt={p.cacheRebuilt}, cache overlay=\
+        {p.cacheOverlayDecls}{replay}"
+
 /-- Record and optionally print one registration profile entry. -/
 def recordInternalRegistrationProfile (p : InternalRegistrationProfile) : CoreM Unit := do
   registerInternalRegistrationProfile p
   if (← getBoolOption `internalLean.profileInternalDef) then
-    logInfo m!"registration profile {p.theoryName}.{p.declName}: strategy={p.strategy}, \
-      prior object defs={p.priorObjectDefs}, prior theorem(s)={p.priorJudgmentTheorems}\
-      {internalRegistrationProfileMetadataSuffix p}, old object defs rechecked=\
-      {p.recheckedObjectDefs}, old theorem(s) rechecked={p.recheckedJudgmentTheorems}, \
-      incremental={p.incrementallyChecked}"
+    logInfo m!"registration profile {p.theoryName}.{p.declName}: strategy={p.strategy}\
+      {internalRegistrationProfileCacheSuffix p}, prior object defs={p.priorObjectDefs}, prior \
+        theorem(s)={p.priorJudgmentTheorems}{internalRegistrationProfileMetadataSuffix p}, old \
+          object defs rechecked={p.recheckedObjectDefs}, old theorem(s) rechecked=\
+            {p.recheckedJudgmentTheorems}, incremental={p.incrementallyChecked}"
 
 /-- Render a compact summary for the generated Lean-visible theory anchor. -/
 def theoryAnchorSummaryString (sig : HLSignature) (sourceDoc? : Option String := none) : String :=
@@ -242,6 +251,7 @@ def registerTheory (sig : HLSignature) : CoreM Unit := do
   let checked ← checkSignatureForRegistration sig
   let flatSource ← flattenSignature sig
   let checkedHL := checkedSignatureIncrementalHLSignature flatSource checked
+  let compiledCache ← mkCompiledLFCheckCacheFromHL checkedHL checked
   recordInternalRegistrationProfile {
     theoryName := sig.name.eraseMacroScopes
     declName := `declare_type_theory
@@ -254,7 +264,8 @@ def registerTheory (sig : HLSignature) : CoreM Unit := do
   modifyEnv fun env =>
     let env := theoryExt.addEntry env (.sig sig)
     let env := checkedTheoryExt.addEntry env (.sig checked)
-    checkedHLSignatureExt.addEntry env (.sig sig.name checkedHL)
+    let env := checkedHLSignatureExt.addEntry env (.sig sig.name checkedHL)
+    compiledLFCheckCacheExt.addEntry env (.cache sig.name compiledCache)
 
 /-- Reopen an existing type theory and append one declaration block. -/
 def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : CoreM Unit := do
@@ -268,6 +279,7 @@ def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : C
       let (blockForRegistry, checked, checkedHL) ←
         checkTheoryBlockExtensionIncremental theoryName sig priorChecked block checkedBase?
       let candidate := sig.appendBlock blockForRegistry
+      let compiledCache ← mkCompiledLFCheckCacheFromHL checkedHL checked
       recordInternalRegistrationProfile {
         theoryName := theoryName.eraseMacroScopes
         declName := `extend_type_theory
@@ -280,7 +292,8 @@ def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : C
       modifyEnv fun env =>
         let env := theoryExt.addEntry env (.sig candidate)
         let env := checkedTheoryExt.addEntry env (.sig checked)
-        checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
+        let env := checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
+        compiledLFCheckCacheExt.addEntry env (.cache theoryName compiledCache)
   | some reason =>
       let candidate := sig.appendBlock block
       let headSig ← flattenSignature candidate
@@ -288,6 +301,7 @@ def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : C
       let checked ← checkSignatureForRegistration candidate
       let flatSource ← flattenSignature candidate
       let checkedHL := checkedSignatureIncrementalHLSignature flatSource checked
+      let compiledCache ← mkCompiledLFCheckCacheFromHL checkedHL checked
       recordInternalRegistrationProfile {
         theoryName := theoryName.eraseMacroScopes
         declName := `extend_type_theory
@@ -306,7 +320,8 @@ def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : C
       modifyEnv fun env =>
         let env := theoryExt.addEntry env (.sig candidate)
         let env := checkedTheoryExt.addEntry env (.sig checked)
-        checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
+        let env := checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
+        compiledLFCheckCacheExt.addEntry env (.cache theoryName compiledCache)
 
 /-- Split leading named function arrows in an admitted LF opaque annotation into a shallow
 LF parameter telescope. This lets users write
@@ -445,6 +460,7 @@ def registerAdmittedInternalLFOpaqueBatch (theoryName : Name)
     throwError "internal error: admitted LF opaque batch produced {delta.opaqueConsts.size} \
       checked opaque(s) for {requests.size} request(s)"
   let checked' := appendCheckedTheoryDelta checked delta
+  let compiledCache ← mkCompiledLFCheckCacheFromHL flatForCheck checked'
   let mut admissions : Array InternalAdmission := #[]
   for req in requests, d in blockForRegistry.lfOpaqueConsts do
     let typeExpr := d.typeExpr?.getD req.typeExpr
@@ -479,6 +495,7 @@ def registerAdmittedInternalLFOpaqueBatch (theoryName : Name)
     let env := theoryExt.addEntry env (.sig (sig.appendBlock blockForRegistry))
     let env := checkedTheoryExt.addEntry env (.sig checked')
     let env := checkedHLSignatureExt.addEntry env (.sig theoryName flatForCheck)
+    let env := compiledLFCheckCacheExt.addEntry env (.cache theoryName compiledCache)
     admissions.foldl (init := env) fun env admission =>
       internalAdmissionExt.addEntry env (.admission admission)
 
@@ -643,17 +660,19 @@ def registerAdmittedInternalLFJudgmentTheorem (theoryName anchorName localName :
 
 /-- Register a top-level staged LF/object definition in an existing theory. -/
 def registerLFObjectDef (theoryName : Name) (d : LFObjectDefDecl) : CoreM Unit := do
-  let some sig ← getTheory? theoryName
+  let some _sig ← getTheory? theoryName
     | throwError "unknown type theory '{theoryName}'"
-  let flatSig ← flattenSignature sig
-  if flatSig.containsName d.name then
-    throwError "declaration '{d.name}' already exists in type theory '{theoryName}' or one of its \
-      parents"
   let some checked ← getCheckedTheory? theoryName
     | throwError "no checked artifact stored for type theory '{theoryName}'"
-  let knownTypes := checkedLFDefinitionTypeMap checked
-  let flatSigWithNew := { flatSig with lfObjectDefs := flatSig.lfObjectDefs.push d }
-  let dForRegistry ← elaborateImplicitAppsInLFObjectDef flatSigWithNew knownTypes d
+  let cacheLookup ← getOrBuildCompiledLFCheckCache theoryName checked
+  let cache := cacheLookup.cache
+  if cache.checkedHL.containsName d.name then
+    throwError "declaration '{d.name}' already exists in type theory '{theoryName}' or one of its \
+      parents"
+  let knownTypes := cache.knownLFDefTypes
+  let flatSigWithRaw := cache.checkedHL.appendBlock { lfObjectDefs := #[d] }
+  let dForRegistry ← elaborateImplicitAppsInLFObjectDef flatSigWithRaw knownTypes d
+  let flatSigWithNew := cache.checkedHL.appendBlock { lfObjectDefs := #[dForRegistry] }
   let typeExpr ←
     expandSyntaxAbbrevsInExpr flatSigWithNew "lf_def" dForRegistry.name "type" {}
       (lfAbbrevExpansionFuel flatSigWithNew) dForRegistry.typeExpr
@@ -665,15 +684,11 @@ def registerLFObjectDef (theoryName : Name) (d : LFObjectDefDecl) : CoreM Unit :
     name := dForRegistry.name.eraseMacroScopes
     typeExpr := typeExpr
     value := value }
-  let flatForCheck := { flatSig with lfObjectDefs := flatSig.lfObjectDefs.push dForCheck }
-  let checkedDef ←
-    checkOneLFObjectDefArtifactInSignature flatForCheck dForCheck checked.lfObjectDefs
+  let checkedDef ← checkOneLFObjectDefArtifactWithCache cache dForCheck
   let checked' := appendCheckedLFObjectDef checked checkedDef
-  let checkedHLBase :=
-    (← getCheckedHLSignature? theoryName).getD
-      (checkedSignatureIncrementalHLSignature flatSig checked)
-  let checkedHL := checkedHLBase.appendBlock {
+  let checkedHL := cache.checkedHL.appendBlock {
     lfObjectDefs := #[checkedLFObjectDefToHLDecl checkedDef] }
+  let compiledCache := cache.appendObjectDef checkedDef
   recordInternalRegistrationProfile {
     theoryName := theoryName
     declName := d.name.eraseMacroScopes
@@ -682,25 +697,31 @@ def registerLFObjectDef (theoryName : Name) (d : LFObjectDefDecl) : CoreM Unit :
     priorJudgmentTheorems := checked.lfJudgmentTheorems.size
     recheckedObjectDefs := 0
     recheckedJudgmentTheorems := 0
-    incrementallyChecked := 1 }
+    incrementallyChecked := 1
+    cacheStatus? := some cacheLookup.status
+    cacheRebuilt := cacheLookup.rebuilt
+    cacheOverlayDecls := 1 }
   modifyEnv fun env =>
     let env := theoryExt.addEntry env (.lfObjectDef theoryName dForRegistry)
     let env := checkedTheoryExt.addEntry env (.sig checked')
-    checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
+    let env := checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
+    compiledLFCheckCacheExt.addEntry env (.cache theoryName compiledCache)
 
 /-- Register a top-level staged LF judgment theorem in an existing theory. -/
 def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : CoreM Unit := do
-  let some sig ← getTheory? theoryName
+  let some _sig ← getTheory? theoryName
     | throwError "unknown type theory '{theoryName}'"
-  let flatSig ← flattenSignature sig
-  if flatSig.containsName t.name then
-    throwError "declaration '{t.name}' already exists in type theory '{theoryName}' or one of its \
-      parents"
   let some checked ← getCheckedTheory? theoryName
     | throwError "no checked artifact stored for type theory '{theoryName}'"
-  let knownTypes := checkedLFDefinitionTypeMap checked
-  let flatSigWithNew := { flatSig with lfJudgmentTheorems := flatSig.lfJudgmentTheorems.push t }
-  let tForRegistry ← elaborateImplicitAppsInLFJudgmentTheorem flatSigWithNew knownTypes t
+  let cacheLookup ← getOrBuildCompiledLFCheckCache theoryName checked
+  let cache := cacheLookup.cache
+  if cache.checkedHL.containsName t.name then
+    throwError "declaration '{t.name}' already exists in type theory '{theoryName}' or one of its \
+      parents"
+  let knownTypes := cache.knownLFDefTypes
+  let flatSigWithRaw := cache.checkedHL.appendBlock { lfJudgmentTheorems := #[t] }
+  let tForRegistry ← elaborateImplicitAppsInLFJudgmentTheorem flatSigWithRaw knownTypes t
+  let flatSigWithNew := cache.checkedHL.appendBlock { lfJudgmentTheorems := #[tForRegistry] }
   let binders ← expandSyntaxAbbrevsInBindings flatSigWithNew "judgment_theorem" tForRegistry.name
     tForRegistry.binders
   let locals := binders.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
@@ -716,19 +737,12 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
     binders := binders
     judgmentExpr := judgmentExpr
     proof := proof }
-  let flatForCheck := {
-    flatSig with lfJudgmentTheorems := flatSig.lfJudgmentTheorems.push tForCheck }
-  let checkedTheoremRaw ←
-    checkOneLFJudgmentTheoremArtifactInSignature flatForCheck checked.lfRules tForCheck
-      checked.lfObjectDefs checked.lfJudgmentTheorems
-  let checkedTheorem ←
-    validateIncrementalLFTheoremKernelReplay flatForCheck checked checkedTheoremRaw
+  let checkedTheoremRaw ← checkOneLFJudgmentTheoremArtifactWithCache cache tForCheck
+  let checkedTheorem ← validateIncrementalLFTheoremKernelReplayWithCache cache checkedTheoremRaw
   let checked' := appendCheckedLFJudgmentTheorem checked checkedTheorem
-  let checkedHLBase :=
-    (← getCheckedHLSignature? theoryName).getD
-      (checkedSignatureIncrementalHLSignature flatSig checked)
-  let checkedHL := checkedHLBase.appendBlock {
+  let checkedHL := cache.checkedHL.appendBlock {
     lfJudgmentTheorems := #[checkedLFJudgmentTheoremToHLDecl checkedTheorem] }
+  let compiledCache := cache.appendJudgmentTheorem checkedTheorem
   recordInternalRegistrationProfile {
     theoryName := theoryName
     declName := t.name.eraseMacroScopes
@@ -737,11 +751,16 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
     priorJudgmentTheorems := checked.lfJudgmentTheorems.size
     recheckedObjectDefs := 0
     recheckedJudgmentTheorems := 0
-    incrementallyChecked := 1 }
+    incrementallyChecked := 1
+    cacheStatus? := some cacheLookup.status
+    cacheRebuilt := cacheLookup.rebuilt
+    cacheOverlayDecls := 1
+    kernelReplayCacheHit := true }
   modifyEnv fun env =>
     let env := theoryExt.addEntry env (.lfJudgmentTheorem theoryName tForRegistry)
     let env := checkedTheoryExt.addEntry env (.sig checked')
-    checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
+    let env := checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
+    compiledLFCheckCacheExt.addEntry env (.cache theoryName compiledCache)
 
 /-- Register a theory-local ergonomic object macro. -/
 def registerObjectMacro (theoryName : Name) (mac : ObjectMacro) : CoreM Unit := do
@@ -756,11 +775,17 @@ def registerObjectMacro (theoryName : Name) (mac : ObjectMacro) : CoreM Unit := 
       or one of its parents"
   let checkedHL? := (← getCheckedHLSignature? theoryName).map fun sig =>
     { sig with macros := sig.macros.push mac }
+  let cache? ← getCompiledLFCheckCache? theoryName
   modifyEnv fun env =>
     let env := theoryExt.addEntry env (.macro theoryName mac)
-    match checkedHL? with
-    | some checkedHL => checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
-    | none => env
+    let env := match checkedHL? with
+      | some checkedHL => checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
+      | none => env
+    match checkedHL?, cache? with
+    | some checkedHL, some cache =>
+        compiledLFCheckCacheExt.addEntry env
+          (.cache theoryName { cache with checkedHL := checkedHL })
+    | _, _ => env
 
 /-- Register non-semantic role metadata for a theory-local object constant or macro. -/
 def registerObjectRole (theoryName : Name) (role : ObjectRole) : CoreM Unit := do
@@ -773,11 +798,17 @@ def registerObjectRole (theoryName : Name) (role : ObjectRole) : CoreM Unit := d
       '{theoryName}'"
   let checkedHL? := (← getCheckedHLSignature? theoryName).map fun sig =>
     { sig with roles := sig.roles.push role }
+  let cache? ← getCompiledLFCheckCache? theoryName
   modifyEnv fun env =>
     let env := theoryExt.addEntry env (.role theoryName role)
-    match checkedHL? with
-    | some checkedHL => checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
-    | none => env
+    let env := match checkedHL? with
+      | some checkedHL => checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
+      | none => env
+    match checkedHL?, cache? with
+    | some checkedHL, some cache =>
+        compiledLFCheckCacheExt.addEntry env
+          (.cache theoryName { cache with checkedHL := checkedHL })
+    | _, _ => env
 
 /-- Check that declaration names in a single theory block are unique. -/
 def checkNoDuplicateBlockNames (block : HLTheoryBlock) : CommandElabM Unit := do

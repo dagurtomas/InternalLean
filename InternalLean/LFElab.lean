@@ -4248,6 +4248,91 @@ def mkIntraBlockLFCheckContext (flatSig : HLSignature) (checkedBase : CheckedSig
     availableLFTheoremNames :=
       availableLFTheoremNamesFromChecked checkedBase.lfJudgmentTheorems }
 
+/-- Add candidate declaration names to a cached LF global-name set. -/
+def overlayLFKnownGlobalNames (known : NameSet) (block : HLTheoryBlock) : NameSet := Id.run do
+  let mut known := known
+  for s in block.syntaxSorts do known := known.insert s.name.eraseMacroScopes
+  for a in block.syntaxAbbrevs do known := known.insert a.name.eraseMacroScopes
+  for a in block.judgmentAbbrevs do known := known.insert a.name.eraseMacroScopes
+  for j in block.judgments do known := known.insert j.name.eraseMacroScopes
+  for o in block.lfOpaqueConsts do known := known.insert o.name.eraseMacroScopes
+  for r in block.rules do known := known.insert r.name.eraseMacroScopes
+  for d in block.lfObjectDefs do known := known.insert d.name.eraseMacroScopes
+  for t in block.lfJudgmentTheorems do known := known.insert t.name.eraseMacroScopes
+  return known
+
+/-- Add candidate opaque arities to a cached arity map. -/
+def overlayLFOpaqueArities (arities : NameMap (Option Nat))
+    (block : HLTheoryBlock) : NameMap (Option Nat) := Id.run do
+  let mut arities := arities
+  for o in block.lfOpaqueConsts do
+    let arity? := match o.typeExpr? with
+      | some _ => some o.params.size
+      | none => o.arity?
+    arities := arities.insert o.name.eraseMacroScopes arity?
+  return arities
+
+/-- Add candidate LF global heads to a cached head table. -/
+def overlayLFGlobalHeads (heads : NameMap (CheckedLFHeadKind × Option Nat))
+    (block : HLTheoryBlock) : NameMap (CheckedLFHeadKind × Option Nat) := Id.run do
+  let mut heads := heads
+  for s in block.syntaxSorts do
+    heads := heads.insert s.name.eraseMacroScopes (.syntaxSort, some s.params.size)
+  for j in block.judgments do
+    heads := heads.insert j.name.eraseMacroScopes (.judgment, some j.params.size)
+  for o in block.lfOpaqueConsts do
+    let arity? := match o.typeExpr? with
+      | some _ => some o.params.size
+      | none => o.arity?
+    heads := heads.insert o.name.eraseMacroScopes (.opaque, arity?)
+  for r in block.rules do
+    heads := heads.insert r.name.eraseMacroScopes (.lfRule, none)
+  for d in block.lfObjectDefs do
+    heads := heads.insert d.name.eraseMacroScopes (.lfDefinition,
+      some (lfFunctionTypeArity d.typeExpr))
+  for t in block.lfJudgmentTheorems do
+    heads := heads.insert t.name.eraseMacroScopes (.lfTheorem, some t.binders.size)
+  return heads
+
+/-- Add candidate syntax-sort arities to a cached arity map. -/
+def overlaySyntaxSortArities (arities : NameMap Nat) (block : HLTheoryBlock) : NameMap Nat :=
+  block.syntaxSorts.foldl (init := arities) fun arities s =>
+    arities.insert s.name.eraseMacroScopes s.params.size
+
+/-- Add candidate judgment arities to a cached arity map. -/
+def overlayJudgmentArities (arities : NameMap Nat) (block : HLTheoryBlock) : NameMap Nat :=
+  block.judgments.foldl (init := arities) fun arities j =>
+    arities.insert j.name.eraseMacroScopes j.params.size
+
+/-- Add candidate side-condition solvers to a cached solver set. -/
+def overlaySideConditionSolvers (solvers : NameSet) (block : HLTheoryBlock) : NameSet :=
+  block.sideConditionSolvers.foldl (init := solvers) fun solvers s =>
+    solvers.insert s.name.eraseMacroScopes
+
+/-- Construct an intra-block LF checking context from a compiled cache plus a small candidate
+block, without recomputing full-theory maps. -/
+def mkIntraBlockLFCheckContextFromCache (cache : CompiledLFCheckCache)
+    (candidate : HLTheoryBlock := {}) (newRules : Array CheckedLFRule := #[])
+    (newRuleSchemas : Array CheckedLFRuleSchema := #[])
+    (newCertificates : Array CheckedLFSideConditionCertificate := #[]) :
+    IntraBlockLFCheckContext :=
+  let flatSig := cache.checkedHL.appendBlock candidate
+  { theoryName := flatSig.name.eraseMacroScopes
+    flatSig := flatSig
+    lfGlobals := overlayLFKnownGlobalNames cache.lfGlobals candidate
+    opaqueArities := overlayLFOpaqueArities cache.opaqueArities candidate
+    globalHeads := overlayLFGlobalHeads cache.globalHeads candidate
+    syntaxSortArities := overlaySyntaxSortArities cache.syntaxSortArities candidate
+    judgmentArities := overlayJudgmentArities cache.judgmentArities candidate
+    solvers := overlaySideConditionSolvers cache.solvers candidate
+    checkedRules := cache.checkedRules ++ newRules
+    checkedRuleSchemas := cache.checkedRuleSchemas ++ newRuleSchemas
+    checkedSideConditionCertificates := cache.checkedSideConditionCertificates ++ newCertificates
+    knownLFDefTypes := cache.knownLFDefTypes
+    knownLFDefValues := cache.knownLFDefValues
+    availableLFTheoremStatements := cache.availableLFTheoremStatements
+    availableLFTheoremNames := cache.availableLFTheoremNames }
+
 /-- Check one LF object definition, updating the intra-block availability context. -/
 def checkLFObjectDefInContext (ctx : IntraBlockLFCheckContext) (d : LFObjectDefDecl) :
     CoreM (CheckedLFObjectDef × IntraBlockLFCheckContext) := do
@@ -4437,6 +4522,20 @@ def checkOneLFJudgmentTheoremArtifactInSignature (sig : HLSignature) (rules : Ar
     lfObjectDefs := priorDefs
     lfJudgmentTheorems := priorTheorems }
   let ctx := mkIntraBlockLFCheckContext sig checkedBase
+  let (checkedTheorem, _) ← checkLFJudgmentTheoremInContext ctx t
+  pure checkedTheorem
+
+/-- Incrementally check one LF object definition using a compiled checked-theory cache. -/
+def checkOneLFObjectDefArtifactWithCache (cache : CompiledLFCheckCache)
+    (d : LFObjectDefDecl) : CoreM CheckedLFObjectDef := do
+  let ctx := mkIntraBlockLFCheckContextFromCache cache { lfObjectDefs := #[d] }
+  let (checkedDef, _) ← checkLFObjectDefInContext ctx d
+  pure checkedDef
+
+/-- Incrementally check one LF judgment theorem using a compiled checked-theory cache. -/
+def checkOneLFJudgmentTheoremArtifactWithCache (cache : CompiledLFCheckCache)
+    (t : LFJudgmentTheoremDecl) : CoreM CheckedLFJudgmentTheorem := do
+  let ctx := mkIntraBlockLFCheckContextFromCache cache { lfJudgmentTheorems := #[t] }
   let (checkedTheorem, _) ← checkLFJudgmentTheoremInContext ctx t
   pure checkedTheorem
 
@@ -5503,6 +5602,24 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
       throwError "kernel-facing replay check failed for judgment_theorem '{t.name}' in type theory \
         '{sig.name}': {err}"
 
+/-- Add checked kernel replay validation to one incrementally checked LF theorem, reusing a
+compiled checked-theory replay cache. -/
+def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCache)
+    (t : CheckedLFJudgmentTheorem) : CoreM CheckedLFJudgmentTheorem := do
+  let some kernelDeriv := t.kernelDerivation?
+    | pure t
+  let assumptions ← kernelLFLocalAssumptionEntriesOfTheoremNormalized cache.checkedHL
+    cache.globalHeads cache.knownLFDefValues t
+  let localReplayCtx := { cache.kernelReplayBase with
+    localParameters := t.binders.toList.map (fun b => b.name)
+    assumptions := assumptions }
+  match CheckedKernelLFDerivation.ofReplay cache.kernelSig localReplayCtx
+      (KernelLFDerivation.statement kernelDeriv) kernelDeriv with
+  | .ok checkedReplay => pure { t with checkedKernelDerivation? := some checkedReplay }
+  | .error err =>
+      throwError "kernel-facing replay check failed for judgment_theorem '{t.name}' in type theory \
+        '{cache.checkedHL.name}': {err}"
+
 
 /-- Convert a checked LF binding back to the high-level declaration shape used for checking
 new extension deltas against an already checked baseline. -/
@@ -5620,6 +5737,177 @@ older imports or manually constructed checked artifacts. -/
 def checkedSignatureIncrementalHLSignature (sourceBase : HLSignature)
     (checked : CheckedSignature) : HLSignature :=
   checkedSignatureToHLSignature sourceBase checked
+
+/-- Whether a cached/reconstructed checked high-level signature has the same declaration counts as
+one checked signature. This is only a sanity guard before using the checked-HL cache; the checked
+signature remains authoritative. -/
+def checkedHLSignatureMatchesChecked (checkedHL : HLSignature)
+    (checked : CheckedSignature) : Bool :=
+  checkedHL.name.eraseMacroScopes == checked.name.eraseMacroScopes &&
+    checkedHL.levelParams.size == checked.levelParams.size &&
+    checkedHL.syntaxSorts.size == checked.lfSyntaxSorts.size &&
+    checkedHL.syntaxAbbrevs.size == checked.lfSyntaxAbbrevs.size &&
+    checkedHL.judgmentAbbrevs.size == checked.lfJudgmentAbbrevs.size &&
+    checkedHL.contextZones.size == checked.lfContextZones.size &&
+    checkedHL.binderClasses.size == checked.lfBinderClasses.size &&
+    checkedHL.judgments.size == checked.lfJudgments.size &&
+    checkedHL.rules.size == checked.lfRules.size &&
+    checkedHL.lfOpaqueConsts.size == checked.lfOpaqueConsts.size &&
+    checkedHL.lfObjectDefs.size == checked.lfObjectDefs.size &&
+    checkedHL.lfJudgmentTheorems.size == checked.lfJudgmentTheorems.size
+
+/-- Recover the flattened checked high-level signature to store in a compiled LF cache. -/
+def checkedHLSignatureForCompiledCache (theoryName : Name) (checked : CheckedSignature) :
+    CoreM HLSignature := do
+  match ← getCheckedHLSignature? theoryName with
+  | some checkedHL =>
+      if checkedHLSignatureMatchesChecked checkedHL checked then
+        pure checkedHL
+      else
+        match ← getTheory? theoryName with
+        | some sourceSig =>
+            let sourceBase ← flattenSignature sourceSig
+            pure (checkedSignatureIncrementalHLSignature sourceBase checked)
+        | none => pure (checkedSignatureIncrementalHLSignature { name := checked.name } checked)
+  | none =>
+      match ← getTheory? theoryName with
+      | some sourceSig =>
+          let sourceBase ← flattenSignature sourceSig
+          pure (checkedSignatureIncrementalHLSignature sourceBase checked)
+      | none => pure (checkedSignatureIncrementalHLSignature { name := checked.name } checked)
+
+/-- Build a compiled LF checking cache from a checked high-level signature and checked artifacts. -/
+def mkCompiledLFCheckCacheFromHL (checkedHL : HLSignature) (checked : CheckedSignature) :
+    CoreM CompiledLFCheckCache := do
+  let checkedLFDefValues := checkedLFDefinitionValues checked.lfObjectDefs
+  let kernelSig : Signature := {
+    name := checked.name.eraseMacroScopes
+    constants := (checkedLFConstantsToKernel checkedLFDefValues checked.lfOpaqueConsts
+      checked.lfObjectDefs).toList
+    contextZones := checked.lfContextZones.toList.map checkedLFContextZoneToKernel
+    binderClasses := checked.lfBinderClasses.toList.map checkedLFBinderClassToKernel
+    conversionPlugins := checked.lfConversionPlugins.toList.map checkedLFConversionPluginToKernel
+    rules := (checkedLFRuleSchemasToKernel checkedLFDefValues checked.lfRuleSchemas ++
+      kernelLFRuleSchemasOfTheorems checkedLFDefValues checked.lfJudgmentTheorems).toList }
+  let mut replayCtx : KernelLFCheckContext := {
+    certificates := kernelLFCertificateEntriesOfTheorems checked.lfJudgmentTheorems }
+  for prior in checked.lfJudgmentTheorems do
+    if prior.binders.isEmpty then
+      if let some priorKernel := prior.kernelDerivation? then
+        replayCtx := replayCtx.addTheorem prior.name (KernelLFDerivation.statement priorKernel)
+  pure {
+    theoryName := checked.name.eraseMacroScopes
+    stamp := CompiledLFCheckCacheStamp.ofCheckedSignature checked
+    checkedHL := checkedHL
+    lfGlobals := lfKnownGlobalNames checkedHL
+    opaqueArities := lfOpaqueArities checkedHL
+    globalHeads := lfGlobalHeadInfo checkedHL
+    syntaxSortArities := checkedHL.syntaxSorts.foldl (init := {}) fun acc s =>
+      acc.insert s.name.eraseMacroScopes s.params.size
+    judgmentArities := checkedHL.judgments.foldl (init := {}) fun acc j =>
+      acc.insert j.name.eraseMacroScopes j.params.size
+    solvers := checkedHL.sideConditionSolvers.foldl (init := {}) fun acc s =>
+      acc.insert s.name.eraseMacroScopes
+    checkedRules := checked.lfRules
+    checkedRuleSchemas := checked.lfRuleSchemas
+    checkedSideConditionCertificates := checked.lfSideConditionCertificates
+    knownLFDefTypes := checkedLFDefinitionTypeMapFromDefs checked.lfObjectDefs
+    knownLFDefValues := lfDefinitionValueMapFromCheckedDefs checked.lfObjectDefs
+    checkedLFDefValues := checkedLFDefValues
+    availableLFTheoremStatements :=
+      availableLFTheoremStatementsFromChecked checked.lfJudgmentTheorems
+    availableLFTheoremNames := availableLFTheoremNamesFromChecked checked.lfJudgmentTheorems
+    kernelSig := kernelSig
+    kernelReplayBase := replayCtx }
+
+/-- Build a compiled LF checking cache from the current checked-HL registry when available. -/
+def mkCompiledLFCheckCache (theoryName : Name) (checked : CheckedSignature) :
+    CoreM CompiledLFCheckCache := do
+  let checkedHL ← checkedHLSignatureForCompiledCache theoryName checked
+  mkCompiledLFCheckCacheFromHL checkedHL checked
+
+/-- Result of looking up or rebuilding a compiled LF checking cache. -/
+structure CompiledLFCheckCacheLookup where
+  /-- Cache to use. -/
+  cache : CompiledLFCheckCache
+  /-- User-facing cache status, such as `hit`, `miss`, or `stale-rebuilt`. -/
+  status : String
+  /-- Whether the cache had to be rebuilt before use. -/
+  rebuilt : Bool := false
+  deriving Inhabited
+
+/-- Retrieve a matching compiled LF checking cache, rebuilding and storing it on miss/mismatch. -/
+def getOrBuildCompiledLFCheckCache (theoryName : Name) (checked : CheckedSignature) :
+    CoreM CompiledLFCheckCacheLookup := do
+  let expected := CompiledLFCheckCacheStamp.ofCheckedSignature checked
+  match ← getCompiledLFCheckCache? theoryName with
+  | some cache =>
+      if cache.stamp == expected then
+        pure { cache := cache, status := "hit", rebuilt := false }
+      else
+        let cache ← mkCompiledLFCheckCache theoryName checked
+        setCompiledLFCheckCache theoryName cache
+        pure { cache := cache, status := "stale-rebuilt", rebuilt := true }
+  | none =>
+      let cache ← mkCompiledLFCheckCache theoryName checked
+      setCompiledLFCheckCache theoryName cache
+      pure { cache := cache, status := "miss", rebuilt := true }
+
+namespace CompiledLFCheckCache
+
+/-- Append a checked LF object definition to a compiled LF checking cache. -/
+def appendObjectDef (cache : CompiledLFCheckCache) (d : CheckedLFObjectDef) :
+    CompiledLFCheckCache :=
+  let defName := d.name.eraseMacroScopes
+  let checkedLFDefValues := cache.checkedLFDefValues.insert defName d.checkedValue
+  let kernelConst := checkedLFObjectDefToKernelConstant checkedLFDefValues d
+  { cache with
+    stamp := { cache.stamp with objectDefCount := cache.stamp.objectDefCount + 1 }
+    checkedHL := cache.checkedHL.appendBlock { lfObjectDefs := #[checkedLFObjectDefToHLDecl d] }
+    lfGlobals := cache.lfGlobals.insert defName
+    globalHeads := cache.globalHeads.insert defName (.lfDefinition,
+      some (lfFunctionTypeArity d.typeExpr))
+    knownLFDefTypes := cache.knownLFDefTypes.insert defName (eraseObjExprScopes d.typeExpr)
+    knownLFDefValues := cache.knownLFDefValues.insert defName (eraseObjExprScopes d.value)
+    checkedLFDefValues := checkedLFDefValues
+    kernelSig := { cache.kernelSig with constants := cache.kernelSig.constants ++ [kernelConst] } }
+
+/-- Append a checked LF judgment theorem to a compiled LF checking cache. -/
+def appendJudgmentTheorem (cache : CompiledLFCheckCache) (t : CheckedLFJudgmentTheorem) :
+    CompiledLFCheckCache :=
+  let theoremName := t.name.eraseMacroScopes
+  let kernelRule := kernelLFRuleSchemaOfTheorem cache.checkedLFDefValues t
+  let certificateEntries := kernelLFCertificateEntriesOfTheorems #[t]
+  let replayCtx := { cache.kernelReplayBase with
+    certificates := cache.kernelReplayBase.certificates ++ certificateEntries }
+  let replayCtx :=
+    if t.binders.isEmpty then
+      match t.kernelDerivation? with
+      | some priorKernel => replayCtx.addTheorem t.name (KernelLFDerivation.statement priorKernel)
+      | none => replayCtx
+    else
+      replayCtx
+  let availableStatements :=
+    if t.binders.isEmpty then
+      let stmt := match t.derivation? with
+        | some derivation => checkedLFDerivationStatement derivation
+        | none => t.judgmentExpr
+      cache.availableLFTheoremStatements.insert theoremName (eraseObjExprScopes stmt)
+    else
+      cache.availableLFTheoremStatements
+  { cache with
+    stamp := { cache.stamp with
+      judgmentTheoremCount := cache.stamp.judgmentTheoremCount + 1 }
+    checkedHL := cache.checkedHL.appendBlock {
+      lfJudgmentTheorems := #[checkedLFJudgmentTheoremToHLDecl t] }
+    lfGlobals := cache.lfGlobals.insert theoremName
+    globalHeads := cache.globalHeads.insert theoremName (.lfTheorem, some t.binders.size)
+    availableLFTheoremStatements := availableStatements
+    availableLFTheoremNames := cache.availableLFTheoremNames.insert theoremName
+    kernelSig := { cache.kernelSig with rules := cache.kernelSig.rules ++ [kernelRule] }
+    kernelReplayBase := replayCtx }
+
+end CompiledLFCheckCache
 
 /-- Return a fallback reason when a block still needs the full checker. -/
 def unsupportedIncrementalTheoryBlockReason? (block : HLTheoryBlock) : Option String :=
