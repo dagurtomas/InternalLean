@@ -761,13 +761,24 @@ structure CheckedLFRuleParamEvidence where
 structure CheckedLFRulePremise where
   /-- Premise name, with macro scopes erased. -/
   name : Name
-  /-- Source premise expression. -/
+  /-- Source premise evidence-type expression. -/
   judgmentExpr : ObjExpr
-  /-- Recursively resolved premise expression. -/
+  /-- Recursively resolved premise evidence-type expression. -/
   checkedJudgmentExpr : CheckedLFExpr := default
-  /-- Resolved judgment head of the premise. -/
-  head : CheckedLFHead
+  /-- Resolved head of the premise type, when it has one. Direct judgment heads lower to kernel
+  rule premises; other checked evidence types lower as typed scoped-instantiation entries. -/
+  head? : Option CheckedLFHead := none
   deriving Inhabited, Repr, BEq
+
+namespace CheckedLFRulePremise
+
+/-- Whether this premise is a direct judgment premise rather than a higher-order evidence value. -/
+def isDirectJudgment (p : CheckedLFRulePremise) : Bool :=
+  match p.head? with
+  | some h => h.kind == .judgment
+  | none => false
+
+end CheckedLFRulePremise
 
 /-- A checked LF side-condition artifact. -/
 structure CheckedLFRuleSideCondition where
@@ -1110,11 +1121,21 @@ structure CheckedLFMultiContext where
 structure CheckedLFPremiseSchema where
   /-- Premise name, with macro scopes erased. -/
   name : Name
-  /-- Judgment head of this premise. -/
-  judgmentHead : CheckedLFHead
-  /-- Resolved premise expression. -/
+  /-- Head of this premise type, when it has one. -/
+  head? : Option CheckedLFHead := none
+  /-- Resolved premise evidence-type expression. -/
   checkedJudgmentExpr : CheckedLFExpr := default
   deriving Inhabited, Repr, BEq
+
+namespace CheckedLFPremiseSchema
+
+/-- Whether this premise schema is a direct judgment premise. -/
+def isDirectJudgment (p : CheckedLFPremiseSchema) : Bool :=
+  match p.head? with
+  | some h => h.kind == .judgment
+  | none => false
+
+end CheckedLFPremiseSchema
 
 /-- A Phase-2/3 slot for a side-condition certificate.
 

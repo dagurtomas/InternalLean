@@ -1039,7 +1039,8 @@ def lfTheoremSideConditionFieldName (theoremName : Name) (path : Array Nat) (sid
 /-- Source-level substitution produced by a rule application's explicit parameter arguments. -/
 def lfRuleArgSubst (r : CheckedLFRule) (ruleArgs : Array ObjExpr) : NameMap ObjExpr := Id.run do
   let mut subst := {}
-  for p in r.params, arg in ruleArgs do
+  let paramArgs := ruleArgs[:r.params.size]
+  for p in r.params, arg in paramArgs do
     subst := subst.insert p.name.eraseMacroScopes (eraseObjExprScopes arg)
   return subst
 
@@ -4463,7 +4464,15 @@ partial def lfDerivationTermSyntax? (checked : CheckedSignature) (fieldNames : N
                 args.push (← lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues
                   modelIdent locals paramVis arg)
               argIndex := argIndex + 1
-        | none => return none
+        | none =>
+            let some arg := theoremArgs[argIndex]?
+              | return none
+            unless lfObjExprRenderableInModel defValues blockingUntyped sidePredicateNames arg do
+              return none
+            args :=
+              args.push (← lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues
+                modelIdent locals paramVis arg)
+            argIndex := argIndex + 1
       if argIndex != theoremArgs.size || premiseIndex != theoremPremises.size then
         return none
       some <$> mkTermAppSyntax head args
@@ -4476,7 +4485,8 @@ partial def lfDerivationTermSyntax? (checked : CheckedSignature) (fieldNames : N
         return none
       let mut args : Array (TSyntax `term) := #[]
       let mut subst : NameMap ObjExpr := {}
-      for p in r.params, arg in ruleArgs do
+      let paramArgs := ruleArgs[:r.params.size]
+      for p in r.params, arg in paramArgs do
         let arg := eraseObjExprScopes arg
         unless lfObjExprRenderableInModel defValues blockingUntyped sidePredicateNames arg do
           return none
@@ -4484,24 +4494,42 @@ partial def lfDerivationTermSyntax? (checked : CheckedSignature) (fieldNames : N
           args.push (← lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent
             locals paramVis arg)
         subst := subst.insert p.name.eraseMacroScopes arg
-      for i in List.range premises.size do
-        match premises[i]? with
-        | none => return none
-        | some prem =>
-            let maybePremiseTerm ←
-              lfDerivationTermSyntax? checked fieldNames defValues paramVis blockingUntyped
-                sidePredicateNames certParamNames localAssumptionNames modelIdent locals
-                theoremName (path.push i) prem
-            match maybePremiseTerm with
-            | none => return none
-            | some premiseTerm => args := args.push premiseTerm
+      let mut premiseIndex := 0
+      let mut evidenceArgIndex := r.params.size
+      for p in r.premises do
+        if p.isDirectJudgment then
+          let some prem := premises[premiseIndex]?
+            | return none
+          let maybePremiseTerm ←
+            lfDerivationTermSyntax? checked fieldNames defValues paramVis blockingUntyped
+              sidePredicateNames certParamNames localAssumptionNames modelIdent locals
+              theoremName (path.push premiseIndex) prem
+          match maybePremiseTerm with
+          | none => return none
+          | some premiseTerm => args := args.push premiseTerm
+          premiseIndex := premiseIndex + 1
+        else
+          let some arg := ruleArgs[evidenceArgIndex]?
+            | return none
+          let arg := eraseObjExprScopes arg
+          unless lfObjExprRenderableInModel defValues blockingUntyped sidePredicateNames arg do
+            return none
+          args :=
+            args.push (← lfObjExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent
+              locals paramVis arg)
+          subst := subst.insert p.name.eraseMacroScopes arg
+          evidenceArgIndex := evidenceArgIndex + 1
+      if premiseIndex != premises.size || evidenceArgIndex != ruleArgs.size then
+        return none
       for ev in r.paramEvidences do
-        let mut premiseIndex? : Option Nat := none
-        for i in List.range r.premises.size do
-          if let some p := r.premises[i]? then
+        let mut directPremiseIndex? : Option Nat := none
+        let mut directIndex := 0
+        for p in r.premises do
+          if p.isDirectJudgment then
             if p.name == ev.name then
-              premiseIndex? := some i
-        match premiseIndex? with
+              directPremiseIndex? := some directIndex
+            directIndex := directIndex + 1
+        match directPremiseIndex? with
         | none => return none
         | some i =>
             match premises[i]? with

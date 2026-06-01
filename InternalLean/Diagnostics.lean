@@ -581,7 +581,8 @@ elab "#print_checked_logical_framework_rules " nm:ident : command => do
       logInfo m!"    resolved evidence: {ev.checkedJudgmentExpr.summary}"
     for p in r.premises do
       if !evidencePremiseNames.contains p.name then
-        logInfo m!"  premise {p.name}: {p.judgmentExpr} headed by {p.head.summary}"
+        let head := match p.head? with | some h => m!" headed by {h.summary}" | none => m!""
+        logInfo m!"  premise {p.name}: {p.judgmentExpr}{head}"
         logInfo m!"    resolved premise: {p.checkedJudgmentExpr.summary}"
     for sc in r.sideConditions do
       let head := match sc.head? with | some h => m!" headed by {h.summary}" | none => m!""
@@ -608,17 +609,14 @@ elab "#print_logical_framework_rule_schemas " nm:ident : command => do
     for z in r.multiContext.locals do
       let binder := match z.binderClass? with | some b => m!" by {b}" | none => m!""
       logInfo m!"  zone-local {z.name} in {z.zoneName}{binder}: {z.typeExpr}"
-    let evidencePremiseNames : NameSet := r.metavariables.foldl (init := {}) fun acc v =>
-      match v.evidence? with
-      | some ev => acc.insert ev.name
-      | none => acc
     for p in r.premises do
-      if evidencePremiseNames.contains p.name then
-        logInfo m!"  evidence-slot {p.name}: {p.judgmentHead.summary}"
-        logInfo m!"    resolved evidence: {p.checkedJudgmentExpr.summary}"
-      else
-        logInfo m!"  premise-slot {p.name}: {p.judgmentHead.summary}"
+      let head := match p.head? with | some h => m!"{h.summary}" | none => m!"structural evidence"
+      if p.isDirectJudgment then
+        logInfo m!"  premise-slot {p.name}: {head}"
         logInfo m!"    resolved premise: {p.checkedJudgmentExpr.summary}"
+      else
+        logInfo m!"  evidence-parameter slot {p.name}: {head}"
+        logInfo m!"    resolved evidence type: {p.checkedJudgmentExpr.summary}"
     for sc in r.sideConditionSlots do
       let head :=
         match sc.inputHead? with

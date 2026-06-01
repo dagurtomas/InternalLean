@@ -5,6 +5,7 @@ import InternalLeanTest.CheckerHardeningTest
 import InternalLeanTest.CheckerPerformanceSmokeTest
 import InternalLeanTest.DocLintTest
 import InternalLeanTest.EndToEndTinyNatTest
+import InternalLeanTest.EvidencePremiseTest
 import InternalLeanTest.FrontendMacroTest
 import InternalLeanTest.GenerationHygieneTest
 import InternalLeanTest.ImplicitVariablesTest

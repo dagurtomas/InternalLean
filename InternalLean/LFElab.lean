@@ -1603,16 +1603,42 @@ structure LFGlobalTypeInfo where
   typeExpr : ObjExpr
   deriving Inhabited, Repr, BEq
 
-/-- Look up the declared object type of a global constant-like head. This is intentionally
-limited to declarations that carry an explicit result type, including typed opaque LF
-placeholders used as staging constructors. -/
-def findLFGlobalTypeInfo? (sig : HLSignature) (name : Name) : Option LFGlobalTypeInfo :=
+/-- Convert a rule premise to a proof/evidence binder for shallow type lookup. -/
+def rulePremiseAsTypeInfoBinder (p : RulePremiseDecl) : HLBinding :=
+  { name := p.name.eraseMacroScopes, typeExpr := p.judgmentExpr, visibility := .explicit }
+
+/-- Look up the declared object type of a global constructor-like head.
+
+This is limited to typed opaque LF placeholders. Rule and theorem heads are handled separately by
+`findLFProofTypeInfo?` so ordinary proof prechecks keep their historical replay diagnostics. -/
+def findLFGlobalTypeInfo? (sig : HLSignature) (name : Name) : Option LFGlobalTypeInfo := Id.run do
   let name := name.eraseMacroScopes
-  sig.lfOpaqueConsts.findSome? fun o =>
+  let mut out : Option LFGlobalTypeInfo := none
+  for o in sig.lfOpaqueConsts do
     if o.name.eraseMacroScopes == name then
-      o.typeExpr?.map fun typeExpr => ({ binders := o.params, typeExpr } : LFGlobalTypeInfo)
-    else
-      none
+      if let some typeExpr := o.typeExpr? then
+        out := some { binders := o.params, typeExpr }
+  return out
+
+/-- Look up a rule or theorem as a proof constant for higher-order evidence term checking. -/
+def findLFProofTypeInfo? (sig : HLSignature) (name : Name) : Option LFGlobalTypeInfo := Id.run do
+  let name := name.eraseMacroScopes
+  let mut out : Option LFGlobalTypeInfo := none
+  for r in sig.rules do
+    if r.name.eraseMacroScopes == name then
+      out := some {
+        binders := r.params ++ r.premises.map rulePremiseAsTypeInfoBinder
+        typeExpr := r.conclusionExpr }
+  for t in sig.lfJudgmentTheorems do
+    if t.name.eraseMacroScopes == name then
+      out := some { binders := t.binders, typeExpr := t.judgmentExpr }
+  return out
+
+/-- Type lookup used by shallow inference, including proof constants. -/
+def findLFInferableTypeInfo? (sig : HLSignature) (name : Name) : Option LFGlobalTypeInfo :=
+  match findLFGlobalTypeInfo? sig name with
+  | some info => some info
+  | none => findLFProofTypeInfo? sig name
 
 /-- Infer a shallow LF/object type for expressions whose head has known type metadata.
 This handles local/LF-definition identifiers from `knownTypes` and global object constants
@@ -1625,7 +1651,7 @@ partial def inferKnownLFExprType? (sig : HLSignature) (knownTypes : LFLocalTypes
       match knownTypes.find? n with
       | some typeExpr => some typeExpr
       | none =>
-          match findLFGlobalTypeInfo? sig n with
+          match findLFInferableTypeInfo? sig n with
           | some info => if info.binders.isEmpty then some (eraseObjExprScopes info.typeExpr) else
             none
           | none =>
@@ -1724,7 +1750,7 @@ partial def inferKnownLFExprType? (sig : HLSignature) (knownTypes : LFLocalTypes
                               else
                                 none
                           | none =>
-                              match findLFGlobalTypeInfo? sig head with
+                              match findLFInferableTypeInfo? sig head with
                               | none => none
                               | some info =>
                                   if args.size != info.binders.size then
@@ -2404,43 +2430,47 @@ placeholders, which remain a visible trust boundary for staged payloads. -/
 partial def checkLFExprHasType (sig : HLSignature) (ownerKind : String) (ownerName : Name)
     (where_ : String) (knownTypes : LFLocalTypes) (expr expected : ObjExpr) : CoreM Unit := do
   let rec checkInferableApps (knownTypes : LFLocalTypes) (expr : ObjExpr) : CoreM Unit := do
+    let checkTypedHeadArgs (headLabel : String) (head : Name) (info : LFGlobalTypeInfo)
+        (args : Array ObjExpr) := do
+      if args.size == info.binders.size then
+        let mut subst : NameMap ObjExpr := {}
+        for b in info.binders, arg in args do
+          let expected := substLFParams subst b.typeExpr
+          checkLFExprHasType sig ownerKind ownerName
+            s!"{where_} for {headLabel} '{head}' parameter '{b.name.eraseMacroScopes}'"
+            knownTypes arg expected
+          subst := subst.insert b.name.eraseMacroScopes (eraseObjExprScopes arg)
+      else
+        for arg in args do
+          checkInferableApps knownTypes arg
     match eraseObjExprScopes expr with
     | .ident _ | .sort | .univ _ => pure ()
     | e@(.app ..) =>
         match splitObjApp e with
         | (.ident head, args) =>
             let head := head.eraseMacroScopes
-            match findLFGlobalTypeInfo? sig head with
-            | some info =>
-                if args.size == info.binders.size then
-                  let mut subst : NameMap ObjExpr := {}
-                  for b in info.binders, arg in args do
-                    let expected := substLFParams subst b.typeExpr
-                    checkLFExprHasType sig ownerKind ownerName
-                      s!"{where_} for constructor '{head}' parameter \
-                        '{b.name.eraseMacroScopes}'" knownTypes arg expected
-                    subst := subst.insert b.name.eraseMacroScopes (eraseObjExprScopes arg)
-                else
+            if let some info := findLFGlobalTypeInfo? sig head then
+              checkTypedHeadArgs "constructor" head info args
+            else if let some info := findLFProofTypeInfo? sig head then
+              checkTypedHeadArgs "proof constant" head info args
+            else
+              match knownTypes.find? head with
+              | some typeExpr =>
+                  let mut current := eraseObjExprScopes typeExpr
+                  for arg in args do
+                    match current with
+                    | .arrow binder? expected result | .funArrow binder? expected result =>
+                        checkLFExprHasType sig ownerKind ownerName
+                          s!"{where_} for local function '{head}' argument" knownTypes arg
+                          expected
+                        current := match binder? with
+                          | some x => substSingleLFParam x (eraseObjExprScopes arg) result
+                          | none => result
+                    | _ =>
+                        checkInferableApps knownTypes arg
+              | none =>
                   for arg in args do
                     checkInferableApps knownTypes arg
-            | none =>
-                match knownTypes.find? head with
-                | some typeExpr =>
-                    let mut current := eraseObjExprScopes typeExpr
-                    for arg in args do
-                      match current with
-                      | .arrow binder? expected result | .funArrow binder? expected result =>
-                          checkLFExprHasType sig ownerKind ownerName
-                            s!"{where_} for local function '{head}' argument" knownTypes arg
-                            expected
-                          current := match binder? with
-                            | some x => substSingleLFParam x (eraseObjExprScopes arg) result
-                            | none => result
-                      | _ =>
-                          checkInferableApps knownTypes arg
-                | none =>
-                    for arg in args do
-                      checkInferableApps knownTypes arg
         | (head, args) =>
             checkInferableApps knownTypes head
             for arg in args do
@@ -2757,6 +2787,69 @@ def checkLFBinderTypesInBindings (sig : HLSignature)
       b.typeExpr
     knownTypes := knownTypes.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
     locals := locals.insert b.name.eraseMacroScopes
+
+/-- Check that an expression is a type/evidence expression usable as a premise or proof binder.
+
+Unlike ordinary object-definition type checking, this discipline allows judgment-headed leaves
+under structural arrows and Sigma packages. This supports higher-order premises such as
+`(x : Obj) → P x` and `(P x → Q x) × (Q x → P x)`. -/
+partial def checkLFEvidenceType (sig : HLSignature)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (ownerKind : String)
+    (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes) (locals : NameSet)
+    (typeExpr : ObjExpr) : CoreM Unit := do
+  let typeExpr := eraseObjExprScopes typeExpr
+  match typeExpr with
+  | .sort | .univ _ => pure ()
+  | .arrow x A B | .funArrow x A B | .sigma x A B =>
+      checkLFEvidenceType sig globalHeads ownerKind ownerName where_ knownTypes locals A
+      let knownTypes := match x with
+        | some x => knownTypes.insert x.eraseMacroScopes (eraseObjExprScopes A)
+        | none => knownTypes
+      let locals := match x with
+        | some x => locals.insert x.eraseMacroScopes
+        | none => locals
+      checkLFEvidenceType sig globalHeads ownerKind ownerName where_ knownTypes locals B
+  | .pair .. | .fst .. | .snd .. | .lam .. =>
+      throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} as \
+        term-shaped expression '{diagnosticObjExprString typeExpr}', expected an LF \
+          type/evidence expression"
+  | _ =>
+      let head? := checkedLFHead? globalHeads locals typeExpr
+      match head? with
+      | some head =>
+          checkCheckedLFHeadArity sig ownerKind ownerName where_ head
+          if head.kind == .judgment then
+            let (_, args) := splitObjApp typeExpr
+            checkLFJudgmentArgumentsWithKnownTypes sig ownerKind ownerName where_ knownTypes
+              head.name args
+          else if head.kind == .syntaxSort then
+            let (_, args) := splitObjApp typeExpr
+            checkLFSyntaxSortArgumentsWithKnownTypes sig ownerKind ownerName where_ knownTypes
+              head.name args
+          else
+            checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes typeExpr
+            match inferKnownLFExprType? sig knownTypes typeExpr with
+            | some actualType =>
+                unless inferredLFTypeIsUniverse sig actualType do
+                  throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} \
+                    whose inferred type is '{diagnosticObjExprString actualType}', expected a \
+                      universe-valued LF type/evidence expression"
+            | none =>
+                throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} \
+                  whose type cannot be inferred: '{diagnosticObjExprString typeExpr}', expected \
+                    an LF type/evidence expression"
+      | none =>
+          checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes typeExpr
+          match inferKnownLFExprType? sig knownTypes typeExpr with
+          | some actualType =>
+              unless inferredLFTypeIsUniverse sig actualType do
+                throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} \
+                  whose inferred type is '{diagnosticObjExprString actualType}', expected a \
+                    universe-valued LF type/evidence expression"
+          | none =>
+              throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} \
+                not headed by a known LF type/evidence identifier: \
+                  {diagnosticObjExprString typeExpr}"
 
 /-- Classify a declared side-condition solver name into the executable hook registry.
 
@@ -3250,7 +3343,7 @@ partial def checkedLFExprToRaw : CheckedLFExpr → Raw
       | .local => .leanParam h.name
       | .syntaxSort => .tyConst h.name
       | .lfDefinition | .lfTheorem | .lfRule => .tmConst h.name
-      | .judgment => .leanParam h.name
+      | .judgment => .tmConst h.name
       | .primitive | .definition | .theorem | .opaque => .tmConst h.name
   | .sort => .tyConst `Type
   | .univ u => .tyApp `Type [.leanParam (.str .anonymous u.toString)]
@@ -3266,8 +3359,12 @@ partial def checkedLFExprToRaw : CheckedLFExpr → Raw
           | .judgment => .tmApp h.name rawArgs
           | .primitive | .definition | .theorem | .opaque => .tmApp h.name rawArgs
       | other => .tmApp `_app (checkedLFExprToRaw other :: rawArgs)
-  | .arrow _ A B => .tyApp `arrow [checkedLFExprToRaw A, checkedLFExprToRaw B]
-  | .sigma _ A B => .tyApp `sigma [checkedLFExprToRaw A, checkedLFExprToRaw B]
+  | .arrow none A B => .tyApp `arrow [checkedLFExprToRaw A, checkedLFExprToRaw B]
+  | .arrow (some x) A B =>
+      .tyApp `arrow [checkedLFExprToRaw A, .tmApp `lam [.leanParam x, checkedLFExprToRaw B]]
+  | .sigma none A B => .tyApp `sigma [checkedLFExprToRaw A, checkedLFExprToRaw B]
+  | .sigma (some x) A B =>
+      .tyApp `sigma [checkedLFExprToRaw A, .tmApp `lam [.leanParam x, checkedLFExprToRaw B]]
   | .pair a b => .tmApp `pair [checkedLFExprToRaw a, checkedLFExprToRaw b]
   | .fst e => .tmApp `fst [checkedLFExprToRaw e]
   | .snd e => .tmApp `snd [checkedLFExprToRaw e]
@@ -3467,33 +3564,60 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
       let mut subst : NameMap ObjExpr := {}
       let mut theoremArgs : Array ObjExpr := #[]
       let mut premiseDerivations : Array CheckedLFDerivation := #[]
-      for b in premiseTheorem.binders, arg in proofArgs do
+      let mut proofArgIndex := 0
+      for b in premiseTheorem.binders do
         let expectedBinderType := eraseObjExprScopes (substLFParams subst b.typeExpr)
-        let some binderHead := checkedLFHead? globalHeads localNames expectedBinderType
-          | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' applies \
-            premise theorem '{theoremRefName}' but binder '{b.name.eraseMacroScopes}' has type \
-              not headed by a known LF identifier: {expectedBinderType}"
-        if binderHead.kind == .judgment then
-          let some premiseDeriv ←
-            checkLFJudgmentDerivation sig rules globalHeads knownTypes defValues localNames
-              availableLocalStatements availableTheoremStatements availableTheoremNames theoremName
-              expectedBinderType arg
-            | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' applies \
-              premise theorem '{theoremRefName}' with unchecked proof argument '{arg}' for local \
-                hypothesis '{b.name.eraseMacroScopes}'"
-          premiseDerivations := premiseDerivations.push premiseDeriv
-        else
-          checkLFKnownArgumentType sig "judgment_theorem" theoremName
-            s!"argument for premise theorem '{theoremRefName}' binder \
-              '{b.name.eraseMacroScopes}'" knownTypes arg expectedBinderType
-          checkLFInferableApplicationArguments sig "judgment_theorem" theoremName
-            s!"argument for premise theorem '{theoremRefName}' binder \
-              '{b.name.eraseMacroScopes}'" knownTypes arg
-          checkLFSyntaxSortArgumentsInExpr sig "judgment_theorem" theoremName
-            s!"argument for premise theorem '{theoremRefName}' binder \
-              '{b.name.eraseMacroScopes}'" knownTypes arg
-          theoremArgs := theoremArgs.push (eraseObjExprScopes arg)
-          subst := subst.insert b.name.eraseMacroScopes (eraseObjExprScopes arg)
+        let binderHead? := checkedLFHead? globalHeads localNames expectedBinderType
+        match binderHead? with
+        | some binderHead =>
+            if binderHead.kind == .judgment then
+              let some arg := proofArgs[proofArgIndex]?
+                | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' \
+                  applies premise theorem '{theoremRefName}' with too few proof arguments"
+              proofArgIndex := proofArgIndex + 1
+              let some premiseDeriv ←
+                checkLFJudgmentDerivation sig rules globalHeads knownTypes defValues localNames
+                  availableLocalStatements availableTheoremStatements availableTheoremNames
+                  theoremName expectedBinderType arg
+                | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' \
+                  applies premise theorem '{theoremRefName}' with unchecked proof argument \
+                    '{arg}' for local hypothesis '{b.name.eraseMacroScopes}'"
+              premiseDerivations := premiseDerivations.push premiseDeriv
+            else
+              let some arg := proofArgs[proofArgIndex]?
+                | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' \
+                  applies premise theorem '{theoremRefName}' with too few proof arguments"
+              proofArgIndex := proofArgIndex + 1
+              checkLFKnownArgumentType sig "judgment_theorem" theoremName
+                s!"argument for premise theorem '{theoremRefName}' binder \
+                  '{b.name.eraseMacroScopes}'" knownTypes arg expectedBinderType
+              checkLFInferableApplicationArguments sig "judgment_theorem" theoremName
+                s!"argument for premise theorem '{theoremRefName}' binder \
+                  '{b.name.eraseMacroScopes}'" knownTypes arg
+              checkLFSyntaxSortArgumentsInExpr sig "judgment_theorem" theoremName
+                s!"argument for premise theorem '{theoremRefName}' binder \
+                  '{b.name.eraseMacroScopes}'" knownTypes arg
+              theoremArgs := theoremArgs.push (eraseObjExprScopes arg)
+              subst := subst.insert b.name.eraseMacroScopes (eraseObjExprScopes arg)
+        | none =>
+            let some arg := proofArgs[proofArgIndex]?
+              | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' applies \
+                premise theorem '{theoremRefName}' with too few proof arguments"
+            proofArgIndex := proofArgIndex + 1
+            checkLFKnownArgumentType sig "judgment_theorem" theoremName
+              s!"argument for premise theorem '{theoremRefName}' binder \
+                '{b.name.eraseMacroScopes}'" knownTypes arg expectedBinderType
+            checkLFInferableApplicationArguments sig "judgment_theorem" theoremName
+              s!"argument for premise theorem '{theoremRefName}' binder \
+                '{b.name.eraseMacroScopes}'" knownTypes arg
+            checkLFSyntaxSortArgumentsInExpr sig "judgment_theorem" theoremName
+              s!"argument for premise theorem '{theoremRefName}' binder \
+                '{b.name.eraseMacroScopes}'" knownTypes arg
+            theoremArgs := theoremArgs.push (eraseObjExprScopes arg)
+            subst := subst.insert b.name.eraseMacroScopes (eraseObjExprScopes arg)
+      if proofArgIndex != proofArgs.size then
+        throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' applies \
+          premise theorem '{theoremRefName}' with unused proof argument(s)"
       let actualStatement := eraseObjExprScopes (substLFParams subst premiseTheorem.judgmentExpr)
       let expectedStatement := eraseObjExprScopes expectedStatement
       if !lfExprEqModuloDefinitionsWithLocals defValues localNames actualStatement
@@ -3531,7 +3655,7 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
           '{ruleName}' with {proofArgs.size} argument(s), expected {expectedArgs} \
             ({appliedRule.params.size} parameter argument(s) and {appliedRule.premises.size} \
               premise derivation(s))"
-      let ruleArgs := proofArgs[:appliedRule.params.size]
+      let ruleArgs := proofArgs.extract 0 appliedRule.params.size
       let premiseArgs := proofArgs[appliedRule.params.size:]
       let mut subst : NameMap ObjExpr := {}
       for param in appliedRule.params, arg in ruleArgs do
@@ -3563,17 +3687,28 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
             '{ruleName}' but the statement does not match the rule conclusion after \
             LF-definition normalization:\n{mismatch}"
       let mut premiseDerivations := #[]
+      let mut scopedRuleArgs : Array ObjExpr := ruleArgs
       for p in appliedRule.premises, arg in premiseArgs do
         let expectedPremise := eraseObjExprScopes (substLFParams subst p.judgmentExpr)
-        let some premiseDeriv ←
-          checkLFJudgmentDerivation sig rules globalHeads knownTypes defValues localNames
-            availableLocalStatements availableTheoremStatements availableTheoremNames theoremName
-            expectedPremise arg
-          | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' applies \
-              rule '{ruleName}' with unchecked premise proof argument \
-              '{diagnosticObjExprString arg}' for expected premise \
-              '{diagnosticObjExprString expectedPremise}'"
-        premiseDerivations := premiseDerivations.push premiseDeriv
+        if p.isDirectJudgment then
+          let some premiseDeriv ←
+            checkLFJudgmentDerivation sig rules globalHeads knownTypes defValues localNames
+              availableLocalStatements availableTheoremStatements availableTheoremNames theoremName
+              expectedPremise arg
+            | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' applies \
+                rule '{ruleName}' with unchecked premise proof argument \
+                '{diagnosticObjExprString arg}' for expected premise \
+                '{diagnosticObjExprString expectedPremise}'"
+          premiseDerivations := premiseDerivations.push premiseDeriv
+        else
+          checkLFKnownArgumentType sig "judgment_theorem" theoremName
+            s!"proof argument for rule '{ruleName}' evidence premise '{p.name}'" knownTypes arg
+            expectedPremise
+          checkLFInferableApplicationArguments sig "judgment_theorem" theoremName
+            s!"proof argument for rule '{ruleName}' evidence premise '{p.name}'" knownTypes arg
+          checkLFSyntaxSortArgumentsInExpr sig "judgment_theorem" theoremName
+            s!"proof argument for rule '{ruleName}' evidence premise '{p.name}'" knownTypes arg
+          scopedRuleArgs := scopedRuleArgs.push (eraseObjExprScopes arg)
       let mut sideCertificateNames := #[]
       for sc in appliedRule.sideConditions do
         match classifySideConditionHook sc.solver with
@@ -3584,7 +3719,7 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
         | .builtinTrivial =>
             sideCertificateNames :=
               sideCertificateNames.push (lfSideConditionCertificateName appliedRule.name sc.name)
-      return some (.ruleApp ruleName expectedConclusion ruleArgs premiseDerivations
+      return some (.ruleApp ruleName expectedConclusion scopedRuleArgs premiseDerivations
         sideCertificateNames)
   | _ =>
       return none
@@ -3682,20 +3817,20 @@ partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array Checked
         let some appliedTheorem := findLFJudgmentTheoremDecl? sig name
           | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' lowers \
             unknown theorem reference '{name}'"
-        let mut entries := []
+        let mut entries : List ScopedInstantiationEntry := []
         let mut rawSubst : NameMap Raw := {}
         let mut objSubst : NameMap ObjExpr := {}
         let mut argIndex := 0
         for b in appliedTheorem.binders do
           let expectedBinderType := eraseObjExprScopes (substLFParams objSubst b.typeExpr)
-          let some binderHead := checkedLFHead? globalHeads localNames expectedBinderType
-            | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' lowers \
-              theorem reference '{name}' but binder '{b.name.eraseMacroScopes}' has type not \
-                headed by a known LF identifier: {expectedBinderType}"
-          unless binderHead.kind == .judgment do
+          let binderHead? := checkedLFHead? globalHeads localNames expectedBinderType
+          let isJudgmentBinder := match binderHead? with
+            | some binderHead => binderHead.kind == CheckedLFHeadKind.judgment
+            | none => false
+          unless isJudgmentBinder do
             let some arg := args[argIndex]?
               | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' lowers \
-                theorem reference '{name}' with too few syntax arguments"
+                theorem reference '{name}' with too few syntax/evidence arguments"
             let priorInst : Instantiation := fun x =>
               (rawSubst.find? x.eraseMacroScopes).getD (.leanParam x)
             let kernelArg := unfoldLFDefinitionsInExprWithLocals defValues localNames arg
@@ -3709,8 +3844,12 @@ partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array Checked
               "kernel-facing theorem reference" theoremName
               s!"type of theorem '{name}' binder '{b.name.eraseMacroScopes}'"
               kernelExpectedBinderType
-            let sort := if binderHead.kind == .syntaxSort then
-              RawMetaSort.custom binderHead.name else .arg
+            let sort := match binderHead? with
+              | some binderHead =>
+                  if binderHead.kind == CheckedLFHeadKind.syntaxSort then
+                    RawMetaSort.custom binderHead.name
+                  else RawMetaSort.arg
+              | none => RawMetaSort.arg
             entries := entries ++ [{
               name := b.name.eraseMacroScopes
               sort := sort
@@ -3735,18 +3874,23 @@ partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array Checked
       let some appliedRule := findCheckedLFRule? rules ruleName
         | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' lowers unknown \
           LF rule '{ruleName}'"
-      if ruleArgs.size != appliedRule.params.size then
+      let evidencePremiseCount := appliedRule.premises.foldl (init := 0) fun n p =>
+        if p.isDirectJudgment then n else n + 1
+      let judgmentPremiseCount := appliedRule.premises.size - evidencePremiseCount
+      let expectedRuleArgs := appliedRule.params.size + evidencePremiseCount
+      if ruleArgs.size != expectedRuleArgs then
         throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' lowers rule \
           '{ruleName}' with {ruleArgs.size} scoped instantiation entry/entries, expected \
-            {appliedRule.params.size}"
-      if premises.size != appliedRule.premises.size then
+            {expectedRuleArgs}"
+      if premises.size != judgmentPremiseCount then
         throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' lowers rule \
           '{ruleName}' with {premises.size} premise derivation(s), expected \
-            {appliedRule.premises.size}"
-      let mut entries := []
+            {judgmentPremiseCount}"
+      let mut entries : List ScopedInstantiationEntry := []
       let mut rawSubst : NameMap Raw := {}
       let mut objSubst : NameMap ObjExpr := {}
-      for param in appliedRule.params, arg in ruleArgs do
+      let paramArgs := ruleArgs[:appliedRule.params.size]
+      for param in appliedRule.params, arg in paramArgs do
         let priorInst : Instantiation := fun x =>
           (rawSubst.find? x.eraseMacroScopes).getD (.leanParam x)
         let expectedParamType := substLFParams objSubst param.typeExpr
@@ -3790,6 +3934,43 @@ partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array Checked
           value := checkedArgRaw }]
         rawSubst := rawSubstWithCurrent
         objSubst := objSubst.insert param.name.eraseMacroScopes kernelArg
+      let mut evidenceArgIndex := appliedRule.params.size
+      for p in appliedRule.premises do
+        unless p.isDirectJudgment do
+          let some arg := ruleArgs[evidenceArgIndex]?
+            | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' lowers \
+              rule '{ruleName}' with too few evidence arguments"
+          evidenceArgIndex := evidenceArgIndex + 1
+          let priorInst : Instantiation := fun x =>
+            (rawSubst.find? x.eraseMacroScopes).getD (.leanParam x)
+          let expectedPremise := eraseObjExprScopes (substLFParams objSubst p.judgmentExpr)
+          let kernelArg := unfoldLFDefinitionsInExprWithLocals defValues localNames arg
+          let kernelExpectedPremise :=
+            unfoldLFDefinitionsInExprWithLocals defValues localNames expectedPremise
+          checkLFExprHasType sig "judgment_theorem" theoremName
+            s!"kernel-facing replay evidence argument for rule '{ruleName}' premise '{p.name}'"
+            knownTypes arg expectedPremise
+          let checkedArg ← resolveLFExpr sig globalHeads localNames "kernel-facing derivation"
+            theoremName s!"evidence argument for premise '{p.name}'" kernelArg
+          let checkedArgRaw := checkedLFExprToRaw checkedArg
+          let checkedPremiseType ← resolveLFExpr sig globalHeads localNames
+            "kernel-facing derivation" theoremName s!"type of evidence premise '{p.name}'"
+            kernelExpectedPremise
+          let sort := match p.head? with
+            | some h => if h.kind == .syntaxSort then RawMetaSort.custom h.name else .arg
+            | none => .arg
+          entries := entries ++ [{
+            name := p.name
+            sort := sort
+            zone? := none
+            type? := some (Raw.instantiate priorInst (checkedLFExprToRaw checkedPremiseType))
+            evidence? := none
+            value := checkedArgRaw }]
+          rawSubst := rawSubst.insert p.name.eraseMacroScopes checkedArgRaw
+          objSubst := objSubst.insert p.name.eraseMacroScopes kernelArg
+      if evidenceArgIndex != ruleArgs.size then
+        throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' lowers rule \
+          '{ruleName}' with unused evidence argument(s)"
       let inst : ScopedInstantiation := { entries := entries }
       let kernelStmtExpr := unfoldLFDefinitionsInExprWithLocals defValues localNames stmt
       let kernelStmt ← lfJudgmentObjExprToKernel sig globalHeads "rule application" theoremName
@@ -3820,31 +4001,40 @@ partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array Checked
           replay of rule '{ruleName}' has conclusion '{reprStr kernelStmt}', expected \
             instantiated rule conclusion '{reprStr expectedConclusion}'"
       let mut loweredPremises := []
-      for p in appliedRule.premises, premiseDeriv in premises do
-        let lowered ← lowerLFDerivationToKernel sig rules globalHeads knownTypes defValues
-          localNames theoremName premiseDeriv
-        let rulePremiseExpr :=
-          unfoldLFDefinitionsInExprWithLocals defValues ruleLocals p.judgmentExpr
-        let rulePremise ← lfJudgmentObjExprToKernel sig globalHeads "rule premise"
-          appliedRule.name rulePremiseExpr ruleLocals
-        let expectedPremise ←
-          match rulePremise.instantiateChecked inst.asInstantiation with
-          | .ok expectedPremise => pure expectedPremise
-          | .error err =>
+      let mut premiseIndex := 0
+      for p in appliedRule.premises do
+        if p.isDirectJudgment then
+          let some premiseDeriv := premises[premiseIndex]?
+            | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' lowers \
+              rule '{ruleName}' with too few premise derivation(s)"
+          premiseIndex := premiseIndex + 1
+          let lowered ← lowerLFDerivationToKernel sig rules globalHeads knownTypes defValues
+            localNames theoremName premiseDeriv
+          let rulePremiseExpr :=
+            unfoldLFDefinitionsInExprWithLocals defValues ruleLocals p.judgmentExpr
+          let rulePremise ← lfJudgmentObjExprToKernel sig globalHeads "rule premise"
+            appliedRule.name rulePremiseExpr ruleLocals
+          let expectedPremise ←
+            match rulePremise.instantiateChecked inst.asInstantiation with
+            | .ok expectedPremise => pure expectedPremise
+            | .error err =>
+              throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' \
+                kernel-facing replay of rule '{ruleName}' has capture-unsafe premise \
+                  instantiation: {err}"
+          match expectedPremise.validateBuiltinConstructorDiscipline s!"judgment_theorem \
+            '{theoremName}' in type theory '{sig.name}'" s!"kernel-facing replay premise for \
+              rule '{ruleName}'" with
+          | .ok () => pure ()
+          | .error err => throwError err
+          let actualPremise := kernelLFDerivationStatement lowered
+          if !judgmentAlphaEq actualPremise expectedPremise then
             throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' \
-              kernel-facing replay of rule '{ruleName}' has capture-unsafe premise instantiation: \
-                {err}"
-        match expectedPremise.validateBuiltinConstructorDiscipline s!"judgment_theorem \
-          '{theoremName}' in type theory '{sig.name}'" s!"kernel-facing replay premise for rule \
-            '{ruleName}'" with
-        | .ok () => pure ()
-        | .error err => throwError err
-        let actualPremise := kernelLFDerivationStatement lowered
-        if !judgmentAlphaEq actualPremise expectedPremise then
-          throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' kernel-facing \
-            replay of rule '{ruleName}' has premise '{reprStr actualPremise}', expected \
-              instantiated premise '{reprStr expectedPremise}'"
-        loweredPremises := loweredPremises ++ [lowered]
+              kernel-facing replay of rule '{ruleName}' has premise '{reprStr actualPremise}', \
+                expected instantiated premise '{reprStr expectedPremise}'"
+          loweredPremises := loweredPremises ++ [lowered]
+      if premiseIndex != premises.size then
+        throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' lowers rule \
+          '{ruleName}' with unused premise derivation(s)"
       pure (.ruleApp ruleName kernelStmt inst loweredPremises certs.toList)
 
 /-- Summarize the outer layer of a shallow checked LF derivation for legacy diagnostics. -/
@@ -4046,27 +4236,14 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
         b.typeExpr
       checkLFInferableApplicationArguments sig "judgment_theorem" t.name where_ theoremKnownTypes
         b.typeExpr
-      checkLFBinderType sig globalHeads "judgment_theorem" t.name where_ theoremKnownTypes
-        priorTheoremLocals true b.typeExpr
+      checkLFEvidenceType sig globalHeads "judgment_theorem" t.name where_ theoremKnownTypes
+        priorTheoremLocals b.typeExpr
       let typeHead? := checkedLFHead? globalHeads priorTheoremLocals b.typeExpr
-      match typeHead? with
-      | some head =>
-          if head.kind == .judgment then
-            let (_, args) := splitObjApp b.typeExpr
-            checkLFJudgmentArgumentsWithKnownTypes sig "judgment_theorem" t.name where_
-              theoremKnownTypes head.name args
-            availableLocalStatements :=
-              availableLocalStatements.insert b.name.eraseMacroScopes (eraseObjExprScopes
-                b.typeExpr)
-          else if head.kind == .syntaxSort then
-            pure ()
-          else
-            throwError "judgment_theorem '{t.name}' in type theory '{sig.name}' has parameter \
-              '{b.name.eraseMacroScopes}' type headed by {head.kind.label} '{head.name}', \
-                expected a syntax_sort or judgment"
-      | none =>
-          throwError "judgment_theorem '{t.name}' in type theory '{sig.name}' has parameter \
-            '{b.name.eraseMacroScopes}' type not headed by a known LF identifier: {b.typeExpr}"
+      if let some head := typeHead? then
+        if head.kind == .judgment then
+          availableLocalStatements :=
+            availableLocalStatements.insert b.name.eraseMacroScopes (eraseObjExprScopes
+              b.typeExpr)
       theoremKnownTypes :=
         theoremKnownTypes.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
       priorTheoremLocals := priorTheoremLocals.insert b.name.eraseMacroScopes
@@ -4418,26 +4595,13 @@ def checkLFJudgmentTheoremInContext (ctx : IntraBlockLFCheckContext)
       b.typeExpr
     checkLFInferableApplicationArguments sig "judgment_theorem" t.name where_ theoremKnownTypes
       b.typeExpr
-    checkLFBinderType sig globalHeads "judgment_theorem" t.name where_ theoremKnownTypes
-      priorTheoremLocals true b.typeExpr
+    checkLFEvidenceType sig globalHeads "judgment_theorem" t.name where_ theoremKnownTypes
+      priorTheoremLocals b.typeExpr
     let typeHead? := checkedLFHead? globalHeads priorTheoremLocals b.typeExpr
-    match typeHead? with
-    | some head =>
-        if head.kind == .judgment then
-          let (_, args) := splitObjApp b.typeExpr
-          checkLFJudgmentArgumentsWithKnownTypes sig "judgment_theorem" t.name where_
-            theoremKnownTypes head.name args
-          availableLocalStatements :=
-            availableLocalStatements.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
-        else if head.kind == .syntaxSort then
-          pure ()
-        else
-          throwError "judgment_theorem '{t.name}' in type theory '{sig.name}' has parameter \
-            '{b.name.eraseMacroScopes}' type headed by {head.kind.label} '{head.name}', \
-              expected a syntax_sort or judgment"
-    | none =>
-        throwError "judgment_theorem '{t.name}' in type theory '{sig.name}' has parameter \
-          '{b.name.eraseMacroScopes}' type not headed by a known LF identifier: {b.typeExpr}"
+    if let some head := typeHead? then
+      if head.kind == .judgment then
+        availableLocalStatements :=
+          availableLocalStatements.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
     theoremKnownTypes :=
       theoremKnownTypes.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
     priorTheoremLocals := priorTheoremLocals.insert b.name.eraseMacroScopes
@@ -4753,11 +4917,9 @@ def checkOneRuleMetadataInSignature (sig : HLSignature) (lfGlobals : NameSet)
       p.judgmentExpr
     checkLFSyntaxSortArgumentsInExpr sig "rule" r.name s!"premise '{p.name}'" ruleLocalTypes
       p.judgmentExpr
-    let head ←
-      checkRuleJudgmentHead sig judgmentArities r.name s!"premise '{p.name}'" p.judgmentExpr
-    let (_, premiseArgs) := splitObjApp p.judgmentExpr
-    checkLFJudgmentArguments sig r.name s!"premise '{p.name}'" ruleLocalTypes head.name
-      premiseArgs
+    checkLFEvidenceType sig globalHeads "rule" r.name s!"premise '{p.name}'" ruleLocalTypes
+      ruleParamLocals p.judgmentExpr
+    let head? := checkedLFHead? globalHeads ruleParamLocals p.judgmentExpr
     let checkedJudgmentExpr ←
       resolveLFExpr sig globalHeads ruleParamLocals "rule" r.name s!"premise '{p.name}'"
         p.judgmentExpr
@@ -4765,7 +4927,7 @@ def checkOneRuleMetadataInSignature (sig : HLSignature) (lfGlobals : NameSet)
       name := premiseName
       judgmentExpr := p.judgmentExpr
       checkedJudgmentExpr := checkedJudgmentExpr
-      head := head
+      head? := head?
     }
   let mut checkedSideConditions : Array CheckedLFRuleSideCondition := #[]
   for sc in r.sideConditions do
@@ -5356,7 +5518,7 @@ def checkedLFRuleSchemaOfRule (zones : Array CheckedLFContextZone) (classes :
     multiContext := checkedLFMultiContextOfLocals metavariables
     premises := r.premises.map fun p =>
       { name := p.name
-        judgmentHead := p.head
+        head? := p.head?
         checkedJudgmentExpr := p.checkedJudgmentExpr }
     sideConditionSlots := r.sideConditions.map fun sc =>
       let cert? := checkLFSideCondition? r.name sc
@@ -5478,16 +5640,33 @@ def checkedLFRuleSchemaToKernel (defValues : CheckedLFDefinitionValueMap)
     ({ name := sc.name, condition := condition } : SideConditionCertificateSlot)
   let checkedCertificates := r.sideConditionSlots.toList.filterMap fun sc =>
     sc.certificate?.map checkedLFSideConditionCertificateToKernel
+  let ruleMetas := r.metavariables.toList.map (fun v =>
+    { name := v.name
+      sort := match v.sortHead? with | some h => .custom h.name | none => .arg
+      zone? := v.zoneName?
+      type? := some (checkedLFExprToRaw v.checkedTypeExpr)
+      evidence? := v.evidence?.map (fun ev =>
+        checkedLFJudgmentExprToKernel ev.checkedJudgmentExpr ev.head) })
+  let evidenceMetas := r.premises.toList.filterMap fun p =>
+    if p.isDirectJudgment then
+      none
+    else
+      some ({ name := p.name
+              sort := match p.head? with
+                | some h => if h.kind == .syntaxSort then .custom h.name else .arg
+                | none => .arg
+              type? := some (checkedLFExprToRaw (norm p.checkedJudgmentExpr)) } : RuleMetaVar)
+  let kernelPremises := r.premises.toList.filterMap fun p =>
+    match p.head? with
+    | some h =>
+        if h.kind == .judgment then
+          some (checkedLFJudgmentExprToKernel (norm p.checkedJudgmentExpr) h)
+        else
+          none
+    | none => none
   RuleSchema.mk r.name
-    (r.metavariables.toList.map (fun v =>
-      { name := v.name
-        sort := match v.sortHead? with | some h => .custom h.name | none => .arg
-        zone? := v.zoneName?
-        type? := some (checkedLFExprToRaw v.checkedTypeExpr)
-        evidence? := v.evidence?.map (fun ev =>
-          checkedLFJudgmentExprToKernel ev.checkedJudgmentExpr ev.head) }))
-    (r.premises.toList.map (fun p =>
-      checkedLFJudgmentExprToKernel (norm p.checkedJudgmentExpr) p.judgmentHead))
+    (ruleMetas ++ evidenceMetas)
+    kernelPremises
     sideConditions
     certificateSlots
     checkedCertificates
@@ -5542,7 +5721,10 @@ def kernelLFRuleSchemaOfTheorem (defValues : CheckedLFDefinitionValueMap)
           some ({ name := b.name
                   sort := if head.kind == .syntaxSort then .custom head.name else .arg
                   type? := some (checkedLFExprToRaw (norm b.checkedTypeExpr)) } : RuleMetaVar)
-    | none => none
+    | none =>
+        some ({ name := b.name
+                sort := .arg
+                type? := some (checkedLFExprToRaw (norm b.checkedTypeExpr)) } : RuleMetaVar)
   let premises := t.binders.toList.filterMap fun b =>
     match b.head? with
     | some head =>

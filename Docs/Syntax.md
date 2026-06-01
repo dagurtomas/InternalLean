@@ -237,7 +237,7 @@ rule r (x : A) where
 Rule items are:
 
 ```lean
-premise name : judgment
+premise name : evidence_type
 
 evidence name for param : judgment
 
@@ -246,6 +246,16 @@ side_condition name by solver : input
 conclusion : judgment
 ```
 
+A direct judgment premise such as `premise h : J x` is discharged by a checked LF derivation.
+A premise may also be a structural LF evidence type built from judgments, functions, and Sigma
+packages, for example:
+
+```lean
+premise h : (x : Obj) → P x
+premise h : (x : Obj) → ((A x → B x) × (B x → A x))
+```
+
+The second shape is the generic package encoding of “for all `x`, `A x` iff `B x`”.
 `evidence` declares that a rule parameter must come with an explicit premise proving a judgment
 about that parameter. `side_condition` connects a side-condition input to a named solver.
 
