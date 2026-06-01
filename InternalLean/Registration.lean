@@ -445,16 +445,16 @@ def registerAdmittedInternalLFOpaqueBatch (theoryName : Name)
     | throwError "unknown type theory '{theoryName}'"
   let some checked ← getCheckedTheory? theoryName
     | throwError "no checked artifact stored for type theory '{theoryName}'"
+  let cacheLookup ← getOrBuildCompiledLFCheckCache theoryName checked
+  let cache := cacheLookup.cache
   let flatSourceBase ← flattenSignature sig
   let rawBlock : HLTheoryBlock := {
     lfOpaqueConsts := requests.map admittedInternalLFOpaqueDeclOfRequest }
   checkNoExtensionNameCollisions flatSourceBase rawBlock
-  let priorKnownTypes := checkedLFDefinitionTypeMapFromDefs checked.lfObjectDefs
+  let priorKnownTypes := cache.knownLFDefTypes
   let blockForRegistry ←
     elaborateImplicitAppsInTheoryBlockExtension flatSourceBase priorKnownTypes rawBlock
-  let checkedBase :=
-    (← getCheckedHLSignature? theoryName).getD
-      (checkedSignatureIncrementalHLSignature flatSourceBase checked)
+  let checkedBase := cache.checkedHL
   let blockForCheck ← expandSyntaxAbbrevsInTheoryBlockExtension checkedBase blockForRegistry
   let flatForCheck := checkedBase.appendBlock blockForCheck
   let delta ← checkTheoryBlockMetadataDelta flatForCheck checked blockForCheck
@@ -462,7 +462,7 @@ def registerAdmittedInternalLFOpaqueBatch (theoryName : Name)
     throwError "internal error: admitted LF opaque batch produced {delta.opaqueConsts.size} \
       checked opaque(s) for {requests.size} request(s)"
   let checked' := appendCheckedTheoryDelta checked delta
-  let compiledCache ← mkCompiledLFCheckCacheFromHL flatForCheck checked'
+  let compiledCache := cache.appendDelta flatForCheck checked' delta
   let mut admissions : Array InternalAdmission := #[]
   for req in requests, d in blockForRegistry.lfOpaqueConsts do
     let typeExpr := d.typeExpr?.getD req.typeExpr
@@ -492,7 +492,10 @@ def registerAdmittedInternalLFOpaqueBatch (theoryName : Name)
     recheckedOpaqueConsts := 0
     recheckedRules := 0
     recheckedMetadataDecls := 0
-    incrementallyChecked := requests.size }
+    incrementallyChecked := requests.size
+    cacheStatus? := some cacheLookup.status
+    cacheRebuilt := cacheLookup.rebuilt
+    cacheOverlayDecls := requests.size }
   modifyEnv fun env =>
     let env := theoryExt.addEntry env (.sig (sig.appendBlock blockForRegistry))
     let env := checkedTheoryExt.addEntry env (.sig checked')

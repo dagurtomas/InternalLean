@@ -38,6 +38,24 @@ elab "#guard_internal_profile_cache " theory:ident decl:ident status:str replay:
     throwError "expected kernel replay cache hit {expectedReplay} for \
       '{theory.getId}.{declName}', found {profile.kernelReplayCacheHit}"
 
+/-- Assert cache status and overlay count for a registration profile. -/
+elab "#guard_internal_profile_cache_overlay " theory:ident decl:str status:str replay:ident
+    overlay:num : command => do
+  let profiles ← liftCoreM <| getInternalRegistrationProfilesFor theory.getId
+  let declName := Name.mkSimple decl.getString
+  let some profile := profiles.find? (fun p => p.declName.eraseMacroScopes == declName)
+    | throwError "no registration profile for '{theory.getId}.{declName}'"
+  unless profile.cacheStatus? == some status.getString do
+    throwError "expected cache status {status.getString} for '{theory.getId}.{declName}', found \
+      {profile.cacheStatus?}"
+  unless profile.cacheOverlayDecls == overlay.getNat do
+    throwError "expected {overlay.getNat} cache overlay declaration(s) for \
+      '{theory.getId}.{declName}', found {profile.cacheOverlayDecls}"
+  let expectedReplay := replay.getId.eraseMacroScopes == `true
+  unless profile.kernelReplayCacheHit == expectedReplay do
+    throwError "expected kernel replay cache hit {expectedReplay} for \
+      '{theory.getId}.{declName}', found {profile.kernelReplayCacheHit}"
+
 /-- Assert local cache updates are persisted by small touch markers, not full cache snapshots. -/
 elab "#guard_no_local_full_compiled_cache_entries" : command => do
   let entries := compiledLFCheckCacheExt.getEntries (← getEnv)
@@ -170,6 +188,34 @@ end IncrementalCacheExtensionOrder
 
 #guard_internal_profile_cache IncrementalCacheExtensionOrder use_later_rule "hit" true
 #guard_compiled_cache_matches_rebuild IncrementalCacheExtensionOrder
+
+declare_type_theory IncrementalCacheAdmittedOpaqueBatch where
+  syntax_sort Obj
+  judgment J (x : Obj)
+  lf_opaque base : Obj
+  rule intro (x : Obj) : J x
+
+namespace IncrementalCacheAdmittedOpaqueBatch
+
+#guard_msgs (drop warning) in
+internal def admittedSingle : Obj := sorry
+
+#guard_msgs (drop warning) in
+internal_defs where
+  def admittedBatch1 : Obj := sorry
+  def admittedBatch2 : Obj := sorry
+
+internal theorem use_admitted_single : J admittedSingle := intro admittedSingle
+internal theorem use_admitted_batch : J admittedBatch2 := intro admittedBatch2
+
+end IncrementalCacheAdmittedOpaqueBatch
+
+#guard_internal_profile_cache IncrementalCacheAdmittedOpaqueBatch admittedSingle "hit" false
+#guard_internal_profile_cache_overlay IncrementalCacheAdmittedOpaqueBatch "internal_defs" "hit"
+  false 2
+#guard_internal_profile_cache IncrementalCacheAdmittedOpaqueBatch use_admitted_single "hit" true
+#guard_internal_profile_cache IncrementalCacheAdmittedOpaqueBatch use_admitted_batch "hit" true
+#guard_compiled_cache_matches_rebuild IncrementalCacheAdmittedOpaqueBatch
 
 declare_type_theory IncrementalCacheSelfReferenceReject where
   syntax_sort Obj
