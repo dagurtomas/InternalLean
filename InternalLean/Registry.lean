@@ -42,6 +42,19 @@ public inductive InternalDeclarationAnchor where
   | mk : InternalDeclarationAnchor
   deriving Inhabited
 
+/-- Lean-visible marker type used for editor navigation to declarations inside a type-theory
+block. The generated declarations are hidden implementation anchors; the checked artifacts remain
+in the InternalLean registries. -/
+public inductive InternalTheoryDeclarationAnchor where
+  /-- The unique marker value for an internal type-theory declaration anchor. -/
+  | mk : InternalTheoryDeclarationAnchor
+  deriving Inhabited
+
+/-- Canonical hidden Lean declaration name for an object-theory source declaration anchor. -/
+public meta def internalTheoryDeclarationAnchorName (theoryName sourceName : Lean.Name) :
+    Lean.Name :=
+  theoryName ++ `_internalLeanDecl ++ sourceName.eraseMacroScopes
+
 /-- Lean-visible marker proposition used only to populate the editor infoview for
 object-theory tactic scripts. The string payloads record the object theory, local
 object context, and current object goal; they are not part of the trusted kernel. -/

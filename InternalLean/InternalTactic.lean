@@ -3296,6 +3296,21 @@ def compileInternalObjectTactics (target : InternalDefTarget) (sig : HLSignature
     (stepStxs : Array Syntax := #[]) : CommandElabM ObjExpr :=
   compileInternalObjectTacticsWithGoal target sig levels { target := typeExpr } steps stepStxs
 
+/-- Add source-navigation info for a direct internal declaration annotation/body. -/
+def addInternalDefExprNavigationInfo (declName : Name) (binders : TSyntaxArray `ttBinder)
+    (typeStx valueStx? : TSyntax `ttExpr) : CommandElabM Unit := do
+  let target ← resolveInternalDefTarget declName
+  let locals ← addBinderNavigationInfos target.theoryName {} binders
+  addObjExprNavigationInfo target.theoryName locals typeStx
+  addObjExprNavigationInfo target.theoryName locals valueStx?
+
+/-- Add source-navigation info for an admitted internal declaration annotation. -/
+def addInternalDefAnnotationNavigationInfo (declName : Name) (binders : TSyntaxArray `ttBinder)
+    (typeStx : TSyntax `ttExpr) : CommandElabM Unit := do
+  let target ← resolveInternalDefTarget declName
+  let locals ← addBinderNavigationInfos target.theoryName {} binders
+  addObjExprNavigationInfo target.theoryName locals typeStx
+
 /-- Register a non-admitted top-level `internal def` through the current checked-artifact paths. -/
 def elabInternalDefCheckedExpr (doc? : Option (TSyntax ``Parser.Command.docComment))
     (declNameStx : Syntax) (declName : Name) (levels : Array Name)
@@ -3337,6 +3352,7 @@ def elabInternalDefChecked (doc? : Option (TSyntax ``Parser.Command.docComment))
     (typeStx valueStx : TSyntax `ttExpr) : CommandElabM Unit := do
   elabInternalDefCheckedExpr doc? declNameStx declName levels (← elabObjExpr typeStx) (
     ← elabObjExpr valueStx)
+  addInternalDefExprNavigationInfo declName #[] typeStx valueStx
 
 /-- Register a binder-style checked `internal def` from already elaborated expressions.
 
@@ -3389,6 +3405,7 @@ def elabInternalDefCheckedWithBinders (doc? : Option (TSyntax ``Parser.Command.d
   let typeExpr ← elabObjExpr typeStx
   let valueExpr ← elabObjExpr valueStx
   elabInternalDefCheckedWithBindersExpr doc? declNameStx declName levels params typeExpr valueExpr
+  addInternalDefExprNavigationInfo declName binders typeStx valueStx
 
 /-- Register an admitted top-level `internal def` after checking its annotation as an object type.
 -/
@@ -3419,6 +3436,7 @@ def elabInternalDefSorryWithBinders (doc? : Option (TSyntax ``Parser.Command.doc
   if let some doc := sourceDoc? then
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
   addInternalDeclarationAnchor target typeExpr true sourceDoc? (← getRef) declNameStx
+  addInternalDefAnnotationNavigationInfo declName binders typeStx
   logWarning m!"internal declaration '{target.anchorName}' was admitted by `sorry`; the \
     annotation was checked in theory '{target.theoryName}', but the body was not checked. Use \
       `#lint_type_theory_sorries {target.theoryName}` to list current admissions."
@@ -3461,6 +3479,7 @@ def elabInternalTheoremCheckedWithBinders (doc? : Option (TSyntax ``Parser.Comma
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
   addInternalDeclarationAnchor target (mkInternalDefFunctionType params typeExpr) false sourceDoc?
     (← getRef) declNameStx
+  addInternalDefExprNavigationInfo declName binders typeStx valueStx
 
 /-- Register an explicit non-model-facing admitted internal theorem. -/
 def elabInternalTheoremSorryWithBinders (doc? : Option (TSyntax ``Parser.Command.docComment))
@@ -3480,6 +3499,7 @@ def elabInternalTheoremSorryWithBinders (doc? : Option (TSyntax ``Parser.Command
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
   addInternalDeclarationAnchor target (mkInternalDefFunctionType params typeExpr) true sourceDoc?
     (← getRef) declNameStx
+  addInternalDefAnnotationNavigationInfo declName binders typeStx
   logWarning m!"internal theorem '{target.anchorName}' was admitted by `sorry`; the statement was \
     checked in theory '{target.theoryName}', but the proof was not checked. Use \
       `#lint_type_theory_sorries {target.theoryName}` to list current admissions."
@@ -3503,6 +3523,7 @@ def elabInternalDefBy (doc? : Option (TSyntax ``Parser.Command.docComment))
     let valueExpr ← compileInternalObjectTactics target flatSig levels typeExpr steps
       (tactics.map (·.raw))
     elabInternalDefCheckedExpr doc? declNameStx declName levels typeExpr valueExpr
+    addInternalDefAnnotationNavigationInfo declName #[] typeStx
 
 /-- Elaborate and register a binder-style `internal def ... := by` object tactic script. -/
 def elabInternalDefByWithBinders (doc? : Option (TSyntax ``Parser.Command.docComment))
@@ -3527,6 +3548,7 @@ def elabInternalDefByWithBinders (doc? : Option (TSyntax ``Parser.Command.docCom
     let valueExpr ← compileInternalObjectTacticsWithGoal target flatSig levels goal steps
       (tactics.map (·.raw))
     elabInternalDefCheckedWithBindersExpr doc? declNameStx declName levels params typeExpr valueExpr
+    addInternalDefAnnotationNavigationInfo declName binders typeStx
 
 /-- Recognize `sorry` when it was parsed through the object-expression identifier syntax. -/
 def isSorryObjExprSyntax (stx : Syntax) : Bool :=
@@ -3638,6 +3660,34 @@ def elabInternalDefsCheckedObjectBatchItem? (decl : TSyntax `internalDefsDecl) :
       mkItem doc? declName declName.getId binders typeStx valueStx
   | _ => pure none
 
+/-- Add navigation info for one declaration inside an `internal_defs where` block. -/
+def addInternalDefsDeclNavigationInfo (theoryName : Name) (decl : Syntax) : CommandElabM Unit := do
+  let decl : TSyntax `internalDefsDecl := ⟨decl⟩
+  match decl with
+  | `(internalDefsDecl| $[$doc?:docComment]? def $_:ident : $typeStx:ttExpr :=
+      $valueStx:ttExpr) =>
+      let _ := doc?.map (·.raw)
+      addObjExprNavigationInfo theoryName {} typeStx
+      unless isSorryObjExprSyntax valueStx.raw do
+        addObjExprNavigationInfo theoryName {} valueStx
+  | `(internalDefsDecl| $[$doc?:docComment]? def $_:ident $binders:ttBinder* :
+      $typeStx:ttExpr := $valueStx:ttExpr) =>
+      let _ := doc?.map (·.raw)
+      let locals ← addBinderNavigationInfos theoryName {} binders
+      addObjExprNavigationInfo theoryName locals typeStx
+      unless isSorryObjExprSyntax valueStx.raw do
+        addObjExprNavigationInfo theoryName locals valueStx
+  | `(internalDefsDecl| $[$doc?:docComment]? def $_:ident : $typeStx:ttExpr := by
+      $tactics:internalTactic*) =>
+      let _ := doc?.map (·.raw); let _ := tactics.size
+      addObjExprNavigationInfo theoryName {} typeStx
+  | `(internalDefsDecl| $[$doc?:docComment]? def $_:ident $binders:ttBinder* :
+      $typeStx:ttExpr := by $tactics:internalTactic*) =>
+      let _ := doc?.map (·.raw); let _ := tactics.size
+      let locals ← addBinderNavigationInfos theoryName {} binders
+      addObjExprNavigationInfo theoryName locals typeStx
+  | _ => pure ()
+
 /-- Try to register an all-checked-object `internal_defs where` block as one checked delta. -/
 def tryElabInternalDefsCheckedObjectBatch (decls : Array (TSyntax `internalDefsDecl)) :
     CommandElabM Bool := do
@@ -3675,6 +3725,7 @@ def tryElabInternalDefsCheckedObjectBatch (decls : Array (TSyntax `internalDefsD
         item.target.localName doc
     addInternalDeclarationAnchor item.target item.anchorTypeExpr false item.sourceDoc?
       item.declStx item.declNameStx
+    addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
   return true
 
 /-- Try to register an all-opaque-admission `internal_defs where` block as one checked delta. -/
@@ -3719,6 +3770,7 @@ def tryElabInternalDefsSorryOpaqueBatch (decls : Array (TSyntax `internalDefsDec
       liftCoreM <| registerSourceDoc item.target.theoryName .internalDef item.target.localName doc
     addInternalDeclarationAnchor item.target item.typeExpr true item.sourceDoc? item.declStx
       item.declNameStx
+    addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
     logWarning m!"internal declaration '{item.target.anchorName}' was admitted by `sorry`; the \
       annotation was checked in theory '{item.target.theoryName}', but the body was not checked. \
       Use `#lint_type_theory_sorries {item.target.theoryName}` to list current admissions."
@@ -3770,6 +3822,7 @@ def elabInternalDefsDeclsWithSorryOpaqueBatches (decls : Array (TSyntax `interna
           item.target.localName doc
       addInternalDeclarationAnchor item.target item.typeExpr true item.sourceDoc? item.declStx
         item.declNameStx
+      addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
       logWarning m!"internal declaration '{item.target.anchorName}' was admitted by `sorry`; the \
         annotation was checked in theory '{item.target.theoryName}', but the body was not \
         checked. Use `#lint_type_theory_sorries {item.target.theoryName}` to list current \

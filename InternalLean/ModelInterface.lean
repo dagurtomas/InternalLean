@@ -3482,7 +3482,10 @@ def addLFModelStructureFieldDocStringsFromObligations (theoryName structureName 
       if let some fieldName := o.generatedName? then
         let doc ← lfModelFieldDocString theoryName structureName o
         let owner := (ownerMap.find? fieldName).getD structureName
-        liftCoreM <| addDocStringCore (theoryName ++ owner ++ fieldName) doc
+        let projectionName := theoryName ++ owner ++ fieldName
+        liftCoreM do
+          addDocStringCore projectionName doc
+          addDeclarationRangesFromInternalSourceAnchorIfSameModule projectionName theoryName o.name
 
 /-- Add docstrings to generated LF-model structure fields after elaborating the structure. -/
 def addLFModelStructureFieldDocStrings (theoryName structureName : Name) (checked :

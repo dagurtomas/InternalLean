@@ -126,6 +126,96 @@ def addTheoryAnchorDeclaration (sig : HLSignature) (sourceDoc? : Option String) 
     addAndCompile (Declaration.defnDecl defVal)
   addDocStringCore anchorName (theoryAnchorSummaryString sig sourceDoc?)
   addDeclarationRangesFromSyntax anchorName rangeStx selectionRangeStx
+  pushInfoLeaf <| .ofTermInfo {
+    elaborator := `InternalLean.sourceNavigation
+    stx := selectionRangeStx
+    lctx := .empty
+    expectedType? := none
+    expr := mkConst anchorName
+    isBinder := true
+    isDisplayableTerm := false }
+
+/-- Source-range metadata for one declaration inside a type-theory block. -/
+structure SourceDeclSyntaxRef where
+  /-- Source declaration class. -/
+  role : SourceDocRole
+  /-- Theory-local declaration name. -/
+  sourceName : Name
+  /-- Whole source declaration syntax, used as the target range. -/
+  declStx : Syntax
+  /-- Name syntax, used as the target selection range. -/
+  nameStx : Syntax
+  deriving Inhabited
+
+/-- User-facing docstring for hidden source declaration anchors. -/
+def internalTheoryDeclarationAnchorDocString (theoryName : Name) (ref : SourceDeclSyntaxRef) :
+    String :=
+  String.intercalate "\n" [
+    s!"Source declaration `{ref.sourceName.eraseMacroScopes}` in type theory \
+      `{theoryName.eraseMacroScopes}`.",
+    "",
+    s!"Declaration class: {ref.role.label}.",
+    "This generated Lean declaration is an editor/navigation anchor for InternalLean source \
+      syntax; it is not part of the object theory's trusted semantics." ]
+
+/-- Add one hidden Lean declaration used as a jump target for an object-theory source item. -/
+def addInternalTheoryDeclarationAnchor (theoryName : Name) (ref : SourceDeclSyntaxRef) :
+    CommandElabM Unit := do
+  let anchorName := internalTheoryDeclarationAnchorName theoryName ref.sourceName
+  if (← getEnv).contains anchorName then
+    throwError "cannot create Lean-visible source anchor '{anchorName}' for declaration \
+      '{ref.sourceName}' in type theory '{theoryName}': a Lean declaration with that name already \
+        exists"
+  liftCoreM do
+    let ty := mkConst ``InternalTheoryDeclarationAnchor
+    let value := mkConst ``InternalTheoryDeclarationAnchor.mk
+    let defVal ← mkDefinitionValInferringUnsafe anchorName [] ty value ReducibilityHints.abbrev
+    addAndCompile (Declaration.defnDecl defVal)
+  addDocStringCore anchorName (internalTheoryDeclarationAnchorDocString theoryName ref)
+  addDeclarationRangesFromSyntax anchorName ref.declStx ref.nameStx
+
+/-- Find the Lean anchor declaration used for editor navigation to an InternalLean source name. -/
+def internalSourceDeclAnchorName? (theoryName sourceName : Name) : CoreM (Option Name) := do
+  let env ← getEnv
+  let hiddenAnchor := internalTheoryDeclarationAnchorName theoryName sourceName
+  if env.contains hiddenAnchor then
+    return some hiddenAnchor
+  let publicAnchor := theoryName ++ sourceName.eraseMacroScopes
+  if env.contains publicAnchor then
+    return some publicAnchor
+  return none
+
+/-- Add declaration ranges for a generated declaration from a source anchor, when both declarations
+live in the same module. Declaration ranges do not store a module name, so imported sources cannot
+be used safely here. -/
+def addDeclarationRangesFromInternalSourceAnchorIfSameModule (targetName theoryName sourceName :
+    Name) : CoreM Unit := do
+  let some sourceAnchor ← internalSourceDeclAnchorName? theoryName sourceName
+    | return ()
+  let sourceModule? ← findModuleOf? sourceAnchor
+  let targetModule? ← findModuleOf? targetName
+  unless sourceModule? == targetModule? do
+    return ()
+  let some ranges ← findDeclarationRanges? sourceAnchor
+    | return ()
+  addDeclarationRanges targetName ranges
+
+/-- Push a term-info entry that makes a custom object-theory identifier participate in Lean's
+language-server go-to-definition and hover machinery. -/
+def addInternalSourceDeclTermInfo? (theoryName sourceName : Name) (stx : Syntax)
+    (isBinder : Bool := false) : CommandElabM Unit := do
+  let some anchorName ← liftCoreM <| internalSourceDeclAnchorName? theoryName sourceName
+    | return ()
+  unless (← getEnv).contains anchorName do
+    return ()
+  pushInfoLeaf <| .ofTermInfo {
+    elaborator := `InternalLean.sourceNavigation
+    stx := stx
+    lctx := .empty
+    expectedType? := none
+    expr := mkConst anchorName
+    isBinder := isBinder
+    isDisplayableTerm := false }
 
 /-- Resolved target information for a top-level `internal def`. -/
 structure InternalDefTarget where
@@ -244,6 +334,14 @@ def addInternalDeclarationAnchor (target : InternalDefTarget) (typeExpr : ObjExp
   addDocStringCore target.anchorName (internalDeclarationAnchorDocString target typeExpr admitted
     sourceDoc?)
   addDeclarationRangesFromSyntax target.anchorName rangeStx selectionRangeStx
+  pushInfoLeaf <| .ofTermInfo {
+    elaborator := `InternalLean.sourceNavigation
+    stx := selectionRangeStx
+    lctx := .empty
+    expectedType? := none
+    expr := mkConst target.anchorName
+    isBinder := true
+    isDisplayableTerm := false }
 
 /-- Register a high-level theory signature, failing on duplicate names. -/
 def registerTheory (sig : HLSignature) : CoreM Unit := do
@@ -963,108 +1061,127 @@ def ttDeclDocComment? (decl : TSyntax `ttDecl) : CommandElabM (Option String) :=
   | some doc => some <$> docCommentString doc
   | none => pure none
 
-/-- Return the documentation role and source name for a declaration-block item, if it is
-public-facing. -/
-def sourceDocRoleAndNameOfTTDecl? (decl : TSyntax `ttDecl) :
-  CommandElabM (Option (SourceDocRole × Name)) := do
+/-- Return source-range metadata for a declaration-block item, if it introduces a
+public-facing type-theory declaration. -/
+def sourceDeclSyntaxRefOfTTDecl? (decl : TSyntax `ttDecl) :
+    CommandElabM (Option SourceDeclSyntaxRef) := do
+  let mk (role : SourceDocRole) (n : Ident) : Option SourceDeclSyntaxRef :=
+    some { role, sourceName := n.getId, declStx := decl.raw, nameStx := n.raw }
   match decl with
   | `(ttDecl| syntax_sort $n:ident $bs:ttBinder*) =>
       let _ := bs.size
-      pure <| some (.syntaxSort, n.getId)
+      pure <| mk .syntaxSort n
   | `(ttDecl| $doc:docComment syntax_sort $n:ident $bs:ttBinder*) =>
       let _ := doc.raw; let _ := bs.size
-      pure <| some (.syntaxSort, n.getId)
+      pure <| mk .syntaxSort n
   | `(ttDecl| syntax_sort $n:ident $bs:ttBinder* : $result:ttExpr) =>
       let _ := bs.size; let _ := result.raw
-      pure <| some (.syntaxSort, n.getId)
+      pure <| mk .syntaxSort n
   | `(ttDecl| $doc:docComment syntax_sort $n:ident $bs:ttBinder* : $result:ttExpr) =>
       let _ := doc.raw; let _ := bs.size; let _ := result.raw
-      pure <| some (.syntaxSort, n.getId)
+      pure <| mk .syntaxSort n
   | `(ttDecl| syntax_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) =>
       let _ := bs.size; let _ := value.raw
-      pure <| some (.syntaxAbbrev, n.getId)
+      pure <| mk .syntaxAbbrev n
   | `(ttDecl| $doc:docComment syntax_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) =>
       let _ := doc.raw; let _ := bs.size; let _ := value.raw
-      pure <| some (.syntaxAbbrev, n.getId)
+      pure <| mk .syntaxAbbrev n
   | `(ttDecl| judgment_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) =>
       let _ := bs.size; let _ := value.raw
-      pure <| some (.judgmentAbbrev, n.getId)
+      pure <| mk .judgmentAbbrev n
   | `(ttDecl| $doc:docComment judgment_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) =>
       let _ := doc.raw; let _ := bs.size; let _ := value.raw
-      pure <| some (.judgmentAbbrev, n.getId)
+      pure <| mk .judgmentAbbrev n
   | `(ttDecl| context_zone $n:ident : $sortName:ident) =>
       let _ := sortName.getId
-      pure <| some (.contextZone, n.getId)
+      pure <| mk .contextZone n
   | `(ttDecl| context_zone $n:ident : $sortName:ident depends_on $deps:ident,*) =>
       let _ := sortName.getId; let _ := deps.getElems.size
-      pure <| some (.contextZone, n.getId)
+      pure <| mk .contextZone n
   | `(ttDecl| binder_class $n:ident : $sortName:ident in $zoneName:ident) =>
       let _ := sortName.getId; let _ := zoneName.getId
-      pure <| some (.binderClass, n.getId)
+      pure <| mk .binderClass n
   | `(ttDecl| binder_class $n:ident :
     $sortName:ident in $zoneName:ident depends_on $deps:ident,*) =>
       let _ := sortName.getId; let _ := zoneName.getId; let _ := deps.getElems.size
-      pure <| some (.binderClass, n.getId)
+      pure <| mk .binderClass n
   | `(ttDecl| judgment $n:ident $bs:ttBinder*) =>
       let _ := bs.size
-      pure <| some (.judgment, n.getId)
+      pure <| mk .judgment n
   | `(ttDecl| $doc:docComment judgment $n:ident $bs:ttBinder*) =>
       let _ := doc.raw; let _ := bs.size
-      pure <| some (.judgment, n.getId)
+      pure <| mk .judgment n
   | `(ttDecl| rule $n:ident $bs:ttBinder* : $conclStx:ttExpr) =>
       let _ := bs.size; let _ := conclStx.raw
-      pure <| some (.rule, n.getId)
+      pure <| mk .rule n
   | `(ttDecl| $doc:docComment rule $n:ident $bs:ttBinder* : $conclStx:ttExpr) =>
       let _ := doc.raw; let _ := bs.size; let _ := conclStx.raw
-      pure <| some (.rule, n.getId)
+      pure <| mk .rule n
   | `(ttDecl| rule $n:ident $bs:ttBinder* where $items:ttRuleItem*) =>
       let _ := bs.size; let _ := items.size
-      pure <| some (.rule, n.getId)
+      pure <| mk .rule n
   | `(ttDecl| $doc:docComment rule $n:ident $bs:ttBinder* where $items:ttRuleItem*) =>
       let _ := doc.raw; let _ := bs.size; let _ := items.size
-      pure <| some (.rule, n.getId)
-  | `(ttDecl| side_condition_solver $n:ident) => pure <| some (.sideConditionSolver, n.getId)
-  | `(ttDecl| conversion_plugin $n:ident) => pure <| some (.conversionPlugin, n.getId)
-  | `(ttDecl| conversion_plugin $n:ident opaque) => pure <| some (.conversionPlugin, n.getId)
-  | `(ttDecl| conversion_plugin $n:ident external_certificate) => pure <| some (.conversionPlugin,
-    n.getId)
-  | `(ttDecl| conversion_plugin $n:ident executable) => pure <| some (.conversionPlugin, n.getId)
+      pure <| mk .rule n
+  | `(ttDecl| side_condition_solver $n:ident) => pure <| mk .sideConditionSolver n
+  | `(ttDecl| $doc:docComment side_condition_solver $n:ident) =>
+      let _ := doc.raw
+      pure <| mk .sideConditionSolver n
+  | `(ttDecl| conversion_plugin $n:ident) => pure <| mk .conversionPlugin n
+  | `(ttDecl| conversion_plugin $n:ident opaque) => pure <| mk .conversionPlugin n
+  | `(ttDecl| conversion_plugin $n:ident external_certificate) =>
+      pure <| mk .conversionPlugin n
+  | `(ttDecl| conversion_plugin $n:ident executable) => pure <| mk .conversionPlugin n
   | `(ttDecl| $doc:docComment conversion_plugin $n:ident) =>
       let _ := doc.raw
-      pure <| some (.conversionPlugin, n.getId)
+      pure <| mk .conversionPlugin n
   | `(ttDecl| $doc:docComment conversion_plugin $n:ident opaque) =>
       let _ := doc.raw
-      pure <| some (.conversionPlugin, n.getId)
+      pure <| mk .conversionPlugin n
   | `(ttDecl| $doc:docComment conversion_plugin $n:ident external_certificate) =>
       let _ := doc.raw
-      pure <| some (.conversionPlugin, n.getId)
+      pure <| mk .conversionPlugin n
   | `(ttDecl| $doc:docComment conversion_plugin $n:ident executable) =>
       let _ := doc.raw
-      pure <| some (.conversionPlugin, n.getId)
-  | `(ttDecl| lf_opaque $n:ident) => pure <| some (.lfOpaque, n.getId)
+      pure <| mk .conversionPlugin n
+  | `(ttDecl| lf_opaque $n:ident) => pure <| mk .lfOpaque n
+  | `(ttDecl| $doc:docComment lf_opaque $n:ident) =>
+      let _ := doc.raw
+      pure <| mk .lfOpaque n
   | `(ttDecl| lf_opaque $n:ident / $arity:num) =>
       let _ := arity.getNat
-      pure <| some (.lfOpaque, n.getId)
+      pure <| mk .lfOpaque n
+  | `(ttDecl| $doc:docComment lf_opaque $n:ident / $arity:num) =>
+      let _ := doc.raw; let _ := arity.getNat
+      pure <| mk .lfOpaque n
   | `(ttDecl| lf_opaque $n:ident $bs:ttBinder* : $ty:ttExpr) =>
       let _ := bs.size; let _ := ty.raw
-      pure <| some (.lfOpaque, n.getId)
+      pure <| mk .lfOpaque n
   | `(ttDecl| $doc:docComment lf_opaque $n:ident $bs:ttBinder* : $ty:ttExpr) =>
       let _ := doc.raw; let _ := bs.size; let _ := ty.raw
-      pure <| some (.lfOpaque, n.getId)
+      pure <| mk .lfOpaque n
   | `(ttDecl| lf_def $n:ident : $ty:ttExpr := $value:ttExpr) =>
       let _ := ty.raw; let _ := value.raw
-      pure <| some (.lfObjectDef, n.getId)
+      pure <| mk .lfObjectDef n
   | `(ttDecl| $doc:docComment lf_def $n:ident : $ty:ttExpr := $value:ttExpr) =>
       let _ := doc.raw; let _ := ty.raw; let _ := value.raw
-      pure <| some (.lfObjectDef, n.getId)
+      pure <| mk .lfObjectDef n
   | `(ttDecl| judgment_theorem $n:ident $bs:ttBinder* : $j:ttExpr := $proof:ttExpr) =>
       let _ := bs.size; let _ := j.raw; let _ := proof.raw
-      pure <| some (.lfJudgmentTheorem, n.getId)
+      pure <| mk .lfJudgmentTheorem n
   | `(ttDecl| $doc:docComment judgment_theorem $n:ident $bs:ttBinder* : $j:ttExpr :=
     $proof:ttExpr) =>
       let _ := doc.raw; let _ := bs.size; let _ := j.raw; let _ := proof.raw
-      pure <| some (.lfJudgmentTheorem, n.getId)
+      pure <| mk .lfJudgmentTheorem n
   | _ => pure none
+
+/-- Return the documentation role and source name for a declaration-block item, if it is
+public-facing. -/
+def sourceDocRoleAndNameOfTTDecl? (decl : TSyntax `ttDecl) :
+    CommandElabM (Option (SourceDocRole × Name)) := do
+  match ← sourceDeclSyntaxRefOfTTDecl? decl with
+  | some ref => pure <| some (ref.role, ref.sourceName)
+  | none => pure none
 
 /-- Capture source docstrings from documented items in a `declare_type_theory` block. -/
 def sourceDocsFromTheoryBlock (theoryName : Name) (decls : TSyntaxArray `ttDecl) :
@@ -1084,6 +1201,234 @@ def registerSourceDocs (docs : Array SourceDoc) : CoreM Unit := do
   for d in docs do
     registerSourceDoc d.theoryName d.role d.sourceName d.doc
 
+/-- Source declaration anchors for all public-facing items in a theory block. -/
+def sourceDeclSyntaxRefsFromTheoryBlock (decls : TSyntaxArray `ttDecl) :
+    CommandElabM (Array SourceDeclSyntaxRef) := do
+  let mut out := #[]
+  for decl in decls do
+    if let some ref ← sourceDeclSyntaxRefOfTTDecl? decl then
+      out := out.push ref
+  pure out
+
+/-- Add hidden Lean anchors for source declarations in a type-theory block. -/
+def addInternalTheoryDeclarationAnchors (theoryName : Name) (decls : TSyntaxArray `ttDecl) :
+    CommandElabM Unit := do
+  for ref in ← sourceDeclSyntaxRefsFromTheoryBlock decls do
+    addInternalTheoryDeclarationAnchor theoryName ref
+
+/-- Add navigation info for one reference to a type-theory source declaration. -/
+def addInternalSourceReferenceInfo? (theoryName : Name) (sourceName : Name) (stx : Syntax) :
+    CommandElabM Unit :=
+  addInternalSourceDeclTermInfo? theoryName sourceName stx false
+
+mutual
+  /-- Add navigation info to identifiers occurring in an object expression. -/
+  partial def addObjExprNavigationInfo (theoryName : Name) (locals : NameSet)
+      (stx : TSyntax `ttExpr) : CommandElabM Unit := do
+    if let some notationDecl := findObjectNotationDeclBySyntax? (← getEnv) stx.raw.getKind then
+      if let some holeStxs := objectNotationChildExprSyntaxes notationDecl stx.raw then
+        for holeStx in holeStxs do
+          addObjExprNavigationInfo theoryName locals holeStx
+    else if let some stx' ← liftMacroM <| expandMacro? stx.raw then
+      addObjExprNavigationInfo theoryName locals (⟨stx'⟩ : TSyntax `ttExpr)
+    else
+      match stx with
+      | `(ttExpr| Type) => pure ()
+      | `(ttExpr| Type max $u:ttLevel $v:ttLevel) =>
+          let _ := u.raw; let _ := v.raw; pure ()
+      | `(ttExpr| Type $u:ttLevel) =>
+          let _ := u.raw; pure ()
+      | `(ttExpr| $x:ident) =>
+          let n := x.getId.eraseMacroScopes
+          unless n == `_ || locals.contains n do
+            addInternalSourceReferenceInfo? theoryName n x.raw
+      | `(ttExpr| _) => pure ()
+      | `(ttExpr| ($e:ttExpr)) => addObjExprNavigationInfo theoryName locals e
+      | `(ttExpr| {$x:ident := $value:ttExpr}) =>
+          let _ := x.getId
+          addObjExprNavigationInfo theoryName locals value
+      | `(ttExpr| $a:ttExpr ≡ $b:ttExpr) => do
+          addObjExprNavigationInfo theoryName locals a
+          addObjExprNavigationInfo theoryName locals b
+      | `(ttExpr| $a:ttExpr → $b:ttExpr) => do
+          addObjExprNavigationInfo theoryName locals a
+          addObjExprNavigationInfo theoryName locals b
+      | `(ttExpr| ($x:ident : $a:ttExpr) → $b:ttExpr) => do
+          addObjExprNavigationInfo theoryName locals a
+          addObjExprNavigationInfo theoryName (locals.insert x.getId.eraseMacroScopes) b
+      | `(ttExpr| $a:ttExpr ⇒ $b:ttExpr) => do
+          addObjExprNavigationInfo theoryName locals a
+          addObjExprNavigationInfo theoryName locals b
+      | `(ttExpr| ($x:ident : $a:ttExpr) ⇒ $b:ttExpr) => do
+          addObjExprNavigationInfo theoryName locals a
+          addObjExprNavigationInfo theoryName (locals.insert x.getId.eraseMacroScopes) b
+      | `(ttExpr| $a:ttExpr × $b:ttExpr) => do
+          addObjExprNavigationInfo theoryName locals a
+          addObjExprNavigationInfo theoryName locals b
+      | `(ttExpr| Σ $x:ident : $a:ttExpr, $b:ttExpr) => do
+          addObjExprNavigationInfo theoryName locals a
+          addObjExprNavigationInfo theoryName (locals.insert x.getId.eraseMacroScopes) b
+      | `(ttExpr| ⟨$a:ttExpr, $b:ttExpr⟩) => do
+          addObjExprNavigationInfo theoryName locals a
+          addObjExprNavigationInfo theoryName locals b
+      | `(ttExpr| fst $e:ttExpr) => addObjExprNavigationInfo theoryName locals e
+      | `(ttExpr| snd $e:ttExpr) => addObjExprNavigationInfo theoryName locals e
+      | `(ttExpr| fun $xs:ttLamBinder* => $body:ttExpr) => do
+          let mut locals := locals
+          for x in xs do
+            match x with
+            | `(ttLamBinder| $n:ident) => locals := locals.insert n.getId.eraseMacroScopes
+            | `(ttLamBinder| _) => pure ()
+            | _ => pure ()
+          addObjExprNavigationInfo theoryName locals body
+      | `(ttExpr| $f:ttExpr $a:ttExpr) => do
+          addObjExprNavigationInfo theoryName locals f
+          addObjExprNavigationInfo theoryName locals a
+      | _ => pure ()
+
+  /-- Add navigation info to a binder and return the extended local-name set. -/
+  partial def addBinderNavigationInfo (theoryName : Name) (locals : NameSet)
+      (stx : TSyntax `ttBinder) : CommandElabM NameSet := do
+    match stx with
+    | `(ttBinder| ($x:ident : $ty:ttExpr)) =>
+        addObjExprNavigationInfo theoryName locals ty
+        pure (locals.insert x.getId.eraseMacroScopes)
+    | `(ttBinder| {$x:ident : $ty:ttExpr}) =>
+        addObjExprNavigationInfo theoryName locals ty
+        pure (locals.insert x.getId.eraseMacroScopes)
+    | _ => pure locals
+
+  /-- Add navigation info to a telescope and return its local-name set. -/
+  partial def addBinderNavigationInfos (theoryName : Name) (locals : NameSet)
+      (binders : TSyntaxArray `ttBinder) : CommandElabM NameSet := do
+    let mut locals := locals
+    for b in binders do
+      locals ← addBinderNavigationInfo theoryName locals b
+    pure locals
+end
+
+/-- Add navigation info for one rule-block item. -/
+def addRuleItemNavigationInfo (theoryName : Name) (locals : NameSet)
+    (item : TSyntax `ttRuleItem) : CommandElabM Unit := do
+  match item with
+  | `(ttRuleItem| premise $n:ident : $j:ttExpr) =>
+      let _ := n.getId
+      addObjExprNavigationInfo theoryName locals j
+  | `(ttRuleItem| evidence $h:ident for $n:ident : $j:ttExpr) =>
+      let _ := h.getId; let _ := n.getId
+      addObjExprNavigationInfo theoryName locals j
+  | `(ttRuleItem| side_condition $n:ident by $solver:ident : $input:ttExpr) => do
+      let _ := n.getId
+      addInternalSourceReferenceInfo? theoryName solver.getId solver.raw
+      addObjExprNavigationInfo theoryName locals input
+  | `(ttRuleItem| conclusion : $j:ttExpr) =>
+      addObjExprNavigationInfo theoryName locals j
+  | _ => pure ()
+
+/-- Add language-server navigation info for identifiers occurring in a type-theory block. -/
+def addTheoryBlockNavigationInfo (theoryName : Name) (decls : TSyntaxArray `ttDecl) :
+    CommandElabM Unit := do
+  for decl in decls do
+    if let some ref ← sourceDeclSyntaxRefOfTTDecl? decl then
+      addInternalSourceDeclTermInfo? theoryName ref.sourceName ref.nameStx true
+    match decl with
+    | `(ttDecl| syntax_sort $_:ident $bs:ttBinder*) =>
+        discard <| addBinderNavigationInfos theoryName {} bs
+    | `(ttDecl| $doc:docComment syntax_sort $_:ident $bs:ttBinder*) =>
+        let _ := doc.raw; discard <| addBinderNavigationInfos theoryName {} bs
+    | `(ttDecl| syntax_sort $_:ident $bs:ttBinder* : $result:ttExpr) => do
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals result
+    | `(ttDecl| $doc:docComment syntax_sort $_:ident $bs:ttBinder* : $result:ttExpr) => do
+        let _ := doc.raw
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals result
+    | `(ttDecl| syntax_abbrev $_:ident $bs:ttBinder* := $value:ttExpr) => do
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals value
+    | `(ttDecl| $doc:docComment syntax_abbrev $_:ident $bs:ttBinder* := $value:ttExpr) => do
+        let _ := doc.raw
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals value
+    | `(ttDecl| judgment_abbrev $_:ident $bs:ttBinder* := $value:ttExpr) => do
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals value
+    | `(ttDecl| $doc:docComment judgment_abbrev $_:ident $bs:ttBinder* := $value:ttExpr) => do
+        let _ := doc.raw
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals value
+    | `(ttDecl| context_zone $_:ident : $sortName:ident) =>
+        addInternalSourceReferenceInfo? theoryName sortName.getId sortName.raw
+    | `(ttDecl| context_zone $_:ident : $sortName:ident depends_on $deps:ident,*) => do
+        addInternalSourceReferenceInfo? theoryName sortName.getId sortName.raw
+        for dep in deps.getElems do
+          addInternalSourceReferenceInfo? theoryName dep.getId dep.raw
+    | `(ttDecl| binder_class $_:ident : $sortName:ident in $zoneName:ident) => do
+        addInternalSourceReferenceInfo? theoryName sortName.getId sortName.raw
+        addInternalSourceReferenceInfo? theoryName zoneName.getId zoneName.raw
+    | `(ttDecl| binder_class $_:ident :
+      $sortName:ident in $zoneName:ident depends_on $deps:ident,*) => do
+        addInternalSourceReferenceInfo? theoryName sortName.getId sortName.raw
+        addInternalSourceReferenceInfo? theoryName zoneName.getId zoneName.raw
+        for dep in deps.getElems do
+          addInternalSourceReferenceInfo? theoryName dep.getId dep.raw
+    | `(ttDecl| judgment $_:ident $bs:ttBinder*) =>
+        discard <| addBinderNavigationInfos theoryName {} bs
+    | `(ttDecl| $doc:docComment judgment $_:ident $bs:ttBinder*) =>
+        let _ := doc.raw; discard <| addBinderNavigationInfos theoryName {} bs
+    | `(ttDecl| rule $_:ident $bs:ttBinder* : $concl:ttExpr) => do
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals concl
+    | `(ttDecl| $doc:docComment rule $_:ident $bs:ttBinder* : $concl:ttExpr) => do
+        let _ := doc.raw
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals concl
+    | `(ttDecl| rule $_:ident $bs:ttBinder* where $items:ttRuleItem*) => do
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        for item in items do
+          addRuleItemNavigationInfo theoryName locals item
+    | `(ttDecl| $doc:docComment rule $_:ident $bs:ttBinder* where $items:ttRuleItem*) => do
+        let _ := doc.raw
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        for item in items do
+          addRuleItemNavigationInfo theoryName locals item
+    | `(ttDecl| lf_opaque $_:ident $bs:ttBinder* : $ty:ttExpr) => do
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals ty
+    | `(ttDecl| $doc:docComment lf_opaque $_:ident $bs:ttBinder* : $ty:ttExpr) => do
+        let _ := doc.raw
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals ty
+    | `(ttDecl| lf_def $_:ident : $ty:ttExpr := $value:ttExpr) => do
+        addObjExprNavigationInfo theoryName {} ty
+        addObjExprNavigationInfo theoryName {} value
+    | `(ttDecl| $doc:docComment lf_def $_:ident : $ty:ttExpr := $value:ttExpr) => do
+        let _ := doc.raw
+        addObjExprNavigationInfo theoryName {} ty
+        addObjExprNavigationInfo theoryName {} value
+    | `(ttDecl| judgment_theorem $_:ident $bs:ttBinder* : $j:ttExpr := $proof:ttExpr) => do
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals j
+        addObjExprNavigationInfo theoryName locals proof
+    | `(ttDecl| $doc:docComment judgment_theorem $_:ident $bs:ttBinder* : $j:ttExpr :=
+      $proof:ttExpr) => do
+        let _ := doc.raw
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals j
+        addObjExprNavigationInfo theoryName locals proof
+    | `(ttDecl| syntax_sort_role $n:ident : $role:ident) => do
+        addInternalSourceReferenceInfo? theoryName n.getId n.raw
+        let _ := role.getId
+    | `(ttDecl| judgment_role $n:ident : $role:ident) => do
+        addInternalSourceReferenceInfo? theoryName n.getId n.raw
+        let _ := role.getId
+    | `(ttDecl| rule_role $n:ident : $role:ident) => do
+        addInternalSourceReferenceInfo? theoryName n.getId n.raw
+        let _ := role.getId
+    | `(ttDecl| model_public $n:ident) => addInternalSourceReferenceInfo? theoryName n.getId n.raw
+    | `(ttDecl| model_internal $n:ident) => addInternalSourceReferenceInfo? theoryName n.getId n.raw
+    | `(ttDecl| model_compat $n:ident) => addInternalSourceReferenceInfo? theoryName n.getId n.raw
+    | _ => pure ()
 
 
 syntax (name := declareInternalLeanWhere)
@@ -1117,7 +1462,9 @@ def elabDeclareInternalLean (doc? : Option (TSyntax ``Parser.Command.docComment)
   liftCoreM do
     registerTheory sig
     registerSourceDocs sourceDocs
+  addInternalTheoryDeclarationAnchors sig.name decls
   addTheoryAnchorDeclaration sig sourceDoc? (← getRef) nm
+  addTheoryBlockNavigationInfo sig.name decls
 
 /-- Shared elaboration path for `extend_type_theory`, preserving the original Lean-visible
 theory anchor while registration uses the incremental checker or a full fallback. -/
@@ -1140,6 +1487,8 @@ def elabExtendInternalLean (doc? : Option (TSyntax ``Parser.Command.docComment))
   liftCoreM do
     registerTheoryBlockExtension nm.getId block
     registerSourceDocs sourceDocs
+  addInternalTheoryDeclarationAnchors nm.getId decls
+  addTheoryBlockNavigationInfo nm.getId decls
 
 elab_rules : command
   | `($[$doc?:docComment]? declare_type_theory $nm:ident where $decls:ttDecl*) => do
