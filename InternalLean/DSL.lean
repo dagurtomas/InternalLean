@@ -2008,14 +2008,26 @@ meta def elabLamBinder : TSyntax `ttLamBinder → CommandElabM Name
   | stx => throwError "unsupported lambda binder syntax:{indentD stx}"
 
 /-- Child object-expression syntax nodes captured by a generated object notation parser. -/
-meta def objectNotationChildExprSyntaxes (stx : Syntax) : Array (TSyntax `ttExpr) :=
-  stx.getArgs.filterMap fun arg =>
-    if arg.getKind == `InternalLean.ttExpr_ then some (⟨arg⟩ : TSyntax `ttExpr) else none
+meta def objectNotationChildExprSyntaxes (notationDecl : ObjectNotationDecl) (stx : Syntax) :
+    Option (Array (TSyntax `ttExpr)) := do
+  let args := stx.getArgs
+  if args.size != notationDecl.parts.size then
+    none
+  else
+    let mut out : Array (TSyntax `ttExpr) := #[]
+    for part in notationDecl.parts, arg in args do
+      match part with
+      | .atom _ => pure ()
+      | .hole _ => out := out.push (⟨arg⟩ : TSyntax `ttExpr)
+    some out
 
 /-- Parse a high-level object expression into an AST. -/
 meta partial def elabObjExpr (stx : TSyntax `ttExpr) : CommandElabM ObjExpr := do
   if let some notationDecl := findObjectNotationDeclBySyntax? (← getEnv) stx.raw.getKind then
-    let holeStxs := objectNotationChildExprSyntaxes stx.raw
+    let some holeStxs := objectNotationChildExprSyntaxes notationDecl stx.raw
+      | throwError "object notation '{notationDecl.patternString}' in type theory \
+          '{notationDecl.theoryName}' parsed with {stx.raw.getArgs.size} syntax part(s), expected \
+            {notationDecl.parts.size}"
     if holeStxs.size != notationDecl.holeNames.size then
       throwError "object notation '{notationDecl.patternString}' in type theory \
         '{notationDecl.theoryName}' parsed with {holeStxs.size} hole(s), expected \

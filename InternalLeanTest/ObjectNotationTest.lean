@@ -14,16 +14,18 @@ declare_type_theory ObjectNotationSmoke where
   lf_opaque f0 : Tm
   judgment HasTy (Γ : Ctx) (t : Tm) (A : Ty)
 
-object_notation ObjectNotationSmoke "[" A "]" x "⇛" y => Arr A x y
+object_notation ObjectNotationSmoke "[" A "]" x "⟶" y => Arr A x y
 
 #print_object_notations ObjectNotationSmoke
-#expand_object ObjectNotationSmoke [ Star ] x0 ⇛ y0
+#expand_object ObjectNotationSmoke [ Star ] x0 ⟶ y0
+#expand_object ObjectNotationSmoke [ Star ] (x0) ⟶ (y0)
 
 extend_type_theory ObjectNotationSmoke where
-  lf_def HomTy : Ty := [ Star ] x0 ⇛ y0
+  lf_def HomTy : Ty := [ Star ] x0 ⟶ y0
+  lf_def HomTyParen : Ty := [ Star ] (x0) ⟶ (y0)
   judgment_abbrev Obj (Γ : Ctx) (x : Tm) := HasTy Γ x Star
   judgment_abbrev Mor (Γ : Ctx) (x : Tm) (y : Tm) (f : Tm) :=
-    HasTy Γ f ([ Star ] x ⇛ y)
+    HasTy Γ f ([ Star ] x ⟶ y)
   rule mk_mor where
     premise hx : Obj Γ0 x0
     conclusion : Mor Γ0 x0 y0 f0
@@ -57,11 +59,18 @@ template does not use it
 object_notation ObjectNotationSmoke "dropB" A B => A
 
 /--
-error: object_notation pattern "[" A "]" x "⇛" y is already registered for type theory
+error: object_notation pattern "[" A "]" x "⟶" y is already registered for type theory
 'ObjectNotationSmoke'
 -/
 #guard_msgs (whitespace := lax) in
-object_notation ObjectNotationSmoke "[" B "]" u "⇛" v => Arr B u v
+object_notation ObjectNotationSmoke "[" B "]" u "⟶" v => Arr B u v
+
+/--
+error: object_notation for type theory 'ObjectNotationSmoke' uses reserved token '⇒'; this token
+is the built-in LF dependent arrow, so use a different notation token such as '⟶' or '⇛'
+-/
+#guard_msgs (whitespace := lax) in
+object_notation ObjectNotationSmoke "[" A "]" x "⇒" y => Arr A x y
 
 /--
 error: object_notation for type theory 'ObjectNotationSmoke' must start with a literal token;

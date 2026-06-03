@@ -102,7 +102,11 @@ elab_rules : command
       let mut seenHoles : NameSet := {}
       for part in parts do
         match part with
-        | .atom _ => pure ()
+        | .atom text =>
+            if text == "⇒" then
+              throwError "object_notation for type theory '{theory.getId}' uses reserved token \
+                '⇒'; this token is the built-in LF dependent arrow, so use a different notation \
+                token such as '⟶' or '⇛'"
         | .hole name =>
             let name := name.eraseMacroScopes
             if seenHoles.contains name then
