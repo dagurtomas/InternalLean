@@ -1607,6 +1607,75 @@ structure LFGlobalTypeInfo where
 def rulePremiseAsTypeInfoBinder (p : RulePremiseDecl) : HLBinding :=
   { name := p.name.eraseMacroScopes, typeExpr := p.judgmentExpr, visibility := .explicit }
 
+/-- Map-based lookup data for repeated LF expression checks in one signature. -/
+structure LFCheckLookupContext where
+  /-- Typed global object constructors, normally typed LF opaques. -/
+  globalTypeInfos : NameMap LFGlobalTypeInfo := {}
+  /-- Rule and theorem proof constants. -/
+  proofTypeInfos : NameMap LFGlobalTypeInfo := {}
+  /-- Source LF object-definition result types. -/
+  lfObjectDefTypes : LFLocalTypes := {}
+  /-- Source LF object-definition values. -/
+  lfDefinitionValues : LFDefinitionValueMap := {}
+  /-- Syntax-sort declarations by erased name. -/
+  syntaxSortDecls : NameMap SyntaxSortDecl := {}
+  /-- Judgment declarations by erased name. -/
+  judgmentDecls : NameMap JudgmentDecl := {}
+  /-- Untyped LF opaque placeholders and their accepted arities. -/
+  untypedOpaqueArities : NameMap (Array (Option Nat)) := {}
+  deriving Inhabited
+
+/-- Build map-based lookup data for repeated LF expression checks. -/
+def mkLFCheckLookupContext (sig : HLSignature) : LFCheckLookupContext := Id.run do
+  let mut globalTypeInfos : NameMap LFGlobalTypeInfo := {}
+  let mut proofTypeInfos : NameMap LFGlobalTypeInfo := {}
+  let mut lfObjectDefTypes : LFLocalTypes := {}
+  let mut lfDefinitionValues : LFDefinitionValueMap := {}
+  let mut syntaxSortDecls : NameMap SyntaxSortDecl := {}
+  let mut judgmentDecls : NameMap JudgmentDecl := {}
+  let mut untypedOpaqueArities : NameMap (Array (Option Nat)) := {}
+  for s in sig.syntaxSorts do
+    let name := s.name.eraseMacroScopes
+    unless syntaxSortDecls.contains name do
+      syntaxSortDecls := syntaxSortDecls.insert name s
+  for j in sig.judgments do
+    let name := j.name.eraseMacroScopes
+    unless judgmentDecls.contains name do
+      judgmentDecls := judgmentDecls.insert name j
+  for o in sig.lfOpaqueConsts do
+    let name := o.name.eraseMacroScopes
+    match o.typeExpr? with
+    | some typeExpr =>
+        globalTypeInfos := globalTypeInfos.insert name { binders := o.params, typeExpr }
+    | none =>
+        let arities := match untypedOpaqueArities.find? name with
+          | some arities => arities
+          | none => #[]
+        untypedOpaqueArities := untypedOpaqueArities.insert name (arities.push o.arity?)
+  for r in sig.rules do
+    let name := r.name.eraseMacroScopes
+    proofTypeInfos := proofTypeInfos.insert name {
+      binders := r.params ++ r.premises.map rulePremiseAsTypeInfoBinder
+      typeExpr := r.conclusionExpr }
+  for d in sig.lfObjectDefs do
+    let name := d.name.eraseMacroScopes
+    unless lfObjectDefTypes.contains name do
+      lfObjectDefTypes := lfObjectDefTypes.insert name (eraseObjExprScopes d.typeExpr)
+      lfDefinitionValues := lfDefinitionValues.insert name (eraseObjExprScopes d.value)
+  for t in sig.lfJudgmentTheorems do
+    let name := t.name.eraseMacroScopes
+    proofTypeInfos := proofTypeInfos.insert name {
+      binders := t.binders
+      typeExpr := t.judgmentExpr }
+  return {
+    globalTypeInfos := globalTypeInfos
+    proofTypeInfos := proofTypeInfos
+    lfObjectDefTypes := lfObjectDefTypes
+    lfDefinitionValues := lfDefinitionValues
+    syntaxSortDecls := syntaxSortDecls
+    judgmentDecls := judgmentDecls
+    untypedOpaqueArities := untypedOpaqueArities }
+
 /-- Look up the declared object type of a global constructor-like head.
 
 This is limited to typed opaque LF placeholders. Rule and theorem heads are handled separately by
@@ -1640,39 +1709,71 @@ def findLFInferableTypeInfo? (sig : HLSignature) (name : Name) : Option LFGlobal
   | some info => some info
   | none => findLFProofTypeInfo? sig name
 
-/-- Infer a shallow LF/object type for expressions whose head has known type metadata.
-This handles local/LF-definition identifiers from `knownTypes` and global object constants
-with explicit telescopes. It returns `none` for untyped opaque placeholders and other untyped
-staging heads. -/
-partial def inferKnownLFExprType? (sig : HLSignature) (knownTypes : LFLocalTypes) :
-    ObjExpr → Option ObjExpr
+/-- Map-based typed global constructor lookup. -/
+def findLFGlobalTypeInfoIn? (lookup : LFCheckLookupContext) (name : Name) :
+    Option LFGlobalTypeInfo :=
+  lookup.globalTypeInfos.find? name.eraseMacroScopes
+
+/-- Map-based rule/theorem proof-constant lookup. -/
+def findLFProofTypeInfoIn? (lookup : LFCheckLookupContext) (name : Name) :
+    Option LFGlobalTypeInfo :=
+  lookup.proofTypeInfos.find? name.eraseMacroScopes
+
+/-- Map-based type lookup used by shallow inference, including proof constants. -/
+def findLFInferableTypeInfoIn? (lookup : LFCheckLookupContext) (name : Name) :
+    Option LFGlobalTypeInfo :=
+  match findLFGlobalTypeInfoIn? lookup name with
+  | some info => some info
+  | none => findLFProofTypeInfoIn? lookup name
+
+/-- Map-based syntax-sort lookup. -/
+def findSyntaxSortDeclIn? (lookup : LFCheckLookupContext) (name : Name) :
+    Option SyntaxSortDecl :=
+  lookup.syntaxSortDecls.find? name.eraseMacroScopes
+
+/-- Map-based judgment lookup. -/
+def findJudgmentDeclIn? (lookup : LFCheckLookupContext) (name : Name) : Option JudgmentDecl :=
+  lookup.judgmentDecls.find? name.eraseMacroScopes
+
+/-- Shallow type comparison using the lookup context's LF-definition map. -/
+def lfTypeCompareEqInLookup (lookup : LFCheckLookupContext) (actual expected : ObjExpr) : Bool :=
+  lfExprAlphaEq (normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actual)
+    (normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues expected)
+
+/-- Infer a shallow LF/object type using a reusable lookup context.
+
+This handles local/LF-definition identifiers from `knownTypes` and global object constants with
+explicit telescopes. It returns `none` for untyped opaque placeholders and other untyped staging
+heads. -/
+partial def inferKnownLFExprTypeWithLookup? (lookup : LFCheckLookupContext)
+    (knownTypes : LFLocalTypes) : ObjExpr → Option ObjExpr
   | .ident n =>
       let n := n.eraseMacroScopes
       match knownTypes.find? n with
       | some typeExpr => some typeExpr
       | none =>
-          match findLFInferableTypeInfo? sig n with
-          | some info => if info.binders.isEmpty then some (eraseObjExprScopes info.typeExpr) else
-            none
+          match findLFInferableTypeInfoIn? lookup n with
+          | some info =>
+              if info.binders.isEmpty then some (eraseObjExprScopes info.typeExpr) else none
           | none =>
-              match sig.lfObjectDefs.find? (fun d => d.name.eraseMacroScopes == n) with
-              | some d => some (eraseObjExprScopes d.typeExpr)
+              match lookup.lfObjectDefTypes.find? n with
+              | some typeExpr => some (eraseObjExprScopes typeExpr)
               | none =>
-                  match findSyntaxSortDecl? sig n with
+                  match findSyntaxSortDeclIn? lookup n with
                   | some s =>
                       if s.params.isEmpty then some (objExprTypeOfLevel s.resultLevel) else none
                   | none =>
-                      match findJudgmentDecl? sig n with
+                      match findJudgmentDeclIn? lookup n with
                       | some j => if j.params.isEmpty then some .sort else none
                       | none => none
   | .sort | .univ _ | .arrow .. | .funArrow .. | .sigma .. | .pair .. | .lam .. => none
   | .jeq .. => none
   | .fst e => do
-      match inferKnownLFExprType? sig knownTypes e with
+      match inferKnownLFExprTypeWithLookup? lookup knownTypes e with
       | some (.sigma _ A _) => some (eraseObjExprScopes A)
       | _ => none
   | .snd e => do
-      match inferKnownLFExprType? sig knownTypes e with
+      match inferKnownLFExprTypeWithLookup? lookup knownTypes e with
       | some (.sigma binder? _ B) =>
           let B := match binder? with
             | some x => substSingleLFParam x (.fst (eraseObjExprScopes e)) B
@@ -1680,11 +1781,11 @@ partial def inferKnownLFExprType? (sig : HLSignature) (knownTypes : LFLocalTypes
           some (eraseObjExprScopes B)
       | _ => none
   | e@(.app f a) =>
-      match inferKnownLFExprType? sig knownTypes f with
+      match inferKnownLFExprTypeWithLookup? lookup knownTypes f with
       | some (.arrow binder? expected result) | some (.funArrow binder? expected result) =>
-          match inferKnownLFExprType? sig knownTypes a with
+          match inferKnownLFExprTypeWithLookup? lookup knownTypes a with
           | some actual =>
-              if !lfTypeCompareEq sig actual expected then
+              if !lfTypeCompareEqInLookup lookup actual expected then
                 none
               else
                 let result := match binder? with
@@ -1700,16 +1801,19 @@ partial def inferKnownLFExprType? (sig : HLSignature) (knownTypes : LFLocalTypes
           match splitObjApp e with
           | (.ident head, args) =>
               let head := head.eraseMacroScopes
-              match knownTypes.find? head with
+              let typeExpr? := match knownTypes.find? head with
+                | some typeExpr => some typeExpr
+                | none => lookup.lfObjectDefTypes.find? head
+              match typeExpr? with
               | some typeExpr => Id.run do
                   let mut current := eraseObjExprScopes typeExpr
                   let mut ok := true
                   for arg in args do
                     match current with
                     | .arrow binder? expected result | .funArrow binder? expected result =>
-                        match inferKnownLFExprType? sig knownTypes arg with
+                        match inferKnownLFExprTypeWithLookup? lookup knownTypes arg with
                         | some actual =>
-                            if !lfTypeCompareEq sig actual expected then
+                            if !lfTypeCompareEqInLookup lookup actual expected then
                               ok := false
                         | none => pure ()
                         current := match binder? with
@@ -1718,62 +1822,46 @@ partial def inferKnownLFExprType? (sig : HLSignature) (knownTypes : LFLocalTypes
                     | _ => ok := false
                   if ok then some (eraseObjExprScopes current) else none
               | none =>
-                  match sig.lfObjectDefs.find? (fun d => d.name.eraseMacroScopes == head) with
-                  | some d => Id.run do
-                      let mut current := eraseObjExprScopes d.typeExpr
-                      let mut ok := true
-                      for arg in args do
-                        match current with
-                        | .arrow binder? expected result | .funArrow binder? expected result =>
-                            match inferKnownLFExprType? sig knownTypes arg with
-                            | some actual =>
-                                if !lfTypeCompareEq sig actual expected then
-                                  ok := false
-                            | none => pure ()
-                            current := match binder? with
-                              | some x => substSingleLFParam x (eraseObjExprScopes arg) result
-                              | none => result
-                        | _ => ok := false
-                      if ok then some (eraseObjExprScopes current) else none
+                  match findSyntaxSortDeclIn? lookup head with
+                  | some s =>
+                      if args.size == s.params.size then
+                        some (objExprTypeOfLevel s.resultLevel)
+                      else
+                        none
                   | none =>
-                      match findSyntaxSortDecl? sig head with
-                      | some s =>
-                          if args.size == s.params.size then
-                            some (objExprTypeOfLevel s.resultLevel)
-                          else
-                            none
+                      match findJudgmentDeclIn? lookup head with
+                      | some j =>
+                          if args.size == j.params.size then some .sort else none
                       | none =>
-                          match findJudgmentDecl? sig head with
-                          | some j =>
-                              if args.size == j.params.size then
-                                some .sort
-                              else
+                          match findLFInferableTypeInfoIn? lookup head with
+                          | none => none
+                          | some info =>
+                              if args.size != info.binders.size then
                                 none
-                          | none =>
-                              match findLFInferableTypeInfo? sig head with
-                              | none => none
-                              | some info =>
-                                  if args.size != info.binders.size then
-                                    none
-                                  else Id.run do
-                                    let mut subst : NameMap ObjExpr := {}
-                                    let mut ok := true
-                                    for b in info.binders, arg in args do
-                                      let expected := eraseObjExprScopes (substLFParams subst
-                                        b.typeExpr)
-                                      match inferKnownLFExprType? sig knownTypes arg with
-                                      | some actual =>
-                                          if !lfTypeCompareEq sig actual expected then
-                                            ok := false
-                                      | none => pure ()
-                                      subst := subst.insert b.name.eraseMacroScopes
-                                        (eraseObjExprScopes arg)
-                                    if ok then
-                                      return some (eraseObjExprScopes (substLFParams subst
-                                        info.typeExpr))
-                                    else
-                                      return none
+                              else Id.run do
+                                let mut subst : NameMap ObjExpr := {}
+                                let mut ok := true
+                                for b in info.binders, arg in args do
+                                  let expected := eraseObjExprScopes (substLFParams subst
+                                    b.typeExpr)
+                                  match inferKnownLFExprTypeWithLookup? lookup knownTypes arg with
+                                  | some actual =>
+                                      if !lfTypeCompareEqInLookup lookup actual expected then
+                                        ok := false
+                                  | none => pure ()
+                                  subst := subst.insert b.name.eraseMacroScopes
+                                    (eraseObjExprScopes arg)
+                                if ok then
+                                  return some (eraseObjExprScopes (substLFParams subst
+                                    info.typeExpr))
+                                else
+                                  return none
           | _ => none
+
+/-- Infer a shallow LF/object type for expressions whose head has known type metadata. -/
+def inferKnownLFExprType? (sig : HLSignature) (knownTypes : LFLocalTypes) (e : ObjExpr) :
+    Option ObjExpr :=
+  inferKnownLFExprTypeWithLookup? (mkLFCheckLookupContext sig) knownTypes e
 
 /-- Truncate diagnostic text to a fixed character budget. -/
 def truncateDiagnosticString (maxChars : Nat) (s : String) : String :=
@@ -2420,6 +2508,24 @@ def isUntypedLFOpaquePlaceholder (sig : HLSignature) (knownTypes : LFLocalTypes)
             | none => args.isEmpty
   | _ => false
 
+/-- Map-based variant of `isUntypedLFOpaquePlaceholder`. -/
+def isUntypedLFOpaquePlaceholderWithLookup (lookup : LFCheckLookupContext)
+    (knownTypes : LFLocalTypes) (expr : ObjExpr) : Bool :=
+  match splitObjApp (eraseObjExprScopes expr) with
+  | (.ident head, args) =>
+      let head := head.eraseMacroScopes
+      if (knownTypes.find? head).isSome then
+        false
+      else
+        match lookup.untypedOpaqueArities.find? head with
+        | some arities =>
+            arities.any fun arity? =>
+              match arity? with
+              | some arity => args.size == arity
+              | none => args.isEmpty
+        | none => false
+  | _ => false
+
 /-- Check, when possible, that an LF expression has an expected type.
 
 This is a bidirectional checker for the supported LF staging fragment. Lambda expressions are
@@ -2427,8 +2533,9 @@ checked against expected dependent arrows, applications with known typed heads r
 their arguments, and non-lambda expressions must infer a type matching the expected type. The only
 non-inferable expressions accepted at an expected type are explicitly declared untyped opaque LF
 placeholders, which remain a visible trust boundary for staged payloads. -/
-partial def checkLFExprHasType (sig : HLSignature) (ownerKind : String) (ownerName : Name)
-    (where_ : String) (knownTypes : LFLocalTypes) (expr expected : ObjExpr) : CoreM Unit := do
+partial def checkLFExprHasTypeWithLookup (lookup : LFCheckLookupContext) (sig : HLSignature)
+    (ownerKind : String) (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes)
+    (expr expected : ObjExpr) : CoreM Unit := do
   let rec checkInferableApps (knownTypes : LFLocalTypes) (expr : ObjExpr) : CoreM Unit := do
     let checkTypedHeadArgs (headLabel : String) (head : Name) (info : LFGlobalTypeInfo)
         (args : Array ObjExpr) := do
@@ -2436,9 +2543,14 @@ partial def checkLFExprHasType (sig : HLSignature) (ownerKind : String) (ownerNa
         let mut subst : NameMap ObjExpr := {}
         for b in info.binders, arg in args do
           let expected := substLFParams subst b.typeExpr
-          checkLFExprHasType sig ownerKind ownerName
-            s!"{where_} for {headLabel} '{head}' parameter '{b.name.eraseMacroScopes}'"
-            knownTypes arg expected
+          let whereForArg :=
+            if where_.contains " argument '" then
+              s!"{where_} for {headLabel} '{head}' parameter '{b.name.eraseMacroScopes}'"
+            else
+              s!"{where_} for {headLabel} '{head}' parameter '{b.name.eraseMacroScopes}' \
+                argument '{diagnosticObjExprShortString (eraseObjExprScopes arg)}'"
+          checkLFExprHasTypeWithLookup lookup sig ownerKind ownerName whereForArg knownTypes arg
+            expected
           subst := subst.insert b.name.eraseMacroScopes (eraseObjExprScopes arg)
       else
         for arg in args do
@@ -2449,9 +2561,9 @@ partial def checkLFExprHasType (sig : HLSignature) (ownerKind : String) (ownerNa
         match splitObjApp e with
         | (.ident head, args) =>
             let head := head.eraseMacroScopes
-            if let some info := findLFGlobalTypeInfo? sig head then
+            if let some info := findLFGlobalTypeInfoIn? lookup head then
               checkTypedHeadArgs "constructor" head info args
-            else if let some info := findLFProofTypeInfo? sig head then
+            else if let some info := findLFProofTypeInfoIn? lookup head then
               checkTypedHeadArgs "proof constant" head info args
             else
               match knownTypes.find? head with
@@ -2460,7 +2572,7 @@ partial def checkLFExprHasType (sig : HLSignature) (ownerKind : String) (ownerNa
                   for arg in args do
                     match current with
                     | .arrow binder? expected result | .funArrow binder? expected result =>
-                        checkLFExprHasType sig ownerKind ownerName
+                        checkLFExprHasTypeWithLookup lookup sig ownerKind ownerName
                           s!"{where_} for local function '{head}' argument" knownTypes arg
                           expected
                         current := match binder? with
@@ -2506,7 +2618,8 @@ partial def checkLFExprHasType (sig : HLSignature) (ownerKind : String) (ownerNa
               | some y => substSingleLFParam y (.ident x) expectedBody
               | none => expectedBody
             let knownTypes := knownTypes.insert x (eraseObjExprScopes expectedDomain)
-            checkLFExprHasType sig ownerKind ownerName where_ knownTypes bodyExpr expectedBody
+            checkLFExprHasTypeWithLookup lookup sig ownerKind ownerName where_ knownTypes bodyExpr
+              expectedBody
         | _ =>
             throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} as \
               lambda expression '{diagnosticObjExprString expr}', expected non-function type \
@@ -2517,41 +2630,58 @@ partial def checkLFExprHasType (sig : HLSignature) (ownerKind : String) (ownerNa
   | .pair a b =>
       match expected with
       | .sigma expectedBinder? expectedDomain expectedBody =>
-          checkLFExprHasType sig ownerKind ownerName where_ knownTypes a expectedDomain
+          checkLFExprHasTypeWithLookup lookup sig ownerKind ownerName where_ knownTypes a
+            expectedDomain
           let expectedBody := match expectedBinder? with
             | some y => substSingleLFParam y (eraseObjExprScopes a) expectedBody
             | none => expectedBody
-          checkLFExprHasType sig ownerKind ownerName where_ knownTypes b expectedBody
+          checkLFExprHasTypeWithLookup lookup sig ownerKind ownerName where_ knownTypes b
+            expectedBody
       | _ =>
           throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} as \
             pair expression '{diagnosticObjExprString expr}', expected a record/Sigma type but \
               got '{diagnosticObjExprString expected}'"
   | _ =>
       checkInferableApps knownTypes expr
-      match inferKnownLFExprType? sig knownTypes expr with
+      match inferKnownLFExprTypeWithLookup? lookup knownTypes expr with
       | some actualType =>
           let actualType := normalizeLFExprBetaOnly actualType
-          let normalizedActualType := normalizeLFExprForTypeComparison sig actualType
-          let normalizedExpected := normalizeLFExprForTypeComparison sig expected
+          let normalizedActualType :=
+            normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actualType
+          let normalizedExpected :=
+            normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues expected
           if !lfExprAlphaEq normalizedActualType normalizedExpected then
             throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} with \
               type '{diagnosticObjExprString normalizedActualType}', expected \
                 '{diagnosticObjExprString normalizedExpected}'"
       | none =>
-          unless isUntypedLFOpaquePlaceholder sig knownTypes expr do
+          unless isUntypedLFOpaquePlaceholderWithLookup lookup knownTypes expr do
             throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} whose \
               type cannot be inferred: '{diagnosticObjExprString expr}', expected \
                 '{diagnosticObjExprString expected}'"
+
+/-- Check, when possible, that an LF expression has an expected type. -/
+def checkLFExprHasType (sig : HLSignature) (ownerKind : String) (ownerName : Name)
+    (where_ : String) (knownTypes : LFLocalTypes) (expr expected : ObjExpr) : CoreM Unit :=
+  checkLFExprHasTypeWithLookup (mkLFCheckLookupContext sig) sig ownerKind ownerName where_
+    knownTypes expr expected
 
 /-- Check an LF argument against a known expected type.
 
 Expected argument positions are checked bidirectionally even when the argument has no shallow
 inferred type. The only non-inferable arguments accepted by this path are explicitly declared
 untyped LF placeholders, which remain visible trust-boundary holes. -/
+def checkLFKnownArgumentTypeWithLookup (lookup : LFCheckLookupContext) (sig : HLSignature)
+    (ownerKind : String) (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes)
+    (arg expected : ObjExpr) : CoreM Unit := do
+  checkLFExprHasTypeWithLookup lookup sig ownerKind ownerName
+    s!"{where_} argument '{diagnosticObjExprShortString (eraseObjExprScopes arg)}'"
+    knownTypes arg expected
+
+/-- Check an LF argument against a known expected type. -/
 def checkLFKnownArgumentType (sig : HLSignature) (ownerKind : String) (ownerName : Name)
     (where_ : String) (knownTypes : LFLocalTypes) (arg expected : ObjExpr) : CoreM Unit := do
-  checkLFExprHasType sig ownerKind ownerName
-    s!"{where_} argument '{diagnosticObjExprShortString (eraseObjExprScopes arg)}'"
+  checkLFKnownArgumentTypeWithLookup (mkLFCheckLookupContext sig) sig ownerKind ownerName where_
     knownTypes arg expected
 
 /-- Compatibility hook retained for call sites from the former capture-safety barrier.
@@ -2568,69 +2698,95 @@ def checkLFLocalArgumentType (sig : HLSignature) (ruleName : Name) (where_ : Str
   checkLFKnownArgumentType sig "rule" ruleName where_ locals arg expected
 
 /-- Recursively validate arguments of global constructor applications whose parameter
-telescope is known. This catches ill-typed constructor applications even when an enclosing
-expression would otherwise be left opaque by shallow inference. -/
-partial def checkLFInferableApplicationArguments (sig : HLSignature) (ownerKind : String)
-    (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes) : ObjExpr → CoreM Unit
+telescope is known, using a reusable lookup context. This catches ill-typed constructor
+applications even when an enclosing expression would otherwise be left opaque by shallow
+inference. -/
+partial def checkLFInferableApplicationArgumentsWithLookup (lookup : LFCheckLookupContext)
+    (sig : HLSignature) (ownerKind : String) (ownerName : Name) (where_ : String)
+    (knownTypes : LFLocalTypes) : ObjExpr → CoreM Unit
   | .ident _ | .sort | .univ _ => pure ()
   | e@(.app ..) => do
       match splitObjApp e with
       | (.ident head, args) =>
           let head := head.eraseMacroScopes
-          if let some info := findLFGlobalTypeInfo? sig head then
+          if let some info := findLFGlobalTypeInfoIn? lookup head then
             if args.size == info.binders.size then
               let mut subst : NameMap ObjExpr := {}
               for b in info.binders, arg in args do
                 let expected := substLFParams subst b.typeExpr
-                checkLFKnownArgumentType sig ownerKind ownerName
+                checkLFKnownArgumentTypeWithLookup lookup sig ownerKind ownerName
                   s!"{where_} for constructor '{head}' parameter '{b.name.eraseMacroScopes}'"
                   knownTypes arg expected
-                checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes arg
                 subst := subst.insert b.name.eraseMacroScopes (eraseObjExprScopes arg)
             else
               for arg in args do
-                checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes arg
+                checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName
+                  where_ knownTypes arg
           else
             for arg in args do
-              checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes arg
+              checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName where_
+                knownTypes arg
       | (head, args) =>
-          checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes head
+          checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName where_
+            knownTypes head
           for arg in args do
-            checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes arg
+            checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName where_
+              knownTypes arg
   | .arrow x A B | .funArrow x A B | .sigma x A B => do
-      checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes A
+      checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName where_
+        knownTypes A
       let knownTypes := match x with
         | some x => knownTypes.insert x.eraseMacroScopes (eraseObjExprScopes A)
         | none => knownTypes
-      checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes B
+      checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName where_
+        knownTypes B
   | .pair a b => do
-      checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes a
-      checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes b
+      checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName where_
+        knownTypes a
+      checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName where_
+        knownTypes b
   | .fst e | .snd e => do
-      checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes e
+      checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName where_
+        knownTypes e
   | .lam _ _body =>
       pure ()
   | .jeq lhs rhs => do
-      checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes lhs
-      checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes rhs
+      checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName where_
+        knownTypes lhs
+      checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName where_
+        knownTypes rhs
+
+/-- Recursively validate arguments of global constructor applications whose parameter telescope is
+known. -/
+def checkLFInferableApplicationArguments (sig : HLSignature) (ownerKind : String)
+    (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes) (expr : ObjExpr) :
+    CoreM Unit :=
+  checkLFInferableApplicationArgumentsWithLookup (mkLFCheckLookupContext sig) sig ownerKind
+    ownerName where_ knownTypes expr
 
 /-- Shallowly check the argument list of a judgment-headed LF expression against the judgment
 declaration telescope using a supplied known-type context. -/
-def checkLFJudgmentArgumentsWithKnownTypes (sig : HLSignature) (ownerKind : String)
-    (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes) (judgmentName : Name)
-    (args : Array ObjExpr) : CoreM Unit := do
-  let some j := findJudgmentDecl? sig judgmentName
+def checkLFJudgmentArgumentsWithKnownTypesAndLookup (lookup : LFCheckLookupContext)
+    (sig : HLSignature) (ownerKind : String) (ownerName : Name) (where_ : String)
+    (knownTypes : LFLocalTypes) (judgmentName : Name) (args : Array ObjExpr) : CoreM Unit := do
+  let some j := findJudgmentDeclIn? lookup judgmentName
     | pure ()
   let mut subst : NameMap ObjExpr := {}
   for h : i in [:j.params.size] do
     let param := j.params[i]
     let arg := args[i]!
     let expected := substLFParams subst param.typeExpr
-    checkLFKnownArgumentType sig ownerKind ownerName
+    checkLFKnownArgumentTypeWithLookup lookup sig ownerKind ownerName
       s!"{where_} for judgment '{judgmentName.eraseMacroScopes}'" knownTypes arg expected
-    checkLFInferableApplicationArguments sig ownerKind ownerName
-      s!"{where_} for judgment '{judgmentName.eraseMacroScopes}'" knownTypes arg
     subst := subst.insert param.name.eraseMacroScopes (eraseObjExprScopes arg)
+
+/-- Shallowly check the argument list of a judgment-headed LF expression against the judgment
+    declaration telescope using a supplied known-type context. -/
+def checkLFJudgmentArgumentsWithKnownTypes (sig : HLSignature) (ownerKind : String)
+    (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes) (judgmentName : Name)
+    (args : Array ObjExpr) : CoreM Unit := do
+  checkLFJudgmentArgumentsWithKnownTypesAndLookup (mkLFCheckLookupContext sig) sig ownerKind
+    ownerName where_ knownTypes judgmentName args
 
 /-- Shallowly check the argument list of a judgment-headed rule expression against the
 judgment declaration telescope. -/
@@ -2640,81 +2796,117 @@ def checkLFJudgmentArguments (sig : HLSignature) (ruleName : Name) (where_ : Str
 
 /-- Shallowly check the argument list of a syntax-sort-headed LF expression against the
 syntax sort telescope using a supplied known-type context. -/
-def checkLFSyntaxSortArgumentsWithKnownTypes (sig : HLSignature) (ownerKind : String)
-    (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes) (sortName : Name)
-    (args : Array ObjExpr) : CoreM Unit := do
-  let some s := findSyntaxSortDecl? sig sortName
+def checkLFSyntaxSortArgumentsWithKnownTypesAndLookup (lookup : LFCheckLookupContext)
+    (sig : HLSignature) (ownerKind : String) (ownerName : Name) (where_ : String)
+    (knownTypes : LFLocalTypes) (sortName : Name) (args : Array ObjExpr) : CoreM Unit := do
+  let some s := findSyntaxSortDeclIn? lookup sortName
     | pure ()
   let mut subst : NameMap ObjExpr := {}
   for _h : i in [:min s.params.size args.size] do
     let param := s.params[i]!
     let arg := args[i]!
     let expected := substLFParams subst param.typeExpr
-    checkLFKnownArgumentType sig ownerKind ownerName
+    checkLFKnownArgumentTypeWithLookup lookup sig ownerKind ownerName
       s!"{where_} for syntax_sort '{sortName.eraseMacroScopes}'" knownTypes arg expected
-    checkLFInferableApplicationArguments sig ownerKind ownerName
-      s!"{where_} for syntax_sort '{sortName.eraseMacroScopes}'" knownTypes arg
     subst := subst.insert param.name.eraseMacroScopes (eraseObjExprScopes arg)
 
+/-- Shallowly check the argument list of a syntax-sort-headed LF expression against the
+syntax sort telescope using a supplied known-type context. -/
+def checkLFSyntaxSortArgumentsWithKnownTypes (sig : HLSignature) (ownerKind : String)
+    (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes) (sortName : Name)
+    (args : Array ObjExpr) : CoreM Unit := do
+  checkLFSyntaxSortArgumentsWithKnownTypesAndLookup (mkLFCheckLookupContext sig) sig ownerKind
+    ownerName where_ knownTypes sortName args
+
 /-- Recursively check syntax-sort-headed subexpressions against syntax-sort telescopes when
-arguments are known local or LF-definition identifiers. -/
-partial def checkLFSyntaxSortArgumentsInExpr (sig : HLSignature) (ownerKind : String)
-    (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes) : ObjExpr → CoreM Unit
+arguments are known local or LF-definition identifiers, using a reusable lookup context. -/
+partial def checkLFSyntaxSortArgumentsInExprWithLookup (lookup : LFCheckLookupContext)
+    (sig : HLSignature) (ownerKind : String) (ownerName : Name) (where_ : String)
+    (knownTypes : LFLocalTypes) : ObjExpr → CoreM Unit
   | .ident n => do
-      if (findSyntaxSortDecl? sig n).isSome then
-        checkLFSyntaxSortArgumentsWithKnownTypes sig ownerKind ownerName where_ knownTypes n #[]
+      if (findSyntaxSortDeclIn? lookup n).isSome then
+        checkLFSyntaxSortArgumentsWithKnownTypesAndLookup lookup sig ownerKind ownerName where_
+          knownTypes n #[]
   | .sort | .univ _ => pure ()
   | e@(.app ..) => do
       match splitObjApp e with
       | (.ident head, args) =>
-          if (findSyntaxSortDecl? sig head).isSome then
-            checkLFSyntaxSortArgumentsWithKnownTypes sig ownerKind ownerName where_ knownTypes head
-              args
+          if (findSyntaxSortDeclIn? lookup head).isSome then
+            checkLFSyntaxSortArgumentsWithKnownTypesAndLookup lookup sig ownerKind ownerName
+              where_ knownTypes head args
           for arg in args do
-            checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes arg
+            checkLFSyntaxSortArgumentsInExprWithLookup lookup sig ownerKind ownerName where_
+              knownTypes arg
       | (head, args) =>
-          checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes head
+          checkLFSyntaxSortArgumentsInExprWithLookup lookup sig ownerKind ownerName where_
+            knownTypes head
           for arg in args do
-            checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes arg
+            checkLFSyntaxSortArgumentsInExprWithLookup lookup sig ownerKind ownerName where_
+              knownTypes arg
   | .arrow x A B | .funArrow x A B | .sigma x A B => do
-      checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes A
+      checkLFSyntaxSortArgumentsInExprWithLookup lookup sig ownerKind ownerName where_ knownTypes A
       let knownTypes := match x with
         | some x => knownTypes.insert x.eraseMacroScopes (eraseObjExprScopes A)
         | none => knownTypes
-      checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes B
+      checkLFSyntaxSortArgumentsInExprWithLookup lookup sig ownerKind ownerName where_ knownTypes B
   | .pair a b => do
-      checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes a
-      checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes b
+      checkLFSyntaxSortArgumentsInExprWithLookup lookup sig ownerKind ownerName where_ knownTypes a
+      checkLFSyntaxSortArgumentsInExprWithLookup lookup sig ownerKind ownerName where_ knownTypes b
   | .fst e | .snd e => do
-      checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes e
+      checkLFSyntaxSortArgumentsInExprWithLookup lookup sig ownerKind ownerName where_ knownTypes e
   | .lam _ _body =>
       pure ()
   | .jeq lhs rhs => do
-      checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes lhs
-      checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes rhs
+      checkLFSyntaxSortArgumentsInExprWithLookup lookup sig ownerKind ownerName where_
+        knownTypes lhs
+      checkLFSyntaxSortArgumentsInExprWithLookup lookup sig ownerKind ownerName where_
+        knownTypes rhs
+
+/-- Recursively check syntax-sort-headed subexpressions against syntax-sort telescopes when
+arguments are known local or LF-definition identifiers. -/
+def checkLFSyntaxSortArgumentsInExpr (sig : HLSignature) (ownerKind : String)
+    (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes) (expr : ObjExpr) :
+    CoreM Unit :=
+  checkLFSyntaxSortArgumentsInExprWithLookup (mkLFCheckLookupContext sig) sig ownerKind ownerName
+    where_ knownTypes expr
+
+/-- Check a metadata telescope sequentially, so later binder types can use earlier binders
+as arguments to dependent syntax sorts, using a reusable lookup context. -/
+def checkLFSyntaxSortArgumentsInBindingsWithLookup (lookup : LFCheckLookupContext)
+    (sig : HLSignature) (ownerKind : String) (ownerName : Name) (bs : Array HLBinding) :
+    CoreM Unit := do
+  let mut knownTypes : LFLocalTypes := {}
+  for b in bs do
+    let where_ := s!"parameter '{b.name.eraseMacroScopes}' type"
+    checkLFSyntaxSortArgumentsInExprWithLookup lookup sig ownerKind ownerName where_ knownTypes
+      b.typeExpr
+    knownTypes := knownTypes.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
 
 /-- Check a metadata telescope sequentially, so later binder types can use earlier binders
 as arguments to dependent syntax sorts. -/
 def checkLFSyntaxSortArgumentsInBindings (sig : HLSignature) (ownerKind : String)
-    (ownerName : Name) (bs : Array HLBinding) : CoreM Unit := do
-  let mut knownTypes : LFLocalTypes := {}
-  for b in bs do
-    let where_ := s!"parameter '{b.name.eraseMacroScopes}' type"
-    checkLFSyntaxSortArgumentsInExpr sig ownerKind ownerName where_ knownTypes b.typeExpr
-    knownTypes := knownTypes.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
+    (ownerName : Name) (bs : Array HLBinding) : CoreM Unit :=
+  checkLFSyntaxSortArgumentsInBindingsWithLookup (mkLFCheckLookupContext sig) sig ownerKind
+    ownerName bs
 
 /-- Whether a shallow inferred LF type certifies that an expression is itself a type. -/
-def inferredLFTypeIsUniverse (sig : HLSignature) (actualType : ObjExpr) : Bool :=
-  match normalizeLFExprForTypeComparison sig actualType with
+def inferredLFTypeIsUniverseWithLookup (lookup : LFCheckLookupContext)
+    (actualType : ObjExpr) : Bool :=
+  match normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actualType with
   | .sort | .univ _ => true
   | _ => false
 
-/-- Check that an expression is valid in a metadata telescope binder type position.
+/-- Whether a shallow inferred LF type certifies that an expression is itself a type. -/
+def inferredLFTypeIsUniverse (sig : HLSignature) (actualType : ObjExpr) : Bool :=
+  inferredLFTypeIsUniverseWithLookup (mkLFCheckLookupContext sig) actualType
+
+/-- Check that an expression is valid in a metadata telescope binder type position, using a
+reusable lookup context.
 
 Binder types are allowed to be universe expressions, syntax-sort-headed type expressions, local or
 opaque type-family applications whose inferred kind is a universe, and dependent arrows between
 valid binder types. Theorem binders may additionally be judgment-headed local assumptions. -/
-partial def checkLFBinderType (sig : HLSignature)
+partial def checkLFBinderTypeWithLookup (lookup : LFCheckLookupContext) (sig : HLSignature)
     (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (ownerKind : String)
     (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes) (locals : NameSet)
     (allowJudgment : Bool) (typeExpr : ObjExpr) : CoreM Unit := do
@@ -2722,14 +2914,16 @@ partial def checkLFBinderType (sig : HLSignature)
   match typeExpr with
   | .sort | .univ _ => pure ()
   | .arrow x A B | .funArrow x A B | .sigma x A B =>
-      checkLFBinderType sig globalHeads ownerKind ownerName where_ knownTypes locals false A
+      checkLFBinderTypeWithLookup lookup sig globalHeads ownerKind ownerName where_ knownTypes
+        locals false A
       let knownTypes := match x with
         | some x => knownTypes.insert x.eraseMacroScopes (eraseObjExprScopes A)
         | none => knownTypes
       let locals := match x with
         | some x => locals.insert x.eraseMacroScopes
         | none => locals
-      checkLFBinderType sig globalHeads ownerKind ownerName where_ knownTypes locals false B
+      checkLFBinderTypeWithLookup lookup sig globalHeads ownerKind ownerName where_ knownTypes
+        locals false B
   | .pair .. | .fst .. | .snd .. =>
       throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} as \
         term-shaped record expression '{diagnosticObjExprString typeExpr}', expected an LF type \
@@ -2744,17 +2938,18 @@ partial def checkLFBinderType (sig : HLSignature)
               throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} \
                 headed by judgment '{head.name}', expected an LF type expression"
             let (_, args) := splitObjApp typeExpr
-            checkLFJudgmentArgumentsWithKnownTypes sig ownerKind ownerName where_ knownTypes
-              head.name args
+            checkLFJudgmentArgumentsWithKnownTypesAndLookup lookup sig ownerKind ownerName where_
+              knownTypes head.name args
           else if head.kind == .syntaxSort then
             let (_, args) := splitObjApp typeExpr
-            checkLFSyntaxSortArgumentsWithKnownTypes sig ownerKind ownerName where_ knownTypes
-              head.name args
+            checkLFSyntaxSortArgumentsWithKnownTypesAndLookup lookup sig ownerKind ownerName
+              where_ knownTypes head.name args
           else
-            checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes typeExpr
-            match inferKnownLFExprType? sig knownTypes typeExpr with
+            checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName where_
+              knownTypes typeExpr
+            match inferKnownLFExprTypeWithLookup? lookup knownTypes typeExpr with
             | some actualType =>
-                unless inferredLFTypeIsUniverse sig actualType do
+                unless inferredLFTypeIsUniverseWithLookup lookup actualType do
                   throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} \
                     whose inferred type is '{diagnosticObjExprString actualType}', expected a \
                       universe-valued LF type expression"
@@ -2763,10 +2958,11 @@ partial def checkLFBinderType (sig : HLSignature)
                   whose type cannot be inferred: '{diagnosticObjExprString typeExpr}', expected \
                     an LF type expression"
       | none =>
-          checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes typeExpr
-          match inferKnownLFExprType? sig knownTypes typeExpr with
+          checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName where_
+            knownTypes typeExpr
+          match inferKnownLFExprTypeWithLookup? lookup knownTypes typeExpr with
           | some actualType =>
-              unless inferredLFTypeIsUniverse sig actualType do
+              unless inferredLFTypeIsUniverseWithLookup lookup actualType do
                 throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} \
                   whose inferred type is '{diagnosticObjExprString actualType}', expected a \
                     universe-valued LF type expression"
@@ -2774,8 +2970,17 @@ partial def checkLFBinderType (sig : HLSignature)
               throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} \
                 not headed by a known LF type or judgment: {diagnosticObjExprString typeExpr}"
 
-/-- Check a metadata telescope sequentially with the binder-type kind discipline. -/
-def checkLFBinderTypesInBindings (sig : HLSignature)
+/-- Check that an expression is valid in a metadata telescope binder type position. -/
+def checkLFBinderType (sig : HLSignature)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (ownerKind : String)
+    (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes) (locals : NameSet)
+    (allowJudgment : Bool) (typeExpr : ObjExpr) : CoreM Unit :=
+  checkLFBinderTypeWithLookup (mkLFCheckLookupContext sig) sig globalHeads ownerKind ownerName
+    where_ knownTypes locals allowJudgment typeExpr
+
+/-- Check a metadata telescope sequentially with the binder-type kind discipline, using a reusable
+lookup context. -/
+def checkLFBinderTypesInBindingsWithLookup (lookup : LFCheckLookupContext) (sig : HLSignature)
     (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (ownerKind : String)
     (ownerName : Name) (bs : Array HLBinding) (allowJudgment : Bool := false)
     (baseKnownTypes : LFLocalTypes := {}) : CoreM Unit := do
@@ -2783,17 +2988,26 @@ def checkLFBinderTypesInBindings (sig : HLSignature)
   let mut locals : NameSet := {}
   for b in bs do
     let where_ := s!"parameter '{b.name.eraseMacroScopes}' type"
-    checkLFBinderType sig globalHeads ownerKind ownerName where_ knownTypes locals allowJudgment
-      b.typeExpr
+    checkLFBinderTypeWithLookup lookup sig globalHeads ownerKind ownerName where_ knownTypes
+      locals allowJudgment b.typeExpr
     knownTypes := knownTypes.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
     locals := locals.insert b.name.eraseMacroScopes
 
-/-- Check that an expression is a type/evidence expression usable as a premise or proof binder.
+/-- Check a metadata telescope sequentially with the binder-type kind discipline. -/
+def checkLFBinderTypesInBindings (sig : HLSignature)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (ownerKind : String)
+    (ownerName : Name) (bs : Array HLBinding) (allowJudgment : Bool := false)
+    (baseKnownTypes : LFLocalTypes := {}) : CoreM Unit := do
+  checkLFBinderTypesInBindingsWithLookup (mkLFCheckLookupContext sig) sig globalHeads ownerKind
+    ownerName bs allowJudgment baseKnownTypes
+
+/-- Check that an expression is a type/evidence expression usable as a premise or proof binder,
+using a reusable lookup context.
 
 Unlike ordinary object-definition type checking, this discipline allows judgment-headed leaves
 under structural arrows and Sigma packages. This supports higher-order premises such as
 `(x : Obj) → P x` and `(P x → Q x) × (Q x → P x)`. -/
-partial def checkLFEvidenceType (sig : HLSignature)
+partial def checkLFEvidenceTypeWithLookup (lookup : LFCheckLookupContext) (sig : HLSignature)
     (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (ownerKind : String)
     (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes) (locals : NameSet)
     (typeExpr : ObjExpr) : CoreM Unit := do
@@ -2801,14 +3015,16 @@ partial def checkLFEvidenceType (sig : HLSignature)
   match typeExpr with
   | .sort | .univ _ => pure ()
   | .arrow x A B | .funArrow x A B | .sigma x A B =>
-      checkLFEvidenceType sig globalHeads ownerKind ownerName where_ knownTypes locals A
+      checkLFEvidenceTypeWithLookup lookup sig globalHeads ownerKind ownerName where_ knownTypes
+        locals A
       let knownTypes := match x with
         | some x => knownTypes.insert x.eraseMacroScopes (eraseObjExprScopes A)
         | none => knownTypes
       let locals := match x with
         | some x => locals.insert x.eraseMacroScopes
         | none => locals
-      checkLFEvidenceType sig globalHeads ownerKind ownerName where_ knownTypes locals B
+      checkLFEvidenceTypeWithLookup lookup sig globalHeads ownerKind ownerName where_ knownTypes
+        locals B
   | .pair .. | .fst .. | .snd .. | .lam .. =>
       throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} as \
         term-shaped expression '{diagnosticObjExprString typeExpr}', expected an LF \
@@ -2820,17 +3036,18 @@ partial def checkLFEvidenceType (sig : HLSignature)
           checkCheckedLFHeadArity sig ownerKind ownerName where_ head
           if head.kind == .judgment then
             let (_, args) := splitObjApp typeExpr
-            checkLFJudgmentArgumentsWithKnownTypes sig ownerKind ownerName where_ knownTypes
-              head.name args
+            checkLFJudgmentArgumentsWithKnownTypesAndLookup lookup sig ownerKind ownerName where_
+              knownTypes head.name args
           else if head.kind == .syntaxSort then
             let (_, args) := splitObjApp typeExpr
-            checkLFSyntaxSortArgumentsWithKnownTypes sig ownerKind ownerName where_ knownTypes
-              head.name args
+            checkLFSyntaxSortArgumentsWithKnownTypesAndLookup lookup sig ownerKind ownerName
+              where_ knownTypes head.name args
           else
-            checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes typeExpr
-            match inferKnownLFExprType? sig knownTypes typeExpr with
+            checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName where_
+              knownTypes typeExpr
+            match inferKnownLFExprTypeWithLookup? lookup knownTypes typeExpr with
             | some actualType =>
-                unless inferredLFTypeIsUniverse sig actualType do
+                unless inferredLFTypeIsUniverseWithLookup lookup actualType do
                   throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} \
                     whose inferred type is '{diagnosticObjExprString actualType}', expected a \
                       universe-valued LF type/evidence expression"
@@ -2839,10 +3056,11 @@ partial def checkLFEvidenceType (sig : HLSignature)
                   whose type cannot be inferred: '{diagnosticObjExprString typeExpr}', expected \
                     an LF type/evidence expression"
       | none =>
-          checkLFInferableApplicationArguments sig ownerKind ownerName where_ knownTypes typeExpr
-          match inferKnownLFExprType? sig knownTypes typeExpr with
+          checkLFInferableApplicationArgumentsWithLookup lookup sig ownerKind ownerName where_
+            knownTypes typeExpr
+          match inferKnownLFExprTypeWithLookup? lookup knownTypes typeExpr with
           | some actualType =>
-              unless inferredLFTypeIsUniverse sig actualType do
+              unless inferredLFTypeIsUniverseWithLookup lookup actualType do
                 throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} \
                   whose inferred type is '{diagnosticObjExprString actualType}', expected a \
                     universe-valued LF type/evidence expression"
@@ -2850,6 +3068,14 @@ partial def checkLFEvidenceType (sig : HLSignature)
               throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} \
                 not headed by a known LF type/evidence identifier: \
                   {diagnosticObjExprString typeExpr}"
+
+/-- Check that an expression is a type/evidence expression usable as a premise or proof binder. -/
+def checkLFEvidenceType (sig : HLSignature)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (ownerKind : String)
+    (ownerName : Name) (where_ : String) (knownTypes : LFLocalTypes) (locals : NameSet)
+    (typeExpr : ObjExpr) : CoreM Unit :=
+  checkLFEvidenceTypeWithLookup (mkLFCheckLookupContext sig) sig globalHeads ownerKind ownerName
+    where_ knownTypes locals typeExpr
 
 /-- Classify a declared side-condition solver name into the executable hook registry.
 
@@ -4098,14 +4324,15 @@ partial def checkLFDefinitionReferencesAvailable (sig : HLSignature)
       checkLFDefinitionReferencesAvailable sig globalHeads knownTypes ownerKind ownerName where_
         locals rhs
 
-/-- Check an LF annotation that is expected to denote an object or structural package type.
+/-- Check an LF annotation that is expected to denote an object or structural package type,
+using a reusable lookup context.
 
 This shared path validates known identifiers, universe hygiene, LF-definition availability, syntax
 sort arities and arguments, inferable-application arguments, and the recursive LF type-expression
 discipline. It accepts syntax-sort heads, local type-family heads whose inferred kind is a
 universe, and structural function/Sigma package types. Judgment-headed expressions are rejected by
 this helper; callers that want theorem-shaped admissions should classify those before calling it. -/
-def checkLFObjectOrStructuralType (sig : HLSignature)
+def checkLFObjectOrStructuralTypeWithLookup (lookup : LFCheckLookupContext) (sig : HLSignature)
     (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (knownTypes : LFLocalTypes)
     (locals : NameSet) (ownerKind : String) (ownerName : Name) (where_ : String)
     (typeExpr : ObjExpr) : CoreM (Option CheckedLFHead) := do
@@ -4121,7 +4348,8 @@ def checkLFObjectOrStructuralType (sig : HLSignature)
   checkLFDefinitionReferencesAvailable sig globalHeads knownTypes ownerKind ownerName where_
     (locals := locals) typeExpr
   checkSyntaxSortApplicationsInExpr sig syntaxSortArities ownerKind ownerName where_ typeExpr
-  checkLFBinderType sig globalHeads ownerKind ownerName where_ knownTypes locals false typeExpr
+  checkLFBinderTypeWithLookup lookup sig globalHeads ownerKind ownerName where_ knownTypes locals
+    false typeExpr
   let typeExpr := eraseObjExprScopes typeExpr
   let typeHead? := checkedLFHead? globalHeads locals typeExpr
   match typeHead? with
@@ -4136,16 +4364,26 @@ def checkLFObjectOrStructuralType (sig : HLSignature)
           headed by a known LF identifier or structural package type: {typeExpr}"
   pure typeHead?
 
-/-- Check an `lf_def` type annotation and return its final rigid LF head, when it has one.
+/-- Check an LF annotation that is expected to denote an object or structural package type. -/
+def checkLFObjectOrStructuralType (sig : HLSignature)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (knownTypes : LFLocalTypes)
+    (locals : NameSet) (ownerKind : String) (ownerName : Name) (where_ : String)
+    (typeExpr : ObjExpr) : CoreM (Option CheckedLFHead) :=
+  checkLFObjectOrStructuralTypeWithLookup (mkLFCheckLookupContext sig) sig globalHeads knownTypes
+    locals ownerKind ownerName where_ typeExpr
+
+/-- Check an `lf_def` type annotation and return its final rigid LF head, when it has one,
+using a reusable lookup context.
 
 This combines the recursive LF type-expression discipline with the object-definition result-shape
 check, so `lf_def` checking does not also need separate syntax-sort and inferable-application
 passes over the same annotation. -/
-def checkLFObjectDefTypeAndResultHead? (sig : HLSignature)
-    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (knownLFDefTypes : LFLocalTypes)
-    (d : LFObjectDefDecl) : CoreM (Option CheckedLFHead) := do
-  discard <| checkLFObjectOrStructuralType sig globalHeads knownLFDefTypes {} "lf_def" d.name
-    "type" d.typeExpr
+def checkLFObjectDefTypeAndResultHeadWithLookup? (lookup : LFCheckLookupContext)
+    (sig : HLSignature) (globalHeads : NameMap (CheckedLFHeadKind × Option Nat))
+    (knownLFDefTypes : LFLocalTypes) (d : LFObjectDefDecl) :
+    CoreM (Option CheckedLFHead) := do
+  discard <| checkLFObjectOrStructuralTypeWithLookup lookup sig globalHeads knownLFDefTypes {}
+    "lf_def" d.name "type" d.typeExpr
   let resultTypeExpr := eraseObjExprScopes (lfFunctionTypeResult d.typeExpr)
   let typeHead? := checkedLFHead? globalHeads {} resultTypeExpr
   match typeHead? with
@@ -4160,6 +4398,13 @@ def checkLFObjectDefTypeAndResultHead? (sig : HLSignature)
           LF identifier or structural record/Sigma type: {d.typeExpr}"
   pure typeHead?
 
+/-- Check an `lf_def` type annotation and return its final rigid LF head, when it has one. -/
+def checkLFObjectDefTypeAndResultHead? (sig : HLSignature)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (knownLFDefTypes : LFLocalTypes)
+    (d : LFObjectDefDecl) : CoreM (Option CheckedLFHead) :=
+  checkLFObjectDefTypeAndResultHeadWithLookup? (mkLFCheckLookupContext sig) sig globalHeads
+    knownLFDefTypes d
+
 /-- Check staged sorted LF/object definitions and custom-judgment theorems.
 
 This is a shallow internal-language milestone: it validates known names, recursively resolves
@@ -4171,6 +4416,7 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
   let lfGlobals := lfKnownGlobalNames sig
   let opaqueArities := lfOpaqueArities sig
   let globalHeads := lfGlobalHeadInfo sig
+  let lookup := mkLFCheckLookupContext sig
   let judgmentArities : NameMap Nat := sig.judgments.foldl (init := {}) fun acc j =>
     acc.insert j.name.eraseMacroScopes j.params.size
   let syntaxSortArities : NameMap Nat := sig.syntaxSorts.foldl (init := {}) fun acc s =>
@@ -4179,14 +4425,16 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
   let mut knownLFDefTypes : LFLocalTypes := {}
   let mut knownLFDefValues : LFDefinitionValueMap := {}
   for d in sig.lfObjectDefs do
-    let typeHead? ← checkLFObjectDefTypeAndResultHead? sig globalHeads knownLFDefTypes d
+    let typeHead? ←
+      checkLFObjectDefTypeAndResultHeadWithLookup? lookup sig globalHeads knownLFDefTypes d
     checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "value" d.value
     checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "value" d.value
     checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "value"
       (locals := {}) d.value
-    checkLFSyntaxSortArgumentsInExpr sig "lf_def" d.name "value" knownLFDefTypes d.value
-    checkLFInferableApplicationArguments sig "lf_def" d.name "value" knownLFDefTypes d.value
-    checkLFExprHasType sig "lf_def" d.name "value" knownLFDefTypes d.value d.typeExpr
+    checkLFSyntaxSortArgumentsInExprWithLookup lookup sig "lf_def" d.name "value" knownLFDefTypes
+      d.value
+    checkLFExprHasTypeWithLookup lookup sig "lf_def" d.name "value" knownLFDefTypes d.value
+      d.typeExpr
     let checkedType ← resolveLFExpr sig globalHeads {} "lf_def" d.name "type" d.typeExpr
     let checkedValue ← resolveLFExpr sig globalHeads {} "lf_def" d.name "value" d.value
     let valueHead? := checkedLFHead? globalHeads {} d.value
@@ -4196,10 +4444,13 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
         unless knownLFDefTypes.contains valueName do
           throwError "lf_def '{d.name}' in type theory '{sig.name}' references LF definition \
             '{valueName}' before it is available"
-        if let some actualType := inferKnownLFExprType? sig knownLFDefTypes d.value then
+        if let some actualType :=
+            inferKnownLFExprTypeWithLookup? lookup knownLFDefTypes d.value then
           let expectedType := eraseObjExprScopes d.typeExpr
-          let normalizedActualType := normalizeLFExprForTypeComparison sig actualType
-          let normalizedExpectedType := normalizeLFExprForTypeComparison sig expectedType
+          let normalizedActualType :=
+            normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actualType
+          let normalizedExpectedType :=
+            normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues expectedType
           if !lfExprAlphaEq normalizedActualType normalizedExpectedType then
             throwError "lf_def '{d.name}' in type theory '{sig.name}' has value LF definition \
               '{valueName}' with type '{diagnosticObjExprString normalizedActualType}', expected \
@@ -4232,12 +4483,12 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
     for b in t.binders do
       let where_ := s!"parameter '{b.name.eraseMacroScopes}' type"
       checkNoCaptureUnsafeBetaInLFExpr sig "judgment_theorem" t.name where_ b.typeExpr
-      checkLFSyntaxSortArgumentsInExpr sig "judgment_theorem" t.name where_ theoremKnownTypes
-        b.typeExpr
-      checkLFInferableApplicationArguments sig "judgment_theorem" t.name where_ theoremKnownTypes
-        b.typeExpr
-      checkLFEvidenceType sig globalHeads "judgment_theorem" t.name where_ theoremKnownTypes
-        priorTheoremLocals b.typeExpr
+      checkLFSyntaxSortArgumentsInExprWithLookup lookup sig "judgment_theorem" t.name where_
+        theoremKnownTypes b.typeExpr
+      checkLFInferableApplicationArgumentsWithLookup lookup sig "judgment_theorem" t.name where_
+        theoremKnownTypes b.typeExpr
+      checkLFEvidenceTypeWithLookup lookup sig globalHeads "judgment_theorem" t.name where_
+        theoremKnownTypes priorTheoremLocals b.typeExpr
       let typeHead? := checkedLFHead? globalHeads priorTheoremLocals b.typeExpr
       if let some head := typeHead? then
         if head.kind == .judgment then
@@ -4250,20 +4501,21 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
     checkKnownNamesInLFExpr sig lfGlobals theoremLocals opaqueArities "judgment_theorem" t.name
       "statement" t.judgmentExpr
     checkNoCaptureUnsafeBetaInLFExpr sig "judgment_theorem" t.name "statement" t.judgmentExpr
-    checkLFSyntaxSortArgumentsInExpr sig "judgment_theorem" t.name "statement" theoremKnownTypes
-      t.judgmentExpr
-    checkLFInferableApplicationArguments sig "judgment_theorem" t.name "statement"
+    checkLFSyntaxSortArgumentsInExprWithLookup lookup sig "judgment_theorem" t.name "statement"
       theoremKnownTypes t.judgmentExpr
+    checkLFInferableApplicationArgumentsWithLookup lookup sig "judgment_theorem" t.name
+      "statement" theoremKnownTypes t.judgmentExpr
     checkKnownNamesInLFExpr sig lfGlobals theoremLocals opaqueArities "judgment_theorem" t.name
       "proof" t.proof
     checkNoCaptureUnsafeBetaInLFExpr sig "judgment_theorem" t.name "proof" t.proof
-    checkLFSyntaxSortArgumentsInExpr sig "judgment_theorem" t.name "proof" theoremKnownTypes t.proof
-    checkLFInferableApplicationArguments sig "judgment_theorem" t.name "proof" theoremKnownTypes
-      t.proof
+    checkLFSyntaxSortArgumentsInExprWithLookup lookup sig "judgment_theorem" t.name "proof"
+      theoremKnownTypes t.proof
+    checkLFInferableApplicationArgumentsWithLookup lookup sig "judgment_theorem" t.name "proof"
+      theoremKnownTypes t.proof
     let judgmentHead ← checkRuleJudgmentHead sig judgmentArities t.name "statement" t.judgmentExpr
     let (_, judgmentArgs) := splitObjApp t.judgmentExpr
-    checkLFJudgmentArgumentsWithKnownTypes sig "judgment_theorem" t.name "statement"
-      theoremKnownTypes judgmentHead.name judgmentArgs
+    checkLFJudgmentArgumentsWithKnownTypesAndLookup lookup sig "judgment_theorem" t.name
+      "statement" theoremKnownTypes judgmentHead.name judgmentArgs
     let checkedJudgment ←
       resolveLFExpr sig globalHeads theoremLocals "judgment_theorem" t.name "statement"
         t.judgmentExpr
@@ -4371,6 +4623,8 @@ structure IntraBlockLFCheckContext where
   judgmentArities : NameMap Nat
   /-- Declared side-condition solvers in `flatSig`. -/
   solvers : NameSet
+  /-- Map-based lookup data for repeated LF expression checks in `flatSig`. -/
+  lookup : LFCheckLookupContext
   /-- Checked rules available to theorem checking. -/
   checkedRules : Array CheckedLFRule := #[]
   /-- Checked rule schemas available to cached replay construction. -/
@@ -4414,6 +4668,7 @@ def mkIntraBlockLFCheckContext (flatSig : HLSignature) (checkedBase : CheckedSig
     syntaxSortArities := syntaxSortArities
     judgmentArities := judgmentArities
     solvers := solvers
+    lookup := mkLFCheckLookupContext flatSig
     checkedRules := checkedBase.lfRules ++ newRules
     checkedRuleSchemas := checkedBase.lfRuleSchemas ++ newRuleSchemas
     checkedSideConditionCertificates :=
@@ -4502,6 +4757,7 @@ def mkIntraBlockLFCheckContextFromCache (cache : CompiledLFCheckCache)
     syntaxSortArities := overlaySyntaxSortArities cache.syntaxSortArities candidate
     judgmentArities := overlayJudgmentArities cache.judgmentArities candidate
     solvers := overlaySideConditionSolvers cache.solvers candidate
+    lookup := mkLFCheckLookupContext flatSig
     checkedRules := cache.checkedRules ++ newRules
     checkedRuleSchemas := cache.checkedRuleSchemas ++ newRuleSchemas
     checkedSideConditionCertificates := cache.checkedSideConditionCertificates ++ newCertificates
@@ -4517,18 +4773,21 @@ def checkLFObjectDefInContext (ctx : IntraBlockLFCheckContext) (d : LFObjectDefD
   let lfGlobals := ctx.lfGlobals
   let opaqueArities := ctx.opaqueArities
   let globalHeads := ctx.globalHeads
+  let lookup := ctx.lookup
   let knownLFDefTypes := ctx.knownLFDefTypes
   let typeHead? ← profileLFCheckPhase m!"{d.name}: metadata prechecks" do
-    let typeHead? ← checkLFObjectDefTypeAndResultHead? sig globalHeads knownLFDefTypes d
+    let typeHead? ←
+      checkLFObjectDefTypeAndResultHeadWithLookup? lookup sig globalHeads knownLFDefTypes d
     checkKnownNamesInLFExpr sig lfGlobals {} opaqueArities "lf_def" d.name "value" d.value
     checkNoCaptureUnsafeBetaInLFExpr sig "lf_def" d.name "value" d.value
     checkLFDefinitionReferencesAvailable sig globalHeads knownLFDefTypes "lf_def" d.name "value"
       (locals := {}) d.value
-    checkLFSyntaxSortArgumentsInExpr sig "lf_def" d.name "value" knownLFDefTypes d.value
-    checkLFInferableApplicationArguments sig "lf_def" d.name "value" knownLFDefTypes d.value
+    checkLFSyntaxSortArgumentsInExprWithLookup lookup sig "lf_def" d.name "value" knownLFDefTypes
+      d.value
     pure typeHead?
   profileLFCheckPhase m!"{d.name}: value has expected type" do
-    checkLFExprHasType sig "lf_def" d.name "value" knownLFDefTypes d.value d.typeExpr
+    checkLFExprHasTypeWithLookup lookup sig "lf_def" d.name "value" knownLFDefTypes d.value
+      d.typeExpr
   let checkedType ← profileLFCheckPhase m!"{d.name}: resolve type" do
     resolveLFExpr sig globalHeads {} "lf_def" d.name "type" d.typeExpr
   let checkedValue ← profileLFCheckPhase m!"{d.name}: resolve value" do
@@ -4540,10 +4799,12 @@ def checkLFObjectDefInContext (ctx : IntraBlockLFCheckContext) (d : LFObjectDefD
       unless knownLFDefTypes.contains valueName do
         throwError "lf_def '{d.name}' in type theory '{sig.name}' references LF definition \
           '{valueName}' before it is available"
-      if let some actualType := inferKnownLFExprType? sig knownLFDefTypes d.value then
+      if let some actualType := inferKnownLFExprTypeWithLookup? lookup knownLFDefTypes d.value then
         let expectedType := eraseObjExprScopes d.typeExpr
-        let normalizedActualType := normalizeLFExprForTypeComparison sig actualType
-        let normalizedExpectedType := normalizeLFExprForTypeComparison sig expectedType
+        let normalizedActualType :=
+          normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actualType
+        let normalizedExpectedType :=
+          normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues expectedType
         if !lfExprAlphaEq normalizedActualType normalizedExpectedType then
           throwError "lf_def '{d.name}' in type theory '{sig.name}' has value LF definition \
             '{valueName}' with type '{diagnosticObjExprString normalizedActualType}', expected \
@@ -4575,6 +4836,7 @@ def checkLFJudgmentTheoremInContext (ctx : IntraBlockLFCheckContext)
   let judgmentArities := ctx.judgmentArities
   let syntaxSortArities := ctx.syntaxSortArities
   let rules := ctx.checkedRules
+  let lookup := ctx.lookup
   let knownLFDefTypes := ctx.knownLFDefTypes
   let knownLFDefValues := ctx.knownLFDefValues
   let availableTheoremStatements := ctx.availableLFTheoremStatements
@@ -4591,12 +4853,12 @@ def checkLFJudgmentTheoremInContext (ctx : IntraBlockLFCheckContext)
   for b in t.binders do
     let where_ := s!"parameter '{b.name.eraseMacroScopes}' type"
     checkNoCaptureUnsafeBetaInLFExpr sig "judgment_theorem" t.name where_ b.typeExpr
-    checkLFSyntaxSortArgumentsInExpr sig "judgment_theorem" t.name where_ theoremKnownTypes
-      b.typeExpr
-    checkLFInferableApplicationArguments sig "judgment_theorem" t.name where_ theoremKnownTypes
-      b.typeExpr
-    checkLFEvidenceType sig globalHeads "judgment_theorem" t.name where_ theoremKnownTypes
-      priorTheoremLocals b.typeExpr
+    checkLFSyntaxSortArgumentsInExprWithLookup lookup sig "judgment_theorem" t.name where_
+      theoremKnownTypes b.typeExpr
+    checkLFInferableApplicationArgumentsWithLookup lookup sig "judgment_theorem" t.name where_
+      theoremKnownTypes b.typeExpr
+    checkLFEvidenceTypeWithLookup lookup sig globalHeads "judgment_theorem" t.name where_
+      theoremKnownTypes priorTheoremLocals b.typeExpr
     let typeHead? := checkedLFHead? globalHeads priorTheoremLocals b.typeExpr
     if let some head := typeHead? then
       if head.kind == .judgment then
@@ -4608,20 +4870,21 @@ def checkLFJudgmentTheoremInContext (ctx : IntraBlockLFCheckContext)
   checkKnownNamesInLFExpr sig lfGlobals theoremLocals opaqueArities "judgment_theorem" t.name
     "statement" t.judgmentExpr
   checkNoCaptureUnsafeBetaInLFExpr sig "judgment_theorem" t.name "statement" t.judgmentExpr
-  checkLFSyntaxSortArgumentsInExpr sig "judgment_theorem" t.name "statement" theoremKnownTypes
-    t.judgmentExpr
-  checkLFInferableApplicationArguments sig "judgment_theorem" t.name "statement" theoremKnownTypes
-    t.judgmentExpr
+  checkLFSyntaxSortArgumentsInExprWithLookup lookup sig "judgment_theorem" t.name "statement"
+    theoremKnownTypes t.judgmentExpr
+  checkLFInferableApplicationArgumentsWithLookup lookup sig "judgment_theorem" t.name "statement"
+    theoremKnownTypes t.judgmentExpr
   checkKnownNamesInLFExpr sig lfGlobals theoremLocals opaqueArities "judgment_theorem" t.name
     "proof" t.proof
   checkNoCaptureUnsafeBetaInLFExpr sig "judgment_theorem" t.name "proof" t.proof
-  checkLFSyntaxSortArgumentsInExpr sig "judgment_theorem" t.name "proof" theoremKnownTypes t.proof
-  checkLFInferableApplicationArguments sig "judgment_theorem" t.name "proof" theoremKnownTypes
-    t.proof
+  checkLFSyntaxSortArgumentsInExprWithLookup lookup sig "judgment_theorem" t.name "proof"
+    theoremKnownTypes t.proof
+  checkLFInferableApplicationArgumentsWithLookup lookup sig "judgment_theorem" t.name "proof"
+    theoremKnownTypes t.proof
   let judgmentHead ← checkRuleJudgmentHead sig judgmentArities t.name "statement" t.judgmentExpr
   let (_, judgmentArgs) := splitObjApp t.judgmentExpr
-  checkLFJudgmentArgumentsWithKnownTypes sig "judgment_theorem" t.name "statement"
-    theoremKnownTypes judgmentHead.name judgmentArgs
+  checkLFJudgmentArgumentsWithKnownTypesAndLookup lookup sig "judgment_theorem" t.name
+    "statement" theoremKnownTypes judgmentHead.name judgmentArgs
   let checkedJudgment ←
     resolveLFExpr sig globalHeads theoremLocals "judgment_theorem" t.name "statement"
       t.judgmentExpr
