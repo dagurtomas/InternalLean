@@ -210,10 +210,14 @@ elab "#print_lf_model_skeleton " theory:ident : command => do
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
   let structureName := theory.getId ++ `LFModel
-  let cmds ← LeanTypeModelGeneration.lfModelStructureSyntaxes checked structureName admittedNames
+  let obs ← LeanTypeModelGeneration.validateLFModelObligations checked admittedNames
+  let cmds ← LeanTypeModelGeneration.lfModelStructureSyntaxesFromObligations checked structureName
+    obs
+  let ownerMap :=
+    LeanTypeModelGeneration.lfModelStructureFieldOwnerMapFromObligations structureName obs
   let exportCmds ←
-    LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxes checked structureName
-      admittedNames
+    LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxesFromObligations structureName
+      obs ownerMap
   let parts ← (cmds ++ exportCmds).mapM LeanTypeModelGeneration.ppCommandSyntaxString
   logInfo m!"{String.intercalate "\n" parts.toList}"
 
@@ -257,19 +261,24 @@ elab "generate_lf_model_structure " theory:ident " as " structureName:ident : co
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
-  LeanTypeModelGeneration.warnTemporaryAdmissionFieldsIfAny checked admittedNames
+  let obs ← LeanTypeModelGeneration.validateLFModelObligations checked admittedNames
+  if let some warning :=
+      LeanTypeModelGeneration.lfModelTemporaryAdmissionWarningStringFromObligations checked obs then
+    logWarning m!"{warning}"
   let cmds ←
-    LeanTypeModelGeneration.lfModelStructureSyntaxes checked structureName.getId admittedNames
+    LeanTypeModelGeneration.lfModelStructureSyntaxesFromObligations checked structureName.getId obs
   LeanTypeModelGeneration.addLFModelInterfaceLibrarySuggestionDenyList structureName.getId cmds.size
   for cmd in cmds do
     elabGeneratedCommandSyntaxInTheoryNamespace theory.getId cmd
+  let ownerMap :=
+    LeanTypeModelGeneration.lfModelStructureFieldOwnerMapFromObligations structureName.getId obs
   let exportCmds ←
-    LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxes checked structureName.getId
-      admittedNames
+    LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxesFromObligations
+      structureName.getId obs ownerMap
   for cmd in exportCmds do
     elabGeneratedCommandSyntaxInModelNamespace theory.getId structureName.getId cmd
-  LeanTypeModelGeneration.addLFModelStructureFieldDocStrings theory.getId structureName.getId
-    checked admittedNames
+  LeanTypeModelGeneration.addLFModelStructureFieldDocStringsFromObligations theory.getId
+    structureName.getId obs ownerMap
 
 /-- Print the strict structural-equivalence structure for an LF-model interface. -/
 elab "#print_lf_model_structural_equiv " theory:ident " for " structureName:ident : command => do
@@ -774,11 +783,14 @@ elab "#print_model_interface " theory:ident " as " structureName:ident : command
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  let obs ← LeanTypeModelGeneration.validateLFModelObligations checked admittedNames
   let cmds ←
-    LeanTypeModelGeneration.lfModelStructureSyntaxes checked structureName.getId admittedNames
+    LeanTypeModelGeneration.lfModelStructureSyntaxesFromObligations checked structureName.getId obs
+  let ownerMap :=
+    LeanTypeModelGeneration.lfModelStructureFieldOwnerMapFromObligations structureName.getId obs
   let exportCmds ←
-    LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxes checked structureName.getId
-      admittedNames
+    LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxesFromObligations
+      structureName.getId obs ownerMap
   let parts ← (cmds ++ exportCmds).mapM LeanTypeModelGeneration.ppCommandSyntaxString
   let guide ←
     LeanTypeModelGeneration.lfModelInterfaceGuideString theory.getId structureName.getId checked
@@ -791,12 +803,14 @@ elab "#print_public_model_interface " theory:ident " as " structureName:ident : 
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  let obs ← LeanTypeModelGeneration.validateLFModelObligations checked admittedNames .publicMode
   let cmds ←
-    LeanTypeModelGeneration.lfModelStructureSyntaxes checked structureName.getId admittedNames
-      .publicMode
+    LeanTypeModelGeneration.lfModelStructureSyntaxesFromObligations checked structureName.getId obs
+  let ownerMap :=
+    LeanTypeModelGeneration.lfModelStructureFieldOwnerMapFromObligations structureName.getId obs
   let exportCmds ←
-    LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxes checked structureName.getId
-      admittedNames .publicMode
+    LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxesFromObligations
+      structureName.getId obs ownerMap
   let parts ← (cmds ++ exportCmds).mapM LeanTypeModelGeneration.ppCommandSyntaxString
   let guide ←
     LeanTypeModelGeneration.lfModelInterfaceGuideString theory.getId structureName.getId checked
@@ -858,19 +872,24 @@ elab "generate_model_interface " theory:ident " as " structureName:ident : comma
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
-  LeanTypeModelGeneration.warnTemporaryAdmissionFieldsIfAny checked admittedNames
+  let obs ← LeanTypeModelGeneration.validateLFModelObligations checked admittedNames
+  if let some warning :=
+      LeanTypeModelGeneration.lfModelTemporaryAdmissionWarningStringFromObligations checked obs then
+    logWarning m!"{warning}"
   let cmds ←
-    LeanTypeModelGeneration.lfModelStructureSyntaxes checked structureName.getId admittedNames
+    LeanTypeModelGeneration.lfModelStructureSyntaxesFromObligations checked structureName.getId obs
   LeanTypeModelGeneration.addLFModelInterfaceLibrarySuggestionDenyList structureName.getId cmds.size
   for cmd in cmds do
     elabGeneratedCommandSyntaxInTheoryNamespace theory.getId cmd
+  let ownerMap :=
+    LeanTypeModelGeneration.lfModelStructureFieldOwnerMapFromObligations structureName.getId obs
   let exportCmds ←
-    LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxes checked structureName.getId
-      admittedNames
+    LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxesFromObligations
+      structureName.getId obs ownerMap
   for cmd in exportCmds do
     elabGeneratedCommandSyntaxInModelNamespace theory.getId structureName.getId cmd
-  LeanTypeModelGeneration.addLFModelStructureFieldDocStrings theory.getId structureName.getId
-    checked admittedNames
+  LeanTypeModelGeneration.addLFModelStructureFieldDocStringsFromObligations theory.getId
+    structureName.getId obs ownerMap
 
 /-- Generate a public/minimal model interface using the LF workflow backend. -/
 elab "generate_public_model_interface " theory:ident " as " structureName:ident : command => do
@@ -879,20 +898,24 @@ elab "generate_public_model_interface " theory:ident " as " structureName:ident 
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
   let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
-  LeanTypeModelGeneration.warnTemporaryAdmissionFieldsIfAny checked admittedNames .publicMode
+  let obs ← LeanTypeModelGeneration.validateLFModelObligations checked admittedNames .publicMode
+  if let some warning :=
+      LeanTypeModelGeneration.lfModelTemporaryAdmissionWarningStringFromObligations checked obs then
+    logWarning m!"{warning}"
   let cmds ←
-    LeanTypeModelGeneration.lfModelStructureSyntaxes checked structureName.getId admittedNames
-      .publicMode
+    LeanTypeModelGeneration.lfModelStructureSyntaxesFromObligations checked structureName.getId obs
   LeanTypeModelGeneration.addLFModelInterfaceLibrarySuggestionDenyList structureName.getId cmds.size
   for cmd in cmds do
     elabGeneratedCommandSyntaxInTheoryNamespace theory.getId cmd
+  let ownerMap :=
+    LeanTypeModelGeneration.lfModelStructureFieldOwnerMapFromObligations structureName.getId obs
   let exportCmds ←
-    LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxes checked structureName.getId
-      admittedNames .publicMode
+    LeanTypeModelGeneration.lfModelInheritedProjectionExportSyntaxesFromObligations
+      structureName.getId obs ownerMap
   for cmd in exportCmds do
     elabGeneratedCommandSyntaxInModelNamespace theory.getId structureName.getId cmd
-  LeanTypeModelGeneration.addLFModelStructureFieldDocStrings theory.getId structureName.getId
-    checked admittedNames .publicMode
+  LeanTypeModelGeneration.addLFModelStructureFieldDocStringsFromObligations theory.getId
+    structureName.getId obs ownerMap
 
 /-- Generate a sectioned model interface from theory-local `model_section` metadata. -/
 elab "generate_model_section_interface " theory:ident " as " structureName:ident : command => do

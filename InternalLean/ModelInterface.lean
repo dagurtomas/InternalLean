@@ -3400,7 +3400,7 @@ def lfModelFieldDocString (theoryName structureName : Name) (o : LFModelObligati
 
 Large dependent structure telescopes scale poorly in Lean.  Chunking with `extends` keeps the
 public interface and dot notation while giving Lean several smaller telescopes to elaborate. -/
-def lfModelStructureChunkSize : Nat := 75
+def lfModelStructureChunkSize : Nat := 40
 
 /-- Maximum field count for generated section-run chunks.
 
@@ -3421,11 +3421,10 @@ def nameWithLastComponentSuffix (n : Name) (suffix : String) : Name :=
 def lfModelStructureChunkName (structureName : Name) (i : Nat) : Name :=
   nameWithLastComponentSuffix structureName s!"_chunk{i}"
 
-/-- Map generated LF-model field names to the structure that owns their Lean projection. -/
-def lfModelStructureFieldOwnerMap (checked : CheckedSignature) (structureName : Name)
-    (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) :
-      CommandElabM (NameMap Name) := do
-  let obs ← validateLFModelObligations checked admittedNames mode
+/-- Map generated LF-model field names to the structure that owns their Lean projection,
+using already validated model obligations. -/
+def lfModelStructureFieldOwnerMapFromObligations (structureName : Name)
+    (obs : Array LFModelObligation) : NameMap Name := Id.run do
   let fields := obs.filter (fun o => o.generatedRole == .field && o.renderable)
   let chunkSize := if lfModelStructureChunkSize == 0 then fields.size else lfModelStructureChunkSize
   let chunkCount := if fields.isEmpty then 1 else (fields.size + chunkSize - 1) / chunkSize
@@ -3437,7 +3436,14 @@ def lfModelStructureFieldOwnerMap (checked : CheckedSignature) (structureName : 
       let owner := if chunkCount <= 1 || chunkIndex + 1 == chunkCount then structureName else
         lfModelStructureChunkName structureName chunkIndex
       out := out.insert fieldName owner
-  pure out
+  return out
+
+/-- Map generated LF-model field names to the structure that owns their Lean projection. -/
+def lfModelStructureFieldOwnerMap (checked : CheckedSignature) (structureName : Name)
+    (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) :
+      CommandElabM (NameMap Name) := do
+  let obs ← validateLFModelObligations checked admittedNames mode
+  pure (lfModelStructureFieldOwnerMapFromObligations structureName obs)
 
 /-- Last string component of a generated Lean name, if any. -/
 def nameLastStringComponent? : Name → Option String
@@ -3467,18 +3473,24 @@ def addLFModelInterfaceNamesLibrarySuggestionDenyList (names : Array Name) : Com
     if let some component := nameLastStringComponent? n.eraseMacroScopes then
       modifyEnv fun env => Lean.LibrarySuggestions.nameDenyListExt.addEntry env component
 
-/-- Add docstrings to generated LF-model structure fields after elaborating the structure. -/
-def addLFModelStructureFieldDocStrings (theoryName structureName : Name) (checked :
-  CheckedSignature)
-    (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) : CommandElabM Unit := do
-  let obs ← validateLFModelObligations checked admittedNames mode
-  let ownerMap ← lfModelStructureFieldOwnerMap checked structureName admittedNames mode
+/-- Add docstrings to generated LF-model structure fields after elaborating the structure,
+using already validated model obligations and an owner map. -/
+def addLFModelStructureFieldDocStringsFromObligations (theoryName structureName : Name)
+    (obs : Array LFModelObligation) (ownerMap : NameMap Name) : CommandElabM Unit := do
   for o in obs do
     if o.generatedRole == .field && o.renderable then
       if let some fieldName := o.generatedName? then
         let doc ← lfModelFieldDocString theoryName structureName o
         let owner := (ownerMap.find? fieldName).getD structureName
         liftCoreM <| addDocStringCore (theoryName ++ owner ++ fieldName) doc
+
+/-- Add docstrings to generated LF-model structure fields after elaborating the structure. -/
+def addLFModelStructureFieldDocStrings (theoryName structureName : Name) (checked :
+  CheckedSignature)
+    (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) : CommandElabM Unit := do
+  let obs ← validateLFModelObligations checked admittedNames mode
+  let ownerMap := lfModelStructureFieldOwnerMapFromObligations structureName obs
+  addLFModelStructureFieldDocStringsFromObligations theoryName structureName obs ownerMap
 
 /-- Syntax for one generated LF-model field with a custom global-field term map.
 
@@ -3934,10 +3946,9 @@ def chunkLFRenderedModelFields (fields : Array LFRenderedModelField)
     chunks := chunks.push current
   return chunks
 
-/-- Render all generated LF-model fields from the generic model-obligation IR. -/
-def lfModelStructureRenderedFields (checked : CheckedSignature) (admittedNames : NameSet := {})
-    (mode : LFModelInterfaceMode := .full) : CommandElabM (Array LFRenderedModelField) := do
-  let obs ← validateLFModelObligations checked admittedNames mode
+/-- Render all generated LF-model fields from already validated model obligations. -/
+def lfModelStructureRenderedFieldsFromObligations (checked : CheckedSignature)
+    (obs : Array LFModelObligation) : CommandElabM (Array LFRenderedModelField) := do
   let fieldNames := lfModelFieldNameMap obs
   let paramVis := lfParamVisibilityMapOfObligations obs
   let defValues := lfDefinitionValueMap checked
@@ -3955,6 +3966,12 @@ def lfModelStructureRenderedFields (checked : CheckedSignature) (admittedNames :
         fieldSyntax := field
         levelParams := orderedModelLevelParams checked used }
   pure fields
+
+/-- Render all generated LF-model fields from the generic model-obligation IR. -/
+def lfModelStructureRenderedFields (checked : CheckedSignature) (admittedNames : NameSet := {})
+    (mode : LFModelInterfaceMode := .full) : CommandElabM (Array LFRenderedModelField) := do
+  let obs ← validateLFModelObligations checked admittedNames mode
+  lfModelStructureRenderedFieldsFromObligations checked obs
 
 /-- Render all generated LF-model field syntaxes from the generic model-obligation IR. -/
 def lfModelStructureFieldSyntaxes (checked : CheckedSignature) (admittedNames : NameSet := {})
@@ -4032,14 +4049,13 @@ def lfModelStructureCommandSyntax (_checked : CheckedSignature) (structureName :
   let wrapped ← `(command| set_option $autoImplicitOpt:ident false in $cmd:command)
   pure wrapped.raw
 
-/-- Syntax-level generated LF model structures from the generic LF model-obligation IR.
+/-- Syntax-level generated LF model structures from already validated model obligations.
 
 Small interfaces remain a single public structure.  Large interfaces are emitted as ordered
 internal chunks whose final structure keeps the requested public name. -/
-def lfModelStructureSyntaxes (checked : CheckedSignature) (structureName : Name)
-    (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) :
-      CommandElabM (Array Syntax) := do
-  let fields ← lfModelStructureRenderedFields checked admittedNames mode
+def lfModelStructureSyntaxesFromObligations (checked : CheckedSignature) (structureName : Name)
+    (obs : Array LFModelObligation) : CommandElabM (Array Syntax) := do
+  let fields ← lfModelStructureRenderedFieldsFromObligations checked obs
   let chunks := chunkLFRenderedModelFields fields
   let mut cmds := #[]
   let mut parent? : Option (Name × Array Name) := none
@@ -4057,6 +4073,16 @@ def lfModelStructureSyntaxes (checked : CheckedSignature) (structureName : Name)
     parent? := some (owner, thisLevels)
     parentLevels := thisLevels
   pure cmds
+
+/-- Syntax-level generated LF model structures from the generic LF model-obligation IR.
+
+Small interfaces remain a single public structure.  Large interfaces are emitted as ordered
+internal chunks whose final structure keeps the requested public name. -/
+def lfModelStructureSyntaxes (checked : CheckedSignature) (structureName : Name)
+    (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) :
+      CommandElabM (Array Syntax) := do
+  let obs ← validateLFModelObligations checked admittedNames mode
+  lfModelStructureSyntaxesFromObligations checked structureName obs
 
 /-- User-facing section assigned to a source LF declaration, if any. -/
 def lfModelSectionMap (checked : CheckedSignature) : NameMap Name := Id.run do
@@ -4370,16 +4396,14 @@ def lfModelStructureSyntax (checked : CheckedSignature) (structureName : Name) (
     throwError "LF model interface for '{checked.name}' is chunked into {cmds.size} structures; \
       use lfModelStructureSyntaxes"
 
-/-- Export inherited chunk projections through the public model-interface namespace.
+/-- Export inherited chunk projections through the public model-interface namespace,
+using already validated model obligations and an owner map.
 
 Lean's `extends` keeps inherited fields available by dot notation but does not create constants
 such as `Final.field` for fields owned by parent chunks.  `export Parent (field)` restores those
 qualified names without changing the public structure shape. -/
-def lfModelInheritedProjectionExportSyntaxes (checked : CheckedSignature) (structureName : Name)
-    (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) :
-      CommandElabM (Array Syntax) := do
-  let obs ← validateLFModelObligations checked admittedNames mode
-  let ownerMap ← lfModelStructureFieldOwnerMap checked structureName admittedNames mode
+def lfModelInheritedProjectionExportSyntaxesFromObligations (structureName : Name)
+    (obs : Array LFModelObligation) (ownerMap : NameMap Name) : CommandElabM (Array Syntax) := do
   let mut groups : NameMap (Array Name) := {}
   for o in obs do
     if o.generatedRole == .field && o.renderable then
@@ -4394,6 +4418,18 @@ def lfModelInheritedProjectionExportSyntaxes (checked : CheckedSignature) (struc
     let cmd ← `(command| export $ownerId:ident ($[$fieldIds:ident]*))
     cmds := cmds.push cmd.raw
   pure cmds
+
+/-- Export inherited chunk projections through the public model-interface namespace.
+
+Lean's `extends` keeps inherited fields available by dot notation but does not create constants
+such as `Final.field` for fields owned by parent chunks.  `export Parent (field)` restores those
+qualified names without changing the public structure shape. -/
+def lfModelInheritedProjectionExportSyntaxes (checked : CheckedSignature) (structureName : Name)
+    (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) :
+      CommandElabM (Array Syntax) := do
+  let obs ← validateLFModelObligations checked admittedNames mode
+  let ownerMap := lfModelStructureFieldOwnerMapFromObligations structureName obs
+  lfModelInheritedProjectionExportSyntaxesFromObligations structureName obs ownerMap
 
 /-- Generate binders for theorem-local side-condition certificate parameters. -/
 def lfTheoremSideConditionParamBinders (checked : CheckedSignature) (fieldNames : NameMap Name)
