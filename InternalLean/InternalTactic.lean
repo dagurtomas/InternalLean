@@ -3587,6 +3587,96 @@ def elabInternalDefsSorryBatchItem? (decl : TSyntax `internalDefsDecl) :
         pure none
   | _ => pure none
 
+/-- Parsed checked object declaration inside an `internal_defs where` batch. -/
+structure InternalDefsCheckedObjectBatchItem where
+  /-- Original declaration syntax, used for range metadata. -/
+  declStx : Syntax
+  /-- Declaration identifier syntax. -/
+  declNameStx : Syntax
+  /-- Resolved target theory/local name. -/
+  target : InternalDefTarget
+  /-- Source-level documentation, if present. -/
+  sourceDoc? : Option String := none
+  /-- User-facing anchor type. -/
+  anchorTypeExpr : ObjExpr
+  /-- LF object definition to register. -/
+  lfDef : LFObjectDefDecl
+  deriving Inhabited
+
+/-- Parse one checked direct object declaration in an `internal_defs where` batch. -/
+def elabInternalDefsCheckedObjectBatchItem? (decl : TSyntax `internalDefsDecl) :
+    CommandElabM (Option InternalDefsCheckedObjectBatchItem) := do
+  let mkItem (doc? : Option (TSyntax ``Parser.Command.docComment)) (declNameStx : Syntax)
+      (declName : Name) (binders : TSyntaxArray `ttBinder) (typeStx valueStx : TSyntax `ttExpr) :=
+    do
+    if isSorryObjExprSyntax valueStx.raw then
+      return none
+    let target ← resolveInternalDefTarget declName
+    ensureInternalDeclarationNamesAvailable target
+    let sourceDoc? ← optDocCommentString? doc?
+    let params ← binders.mapM elabHLBinding
+    let typeExpr ← elabObjExpr typeStx
+    let valueExpr ← elabObjExpr valueStx
+    if internalObjExprMentionsName `_ valueExpr then
+      return none
+    let valueExpr := eraseObjExprScopes valueExpr
+    let fullType := mkInternalDefFunctionType params typeExpr
+    let fullValue := mkInternalDefLambda params valueExpr
+    pure (some {
+      declStx := decl.raw
+      declNameStx := declNameStx
+      target := target
+      sourceDoc? := sourceDoc?
+      anchorTypeExpr := fullType
+      lfDef := { name := target.localName, typeExpr := fullType, value := fullValue } })
+  match decl with
+  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr :=
+      $valueStx:ttExpr) =>
+      mkItem doc? declName declName.getId #[] typeStx valueStx
+  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := $valueStx:ttExpr) =>
+      mkItem doc? declName declName.getId binders typeStx valueStx
+  | _ => pure none
+
+/-- Try to register an all-checked-object `internal_defs where` block as one checked delta. -/
+def tryElabInternalDefsCheckedObjectBatch (decls : Array (TSyntax `internalDefsDecl)) :
+    CommandElabM Bool := do
+  if decls.size <= 1 then
+    return false
+  let mut items : Array InternalDefsCheckedObjectBatchItem := #[]
+  for decl in decls do
+    match ← elabInternalDefsCheckedObjectBatchItem? decl with
+    | some item => items := items.push item
+    | none => return false
+  let some first := items[0]?
+    | return false
+  let theoryName := first.target.theoryName
+  let mut seenLocals : NameSet := {}
+  let mut seenAnchors : NameSet := {}
+  for item in items do
+    if item.target.theoryName != theoryName then
+      return false
+    let localName := item.target.localName.eraseMacroScopes
+    if seenLocals.contains localName then
+      throwError "duplicate internal_defs declaration '{item.target.localName}' in type theory \
+        '{theoryName}'"
+    seenLocals := seenLocals.insert localName
+    let anchorName := item.target.anchorName.eraseMacroScopes
+    if seenAnchors.contains anchorName then
+      throwError "duplicate Lean-visible internal_defs anchor '{item.target.anchorName}'"
+    seenAnchors := seenAnchors.insert anchorName
+  try
+    liftCoreM <| registerLFObjectDefBatch theoryName (items.map (·.lfDef))
+  catch _ =>
+    return false
+  for item in items do
+    if let some doc := item.sourceDoc? then
+      liftCoreM <| registerSourceDoc item.target.theoryName .internalDef
+        item.target.localName doc
+    addInternalDeclarationAnchor item.target item.anchorTypeExpr false item.sourceDoc?
+      item.declStx item.declNameStx
+  return true
+
 /-- Try to register an all-opaque-admission `internal_defs where` block as one checked delta. -/
 def tryElabInternalDefsSorryOpaqueBatch (decls : Array (TSyntax `internalDefsDecl)) :
     CommandElabM Bool := do
@@ -3713,7 +3803,8 @@ def elabInternalDefsDeclsWithSorryOpaqueBatches (decls : Array (TSyntax `interna
 elab_rules : command
   | `(internal_defs where $decls:internalDefsDecl*) => do
       unless ← tryElabInternalDefsSorryOpaqueBatch decls do
-        elabInternalDefsDeclsWithSorryOpaqueBatches decls
+        unless ← tryElabInternalDefsCheckedObjectBatch decls do
+          elabInternalDefsDeclsWithSorryOpaqueBatches decls
   | `($[$doc?:docComment]? internal theorem $declName:ident : $typeStx:ttExpr := sorry) =>
       elabInternalTheoremSorryWithBinders doc? declName declName.getId #[] #[] typeStx
   | `($[$doc?:docComment]? internal theorem $declName:ident $binders:ttBinder* :

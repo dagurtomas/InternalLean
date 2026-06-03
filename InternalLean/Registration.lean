@@ -188,7 +188,10 @@ def resolveInternalDefTarget (declName : Name) : CommandElabM InternalDefTarget 
 def ensureInternalDeclarationNamesAvailable (target : InternalDefTarget) : CommandElabM Unit := do
   let some sig ← liftCoreM <| getTheory? target.theoryName
     | throwError "unknown type theory '{target.theoryName}'"
-  let flatSig ← liftCoreM <| flattenSignature sig
+  let flatSig ← liftCoreM do
+    match ← getCheckedHLSignature? target.theoryName with
+    | some checkedHL => pure checkedHL
+    | none => flattenSignature sig
   if flatSig.containsName target.localName then
     throwError "declaration '{target.localName}' already exists in type theory \
       '{target.theoryName}' or one of its parents"
@@ -675,8 +678,11 @@ def registerLFObjectDef (theoryName : Name) (d : LFObjectDefDecl) : CoreM Unit :
     throwError "declaration '{d.name}' already exists in type theory '{theoryName}' or one of its \
       parents"
   let knownTypes := cache.knownLFDefTypes
-  let flatSigWithRaw := cache.checkedHL.appendBlock { lfObjectDefs := #[d] }
-  let dForRegistry ← elaborateImplicitAppsInLFObjectDef flatSigWithRaw knownTypes d
+  let rawBlock : HLTheoryBlock := { lfObjectDefs := #[d] }
+  let flatSigWithRaw := cache.checkedHL.appendBlock rawBlock
+  let implicitLookup := mkImplicitCallableLookupContextFromCache cache rawBlock
+  let dForRegistry ←
+    elaborateImplicitAppsInLFObjectDefWithLookup implicitLookup flatSigWithRaw knownTypes d
   let flatSigWithNew := cache.checkedHL.appendBlock { lfObjectDefs := #[dForRegistry] }
   let typeExpr ←
     expandSyntaxAbbrevsInExpr flatSigWithNew "lf_def" dForRegistry.name "type" {}
@@ -712,6 +718,48 @@ def registerLFObjectDef (theoryName : Name) (d : LFObjectDefDecl) : CoreM Unit :
     let env := checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
     setCompiledLFCheckCacheInEnv env theoryName compiledCache
 
+/-- Register a batch of staged LF object definitions in an existing theory. -/
+def registerLFObjectDefBatch (theoryName : Name) (defs : Array LFObjectDefDecl) : CoreM Unit := do
+  if defs.isEmpty then
+    return ()
+  let some sig ← getTheory? theoryName
+    | throwError "unknown type theory '{theoryName}'"
+  let some checked ← getCheckedTheory? theoryName
+    | throwError "no checked artifact stored for type theory '{theoryName}'"
+  let cacheLookup ← getOrBuildCompiledLFCheckCache theoryName checked
+  let block : HLTheoryBlock := { lfObjectDefs := defs }
+  let result ←
+    checkTheoryBlockExtensionIncremental theoryName sig checked block
+      (some cacheLookup.cache.checkedHL)
+  unless result.delta.objectDefs.size == defs.size do
+    throwError "internal error: LF object-definition batch produced \
+      {result.delta.objectDefs.size} checked definition(s) for {defs.size} request(s)"
+  let candidate := sig.appendBlock result.blockForRegistry
+  let compiledCache :=
+    cacheLookup.cache.appendDelta result.checkedHL result.checked result.delta
+  let profileDeclName :=
+    if defs.size == 1 then defs[0]!.name.eraseMacroScopes else `internal_defs
+  let strategy :=
+    if defs.size == 1 then "incremental LF object definition"
+    else "incremental LF object definition batch"
+  recordInternalRegistrationProfile {
+    theoryName := theoryName
+    declName := profileDeclName
+    strategy := strategy
+    priorObjectDefs := checked.lfObjectDefs.size
+    priorJudgmentTheorems := checked.lfJudgmentTheorems.size
+    recheckedObjectDefs := 0
+    recheckedJudgmentTheorems := 0
+    incrementallyChecked := defs.size
+    cacheStatus? := some cacheLookup.status
+    cacheRebuilt := cacheLookup.rebuilt
+    cacheOverlayDecls := defs.size }
+  modifyEnv fun env =>
+    let env := theoryExt.addEntry env (.sig candidate)
+    let env := checkedTheoryExt.addEntry env (.sig result.checked)
+    let env := checkedHLSignatureExt.addEntry env (.sig theoryName result.checkedHL)
+    setCompiledLFCheckCacheInEnv env theoryName compiledCache
+
 /-- Register a top-level staged LF judgment theorem in an existing theory. -/
 def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : CoreM Unit := do
   let some _sig ← getTheory? theoryName
@@ -724,8 +772,11 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
     throwError "declaration '{t.name}' already exists in type theory '{theoryName}' or one of its \
       parents"
   let knownTypes := cache.knownLFDefTypes
-  let flatSigWithRaw := cache.checkedHL.appendBlock { lfJudgmentTheorems := #[t] }
-  let tForRegistry ← elaborateImplicitAppsInLFJudgmentTheorem flatSigWithRaw knownTypes t
+  let rawBlock : HLTheoryBlock := { lfJudgmentTheorems := #[t] }
+  let flatSigWithRaw := cache.checkedHL.appendBlock rawBlock
+  let implicitLookup := mkImplicitCallableLookupContextFromCache cache rawBlock
+  let tForRegistry ←
+    elaborateImplicitAppsInLFJudgmentTheoremWithLookup implicitLookup flatSigWithRaw knownTypes t
   let flatSigWithNew := cache.checkedHL.appendBlock { lfJudgmentTheorems := #[tForRegistry] }
   let binders ← expandSyntaxAbbrevsInBindings flatSigWithNew "judgment_theorem" tForRegistry.name
     tForRegistry.binders

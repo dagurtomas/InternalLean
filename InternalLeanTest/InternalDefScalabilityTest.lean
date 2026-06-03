@@ -130,6 +130,25 @@ info: LF model obligation validation self-tests passed
 #guard_msgs in
 #check_lf_model_obligation_validation_self_tests
 
+declare_type_theory InternalDefsTheoremFallbackSmoke where
+  syntax_sort Obj
+  judgment J (x : Obj)
+  lf_opaque base : Obj
+  rule intro (x : Obj) : J x
+
+namespace InternalDefsTheoremFallbackSmoke
+
+internal_defs where
+  def t01 : J base := intro base
+  def t02 : J base := t01
+
+end InternalDefsTheoremFallbackSmoke
+
+#check InternalDefsTheoremFallbackSmoke.t02
+#guard_internal_registration_profile_totals InternalDefsTheoremFallbackSmoke 3 2 0 0
+#guard_internal_registration_profile_strategy InternalDefsTheoremFallbackSmoke
+  "incremental LF judgment theorem"
+
 declare_type_theory SectionResumeSmoke where
   model_section Chapter
   syntax_sort A
@@ -279,7 +298,9 @@ extend_type_theory IncrementalExtendManyInternalsSmoke where
 extend_type_theory IncrementalExtendManyInternalsSmoke where
   syntax_sort Extra05
 
-#guard_internal_registration_profile_totals IncrementalExtendManyInternalsSmoke 18 17 0 0
+#guard_internal_registration_profile_totals IncrementalExtendManyInternalsSmoke 7 17 0 0
+#guard_internal_registration_profile_strategy IncrementalExtendManyInternalsSmoke
+  "incremental LF object definition batch"
 
 declare_type_theory IncrementalModelMetadataSmoke where
   model_section Core
