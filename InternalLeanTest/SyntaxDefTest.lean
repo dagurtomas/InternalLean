@@ -96,6 +96,15 @@ declare_type_theory SyntaxDefEarlierAdmission{u} where
 #check_type_theory SyntaxDefEarlierAdmission
 #guard_syntax_def_admission_count SyntaxDefEarlierAdmission 1
 
+/-- Generated helpers handle admitted syntax definitions whose parameter types use one another. -/
+declare_type_theory SyntaxDefHelperDependencySmoke{u} where
+  syntax_sort Obj : Type u
+  syntax_def Q (x : Obj) : Type u := sorry
+  syntax_def P (x : Obj) (q : Q x) : Type u := sorry
+  lf_opaque useP (x : Obj) (q : Q x) (p : P x q) : Obj
+
+generate_model_interface SyntaxDefHelperDependencySmoke as SyntaxDefHelperDependencySmokeModel
+
 /-- Extension blocks can add and later use admitted syntax definitions. -/
 declare_type_theory SyntaxDefExtensionSmoke{u} where
   syntax_sort Obj : Type u

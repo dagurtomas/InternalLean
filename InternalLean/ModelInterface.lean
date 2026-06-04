@@ -1799,7 +1799,7 @@ def lfModelObligations (checked : CheckedSignature) (admittedNames : NameSet := 
           generatedName? := none, params := d.params, paramCount := d.params.size,
           typeExpr? := some (checkedLFTypeOfLevel d.resultLevel), renderable := true,
           diagnostic? := some "admitted syntax_def: not a model field; generated field types \
-            that mention it use a local sorry-backed derived type family" }
+            that mention it use a generated sorry-backed helper type family" }
   for c in checked.lfOpaqueConsts do
     match c.checkedTypeExpr? with
     | some ty =>
@@ -1953,7 +1953,7 @@ def lfModelObligationSummaryString (checked : CheckedSignature) (admittedNames :
     s!", {abbrevCount} LF abbreviation(s) expanded before fields"
   let admittedSyntaxDefs := checked.lfSyntaxDefs.countP (fun d => d.checkedValue?.isNone)
   let admittedSyntaxText := if admittedSyntaxDefs == 0 then "" else
-    s!", {admittedSyntaxDefs} admitted syntax_def(s) kept as generated local type families"
+    s!", {admittedSyntaxDefs} admitted syntax_def(s) kept as generated helper type families"
   let modeText := if mode == .full then "" else s!" [{mode.label}]"
   s!"LF model obligations for {nameString checked.name}{modeText}: {obs.size} obligation(s), \
     {fields} user field(s), {derived} generated method/declaration(s), {params} theorem-local \
@@ -2055,7 +2055,7 @@ def lfModelInterfaceGuideString (theoryName structureName : Name) (checked : Che
   let admittedSyntaxDefs := checked.lfSyntaxDefs.countP (fun d => d.checkedValue?.isNone)
   if admittedSyntaxDefs != 0 then
     lines := lines.push s!"WARNING: {admittedSyntaxDefs} admitted syntax_def(s) are not user \
-      fields; generated field types that mention them use local sorry-backed derived type \
+      fields; generated field types that mention them use generated sorry-backed helper type \
         families."
   if !heavy.isEmpty then
     lines := lines.push "dependency-heavy fields to inspect first:"
@@ -2110,8 +2110,8 @@ def lfModelContractString (checked : CheckedSignature) : String :=
       model field",
     "  admitted lf_opaque: admissions stay generated declarations unless needed by \
       model-field dependencies, including structural package-shaped admissions",
-    "  admitted syntax_def: not a field; model field types use local sorry-backed derived type \
-      families until the body is checked",
+    "  admitted syntax_def: not a field; model field types use generated sorry-backed helper \
+      type families until the body is checked",
     "  side-condition predicate: inferred model predicate field used by rule evidence arguments",
     "  theorem side-condition certificate: derived theorem parameter when renderable",
     "  lf_def: expanded metadata, not a field when renderable",
@@ -3955,11 +3955,38 @@ partial def checkedLFExprAdmittedSyntaxDefNames (defValues : NameMap CheckedLFEx
       let locals := xs.foldl (fun locals x => locals.insert x.eraseMacroScopes) locals
       checkedLFExprAdmittedSyntaxDefNames defValues admitted locals body
 
-/-- Admitted syntax definitions mentioned by a model obligation field type. -/
-def lfModelObligationAdmittedSyntaxDefs (checked : CheckedSignature)
-    (defValues : NameMap CheckedLFExpr) (o : LFModelObligation) : Array CheckedLFSyntaxDef :=
+/-- Parameter-type dependencies between admitted syntax definitions. -/
+def admittedSyntaxDefParamDependencyMap (checked : CheckedSignature)
+    (defValues : NameMap CheckedLFExpr) (admitted : NameSet) : NameMap NameSet := Id.run do
+  let mut out : NameMap NameSet := {}
+  for d in checked.lfSyntaxDefs do
+    if d.checkedValue?.isNone then
+      let mut deps : NameSet := {}
+      for b in d.params do
+        deps := unionNameSets deps <|
+          checkedLFExprAdmittedSyntaxDefNames defValues admitted {} b.checkedTypeExpr
+      out := out.insert d.name.eraseMacroScopes deps
+  return out
+
+/-- Close admitted-syntax-definition dependencies under admitted definition parameter types. -/
+def closeAdmittedSyntaxDefParamDeps (paramDeps : NameMap NameSet) (names : NameSet) : NameSet :=
   Id.run do
-  let admitted := admittedSyntaxDefNames checked
+  let mut names := names
+  let mut changed := true
+  while changed do
+    changed := false
+    for (n, deps) in paramDeps.toList do
+      if names.contains n then
+        for dep in deps.toList do
+          unless names.contains dep do
+            names := names.insert dep
+            changed := true
+  return names
+
+/-- Names of admitted syntax definitions mentioned by a model obligation field type. -/
+def lfModelObligationAdmittedSyntaxDefNameSet (defValues : NameMap CheckedLFExpr)
+    (admitted : NameSet) (paramDeps : NameMap NameSet) (o : LFModelObligation) : NameSet :=
+  Id.run do
   let collect (names : NameSet) (expr : CheckedLFExpr) : NameSet :=
     unionNameSets names (checkedLFExprAdmittedSyntaxDefNames defValues admitted {} expr)
   let mut names : NameSet := {}
@@ -3973,71 +4000,157 @@ def lfModelObligationAdmittedSyntaxDefs (checked : CheckedSignature)
     names := collect names e.checkedJudgmentExpr
   for sc in o.sideConditions do
     names := collect names sc.checkedInput
-  let mut changed := true
-  while changed do
-    changed := false
-    for d in checked.lfSyntaxDefs do
-      let dName := d.name.eraseMacroScopes
-      if d.checkedValue?.isNone && names.contains dName then
-        for b in d.params do
-          let deps := checkedLFExprAdmittedSyntaxDefNames defValues admitted {} b.checkedTypeExpr
-          for dep in deps.toList do
-            unless names.contains dep do
-              names := names.insert dep
-              changed := true
-  return checked.lfSyntaxDefs.filter fun d =>
+  return closeAdmittedSyntaxDefParamDeps paramDeps names
+
+/-- Admitted syntax definitions in declaration order, filtered by a dependency name set. -/
+def orderedAdmittedSyntaxDefsFromNames (checked : CheckedSignature) (names : NameSet) :
+    Array CheckedLFSyntaxDef :=
+  checked.lfSyntaxDefs.filter fun d =>
     d.checkedValue?.isNone && names.contains d.name.eraseMacroScopes
+
+/-- Level parameters needed by one admitted syntax-definition local family. -/
+def admittedSyntaxDefLevelParams (defValues : NameMap CheckedLFExpr)
+    (d : CheckedLFSyntaxDef) : NameSet :=
+  let used := levelExprParamSet d.resultLevel
+  d.params.foldl (init := used) fun used b =>
+    insertNameSet used (lfExprRenderedLevelParams defValues {} {} b.checkedTypeExpr)
+
+/-- Admitted syntax definitions mentioned by a model obligation field type. -/
+def lfModelObligationAdmittedSyntaxDefs (checked : CheckedSignature)
+    (defValues : NameMap CheckedLFExpr) (o : LFModelObligation) : Array CheckedLFSyntaxDef :=
+  let admitted := admittedSyntaxDefNames checked
+  let paramDeps := admittedSyntaxDefParamDependencyMap checked defValues admitted
+  let names := lfModelObligationAdmittedSyntaxDefNameSet defValues admitted paramDeps o
+  orderedAdmittedSyntaxDefsFromNames checked names
+
+/-- Cached admitted-syntax-definition dependencies for one model-obligation rendering plan. -/
+structure LFModelAdmittedSyntaxDefIndex where
+  depsByObligation : NameMap (Array CheckedLFSyntaxDef)
+  levelParamsByObligation : NameMap NameSet
+  usedDefs : Array CheckedLFSyntaxDef
+
+namespace LFModelAdmittedSyntaxDefIndex
+
+/-- Admitted syntax definitions used by one obligation. -/
+def defsFor (idx : LFModelAdmittedSyntaxDefIndex) (o : LFModelObligation) :
+    Array CheckedLFSyntaxDef :=
+  (idx.depsByObligation.find? o.name.eraseMacroScopes).getD #[]
+
+/-- Level parameters contributed by admitted syntax definitions used by one obligation. -/
+def levelParamsFor (idx : LFModelAdmittedSyntaxDefIndex) (o : LFModelObligation) : NameSet :=
+  (idx.levelParamsByObligation.find? o.name.eraseMacroScopes).getD {}
+
+end LFModelAdmittedSyntaxDefIndex
+
+/-- Precompute admitted-syntax-definition dependencies for all renderable model fields. -/
+def mkLFModelAdmittedSyntaxDefIndex (checked : CheckedSignature)
+    (defValues : NameMap CheckedLFExpr) (obs : Array LFModelObligation) :
+    LFModelAdmittedSyntaxDefIndex := Id.run do
+  let admitted := admittedSyntaxDefNames checked
+  let paramDeps := admittedSyntaxDefParamDependencyMap checked defValues admitted
+  let mut depsByObligation : NameMap (Array CheckedLFSyntaxDef) := {}
+  let mut levelParamsByObligation : NameMap NameSet := {}
+  let mut usedNames : NameSet := {}
+  for o in obs do
+    if o.generatedRole == .field && o.renderable then
+      let names := lfModelObligationAdmittedSyntaxDefNameSet defValues admitted paramDeps o
+      let defs := orderedAdmittedSyntaxDefsFromNames checked names
+      depsByObligation := depsByObligation.insert o.name.eraseMacroScopes defs
+      let mut levelParams : NameSet := {}
+      for d in defs do
+        usedNames := usedNames.insert d.name.eraseMacroScopes
+        levelParams := insertNameSet levelParams (admittedSyntaxDefLevelParams defValues d)
+      levelParamsByObligation := levelParamsByObligation.insert o.name.eraseMacroScopes
+        levelParams
+  let usedDefs := orderedAdmittedSyntaxDefsFromNames checked usedNames
+  return { depsByObligation, levelParamsByObligation, usedDefs }
+
+/-- Render admitted-syntax-definition local-family types once for one model rendering plan. -/
+def renderAdmittedSyntaxDefTypeSyntaxes (fieldNames : NameMap Name)
+    (defValues : NameMap CheckedLFExpr) (paramVis : LFParamVisibilityMap)
+    (defs : Array CheckedLFSyntaxDef) : CommandElabM (NameMap (TSyntax `term)) := do
+  let mut out : NameMap (TSyntax `term) := {}
+  for d in defs do
+    let result ← typeSyntaxOfLevel d.resultLevel
+    let ty ← lfTelescopeSyntaxInModelWithFields fieldNames defValues d.params result [] 0 paramVis
+    out := out.insert d.name.eraseMacroScopes ty
+  pure out
+
+/-- Generated helper declaration used to share one admitted syntax definition across fields. -/
+structure LFAdmittedSyntaxDefHelperInfo where
+  helperName : Name
+  dependencyNames : Array Name := #[]
+  deriving Inhabited
 
 /-- Wrap a rendered model-field type in local `let`s for admitted syntax definitions it mentions. -/
 def wrapWithAdmittedSyntaxDefLets (fieldNames : NameMap Name)
     (defValues : NameMap CheckedLFExpr) (paramVis : LFParamVisibilityMap)
-    (defs : Array CheckedLFSyntaxDef) (body : TSyntax `term) : CommandElabM (TSyntax `term) := do
+    (defs : Array CheckedLFSyntaxDef) (body : TSyntax `term)
+    (typeSyntaxes : NameMap (TSyntax `term) := {})
+    (helperInfos : NameMap LFAdmittedSyntaxDefHelperInfo := {}) : CommandElabM (TSyntax `term) :=
+  do
   let mut body := body
   for d in defs.reverse do
-    let result ← typeSyntaxOfLevel d.resultLevel
-    let ty ← lfTelescopeSyntaxInModelWithFields fieldNames defValues d.params result [] 0 paramVis
     let id := mkIdent d.name
-    body ← `(let $id:ident : $ty := (sorry : $ty); $body)
+    match helperInfos.find? d.name.eraseMacroScopes with
+    | some info =>
+        let helper := mkIdent info.helperName
+        let depArgs := info.dependencyNames.map fun dep =>
+          (mkIdent (lfModelFieldName fieldNames dep) : TSyntax `term)
+        let value ← mkTermAppSyntax helper depArgs
+        body ← `(let $id:ident := $value; $body)
+    | none =>
+        let ty ←
+          match typeSyntaxes.find? d.name.eraseMacroScopes with
+          | some ty => pure ty
+          | none => do
+              let result ← typeSyntaxOfLevel d.resultLevel
+              lfTelescopeSyntaxInModelWithFields fieldNames defValues d.params result [] 0
+                paramVis
+        body ← `(let $id:ident : $ty := (sorry : $ty); $body)
   pure body
 
-/-- Syntax for one generated LF-model field, driven by the generic obligation IR. -/
-def lfModelObligationFieldSyntax? (checked : CheckedSignature) (fieldNames : NameMap Name)
+/-- Render the type of one generated LF-model field. -/
+def lfModelObligationFieldTypeSyntax? (checked : CheckedSignature) (fieldNames : NameMap Name)
     (defValues : NameMap CheckedLFExpr)
     (paramVis : LFParamVisibilityMap) (blockingUntyped sidePredicateNames : NameSet) (o :
-      LFModelObligation) :
-    CommandElabM (Option (TSyntax `Lean.Parser.Command.structSimpleBinder)) := do
+      LFModelObligation) (baseLocals : LFLocalSyntaxCtx := [])
+    (admittedSyntaxDefs? : Option (Array CheckedLFSyntaxDef) := none)
+    (admittedSyntaxDefTypes : NameMap (TSyntax `term) := {})
+    (helperInfos : NameMap LFAdmittedSyntaxDefHelperInfo := {}) :
+    CommandElabM (Option (TSyntax `term)) := do
   unless o.generatedRole == .field && o.renderable do
     return none
-  let some generatedName := o.generatedName?
-    | throwError "LF model obligation '{o.name}' is a renderable field but has no generated field \
-      name"
-  let admittedSyntaxDefs := lfModelObligationAdmittedSyntaxDefs checked defValues o
+  let admittedSyntaxDefs := admittedSyntaxDefs?.getD <|
+    lfModelObligationAdmittedSyntaxDefs checked defValues o
   match o.source with
   | .syntaxSort | .judgment | .sideConditionPredicate =>
       let some typeExpr := o.typeExpr?
         | throwError "LF model field obligation '{o.name}' has no checked type expression"
-      let result ← lfExprSyntaxInModelWithFields fieldNames defValues [] paramVis typeExpr
-      let ty ← lfTelescopeSyntaxInModelWithFields fieldNames defValues o.params result [] 0 paramVis
-      let ty ← wrapWithAdmittedSyntaxDefLets fieldNames defValues paramVis admittedSyntaxDefs ty
-      some <$> lfFieldSyntax o.source.label generatedName ty
+      let result ← lfExprSyntaxInModelWithFields fieldNames defValues baseLocals paramVis typeExpr
+      let ty ← lfTelescopeSyntaxInModelWithFields fieldNames defValues o.params result baseLocals
+        0 paramVis
+      some <$> wrapWithAdmittedSyntaxDefLets fieldNames defValues paramVis admittedSyntaxDefs ty
+        admittedSyntaxDefTypes helperInfos
   | .typedOpaque | .admittedOpaque =>
       let some typeExpr := o.typeExpr?
         | throwError "LF model field obligation '{o.name}' has no checked type expression"
-      let result ← lfExprSyntaxInModelWithFields fieldNames defValues [] paramVis typeExpr
-      let ty ← lfTelescopeSyntaxInModelWithFields fieldNames defValues o.params result [] 0 paramVis
-      let ty ← wrapWithAdmittedSyntaxDefLets fieldNames defValues paramVis admittedSyntaxDefs ty
-      some <$> lfFieldSyntax o.source.label generatedName ty
+      let result ← lfExprSyntaxInModelWithFields fieldNames defValues baseLocals paramVis typeExpr
+      let ty ← lfTelescopeSyntaxInModelWithFields fieldNames defValues o.params result baseLocals
+        0 paramVis
+      some <$> wrapWithAdmittedSyntaxDefLets fieldNames defValues paramVis admittedSyntaxDefs ty
+        admittedSyntaxDefTypes helperInfos
   | .theoremSideConditionCertificate =>
       let some input := o.sourceObjExpr?
         | throwError "LF theorem side-condition obligation '{o.name}' has no source input \
           expression"
-      let ty ← lfObjExprSyntaxInModelWithFields fieldNames defValues [] paramVis input
-      let ty ← wrapWithAdmittedSyntaxDefLets fieldNames defValues paramVis admittedSyntaxDefs ty
-      some <$> lfFieldSyntax o.source.label generatedName ty
+      let ty ← lfObjExprSyntaxInModelWithFields fieldNames defValues baseLocals paramVis input
+      some <$> wrapWithAdmittedSyntaxDefLets fieldNames defValues paramVis admittedSyntaxDefs ty
+        admittedSyntaxDefTypes helperInfos
   | .rule =>
       let some conclusionExpr := o.typeExpr?
         | throwError "LF rule field obligation '{o.name}' has no checked conclusion expression"
-      let mut locals : LFLocalSyntaxCtx := []
+      let mut locals : LFLocalSyntaxCtx := baseLocals
       let mut binders : Array LFRenderedBinder := #[]
       for p in o.params do
         let ty ←
@@ -4063,10 +4176,144 @@ def lfModelObligationFieldSyntax? (checked : CheckedSignature) (fieldNames : Nam
         binders := binders.push { name := sc.name, typeStx := ty }
       let concl ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis conclusionExpr
       let ty ← lfRenderedTelescopeSyntax binders concl
-      let ty ← wrapWithAdmittedSyntaxDefLets fieldNames defValues paramVis admittedSyntaxDefs ty
-      some <$> lfFieldSyntax o.source.label generatedName ty
+      some <$> wrapWithAdmittedSyntaxDefLets fieldNames defValues paramVis admittedSyntaxDefs ty
+        admittedSyntaxDefTypes helperInfos
   | .untypedOpaque | .objectDefinition | .judgmentTheorem | .syntaxDef =>
       return none
+
+/-- Syntax for one generated LF-model field, driven by the generic obligation IR. -/
+def lfModelObligationFieldSyntax? (checked : CheckedSignature) (fieldNames : NameMap Name)
+    (defValues : NameMap CheckedLFExpr)
+    (paramVis : LFParamVisibilityMap) (blockingUntyped sidePredicateNames : NameSet) (o :
+      LFModelObligation) (admittedSyntaxDefs? : Option (Array CheckedLFSyntaxDef) := none)
+    (admittedSyntaxDefTypes : NameMap (TSyntax `term) := {})
+    (helperInfos : NameMap LFAdmittedSyntaxDefHelperInfo := {}) :
+    CommandElabM (Option (TSyntax `Lean.Parser.Command.structSimpleBinder)) := do
+  unless o.generatedRole == .field && o.renderable do
+    return none
+  let some generatedName := o.generatedName?
+    | throwError "LF model obligation '{o.name}' is a renderable field but has no generated field \
+      name"
+  let some ty ←
+      lfModelObligationFieldTypeSyntax? checked fieldNames defValues paramVis blockingUntyped
+        sidePredicateNames o [] admittedSyntaxDefs? admittedSyntaxDefTypes helperInfos
+    | return none
+  some <$> lfFieldSyntax o.source.label generatedName ty
+
+/-- Helper declaration data for one admitted syntax definition in a generated model interface. -/
+structure LFAdmittedSyntaxDefHelper where
+  syntaxDef : CheckedLFSyntaxDef
+  info : LFAdmittedSyntaxDefHelperInfo
+  dependencyObligations : Array LFModelObligation := #[]
+
+/-- Generated helper name for one admitted syntax definition in a model interface. -/
+def admittedSyntaxDefHelperName (structureName syntaxDefName : Name) : Name :=
+  nameWithLastComponentSuffix structureName s!"_{flatNameString syntaxDefName}_syntaxDef"
+
+/-- Model-field dependencies used by an admitted syntax definition's parameter telescope. -/
+def admittedSyntaxDefFieldDependencyNames (defValues : NameMap CheckedLFExpr)
+    (fieldSourceNames : NameSet) (d : CheckedLFSyntaxDef) : NameSet := Id.run do
+  let mut deps : NameSet := {}
+  let mut locals : NameSet := {}
+  for b in d.params do
+    deps := insertNameSet deps <|
+      lfExprRenderedFieldDependencies defValues fieldSourceNames locals {} b.checkedTypeExpr
+    locals := locals.insert b.name.eraseMacroScopes
+  return deps
+
+/-- Close field dependencies under already-rendered model field types. -/
+def closeLFModelFieldDependencies (defValues : NameMap CheckedLFExpr)
+    (fieldSourceNames : NameSet) (obs : Array LFModelObligation) (names : NameSet) : NameSet :=
+  Id.run do
+  let mut names := names
+  let mut changed := true
+  while changed do
+    changed := false
+    for o in obs do
+      if o.generatedRole == .field && o.renderable && names.contains o.name.eraseMacroScopes then
+        let deps := lfModelObligationRenderedFieldDependencies defValues fieldSourceNames o
+        for dep in deps.toList do
+          unless names.contains dep.eraseMacroScopes do
+            names := names.insert dep.eraseMacroScopes
+            changed := true
+  return names
+
+/-- Helper declarations needed for admitted syntax definitions used by generated fields. -/
+def lfAdmittedSyntaxDefHelpers (checked : CheckedSignature) (structureName : Name)
+    (defValues : NameMap CheckedLFExpr) (obs : Array LFModelObligation)
+    (idx : LFModelAdmittedSyntaxDefIndex) : Array LFAdmittedSyntaxDefHelper := Id.run do
+  let fieldSourceNames := lfModelFieldSourceNameSetFromObligations obs
+  let admitted := admittedSyntaxDefNames checked
+  let paramDeps := admittedSyntaxDefParamDependencyMap checked defValues admitted
+  let mut helpers := #[]
+  for d in idx.usedDefs do
+    let paramDepNames := closeAdmittedSyntaxDefParamDeps paramDeps <|
+      (paramDeps.find? d.name.eraseMacroScopes).getD {}
+    let paramDepDefs := orderedAdmittedSyntaxDefsFromNames checked paramDepNames
+    let mut directDeps := admittedSyntaxDefFieldDependencyNames defValues fieldSourceNames d
+    for depDef in paramDepDefs do
+      directDeps := insertNameSet directDeps <|
+        admittedSyntaxDefFieldDependencyNames defValues fieldSourceNames depDef
+    let dependencyNames := closeLFModelFieldDependencies defValues fieldSourceNames obs directDeps
+    let dependencyObligations := obs.filter fun o =>
+      o.generatedRole == .field && o.renderable && dependencyNames.contains o.name.eraseMacroScopes
+    let info : LFAdmittedSyntaxDefHelperInfo := {
+      helperName := admittedSyntaxDefHelperName structureName d.name
+      dependencyNames := dependencyObligations.map (fun o => o.name.eraseMacroScopes) }
+    helpers := helpers.push { syntaxDef := d, info := info, dependencyObligations }
+  return helpers
+
+/-- Lookup map for admitted-syntax-definition helper declarations. -/
+def lfAdmittedSyntaxDefHelperInfoMap (helpers : Array LFAdmittedSyntaxDefHelper) :
+    NameMap LFAdmittedSyntaxDefHelperInfo := Id.run do
+  let mut out : NameMap LFAdmittedSyntaxDefHelperInfo := {}
+  for h in helpers do
+    out := out.insert h.syntaxDef.name.eraseMacroScopes h.info
+  return out
+
+/-- Command syntax for one generated admitted-syntax-definition helper. -/
+def lfAdmittedSyntaxDefHelperCommandSyntax (checked : CheckedSignature) (fieldNames : NameMap Name)
+    (defValues : NameMap CheckedLFExpr) (paramVis : LFParamVisibilityMap)
+    (blockingUntyped sidePredicateNames : NameSet)
+    (helperInfos : NameMap LFAdmittedSyntaxDefHelperInfo) (helper : LFAdmittedSyntaxDefHelper) :
+    CommandElabM Syntax := do
+  let mut locals : LFLocalSyntaxCtx := []
+  let mut depBinders : Array LFRenderedBinder := #[]
+  for o in helper.dependencyObligations do
+    let some generatedName := o.generatedName?
+      | throwError "LF model helper dependency '{o.name}' has no generated field name"
+    let some ty ←
+        lfModelObligationFieldTypeSyntax? checked fieldNames defValues paramVis blockingUntyped
+          sidePredicateNames o locals
+      | throwError "LF model helper dependency '{o.name}' is not renderable"
+    let id := freshLFLocalIdent generatedName locals
+    depBinders := depBinders.push { name := id.getId, typeStx := ty }
+    locals := (o.name.eraseMacroScopes, id) :: locals
+  let result ← typeSyntaxOfLevel helper.syntaxDef.resultLevel
+  let familyTy ←
+    lfTelescopeSyntaxInModelWithFields fieldNames defValues helper.syntaxDef.params result locals
+      0 paramVis
+  let admitted := admittedSyntaxDefNames checked
+  let paramDeps := admittedSyntaxDefParamDependencyMap checked defValues admitted
+  let paramDepNames := closeAdmittedSyntaxDefParamDeps paramDeps <|
+    (paramDeps.find? helper.syntaxDef.name.eraseMacroScopes).getD {}
+  let paramDepDefs := orderedAdmittedSyntaxDefsFromNames checked paramDepNames
+  let familyTy ← wrapWithAdmittedSyntaxDefLets fieldNames defValues paramVis paramDepDefs
+    familyTy {} helperInfos
+  let ty ← lfRenderedTelescopeSyntax depBinders familyTy
+  let helperId := mkIdent helper.info.helperName
+  let levelIds := checked.levelParams.map (mkIdent ·.eraseMacroScopes)
+  let cmd ←
+    if levelIds.isEmpty then
+      `(command|
+        /-- Generated placeholder for an admitted syntax definition used by model fields. -/
+        def $helperId:ident : $ty := (sorry : $ty))
+    else
+      `(command|
+        /-- Generated placeholder for an admitted syntax definition used by model fields. -/
+        def $helperId:ident.{$[$levelIds:ident],*} : $ty := (sorry : $ty))
+  let autoImplicitOpt := mkIdent `autoImplicit
+  pure (← `(command| set_option $autoImplicitOpt:ident false in $cmd:command)).raw
 
 /-- Field-dependency diagnostics for generated LF-model fields. -/
 def lfModelFieldDependencySummaries (checked : CheckedSignature) (admittedNames : NameSet := {}) :
@@ -4242,24 +4489,29 @@ def chunkLFRenderedModelFields (fields : Array LFRenderedModelField)
 
 /-- Render all generated LF-model fields from already validated model obligations. -/
 def lfModelStructureRenderedFieldsFromObligations (checked : CheckedSignature)
-    (obs : Array LFModelObligation) : CommandElabM (Array LFRenderedModelField) := do
+    (obs : Array LFModelObligation)
+    (helperInfos : NameMap LFAdmittedSyntaxDefHelperInfo := {})
+    (admittedIndex? : Option LFModelAdmittedSyntaxDefIndex := none) :
+    CommandElabM (Array LFRenderedModelField) := do
   let fieldNames := lfModelFieldNameMap obs
   let paramVis := lfParamVisibilityMapOfObligations obs
   let defValues := lfDefinitionValueMap checked
   let blockingUntyped := blockingUntypedLFOpaqueNames checked
   let sidePredicateNames := lfSideConditionPredicateNames checked
+  let admittedIndex := admittedIndex?.getD <| mkLFModelAdmittedSyntaxDefIndex checked defValues obs
+  let fallbackAdmittedDefs := admittedIndex.usedDefs.filter fun d =>
+    !(helperInfos.contains d.name.eraseMacroScopes)
+  let admittedTypes ←
+    renderAdmittedSyntaxDefTypeSyntaxes fieldNames defValues paramVis fallbackAdmittedDefs
   let mut fields := #[]
   for o in obs do
+    let admittedSyntaxDefs := admittedIndex.defsFor o
     if let some field ←
       lfModelObligationFieldSyntax? checked fieldNames defValues paramVis blockingUntyped
-        sidePredicateNames o then
+        sidePredicateNames o (some admittedSyntaxDefs) admittedTypes helperInfos then
       let used :=
         lfModelObligationRenderedLevelParams defValues blockingUntyped sidePredicateNames o
-      let used := (lfModelObligationAdmittedSyntaxDefs checked defValues o).foldl
-        (init := used) fun used d =>
-          let used := insertNameSet used (levelExprParamSet d.resultLevel)
-          d.params.foldl (init := used) fun used b =>
-            insertNameSet used (lfExprRenderedLevelParams defValues {} {} b.checkedTypeExpr)
+      let used := insertNameSet used (admittedIndex.levelParamsFor o)
       fields := fields.push {
         obligation := o
         fieldSyntax := field
@@ -4354,9 +4606,21 @@ Small interfaces remain a single public structure.  Large interfaces are emitted
 internal chunks whose final structure keeps the requested public name. -/
 def lfModelStructureSyntaxesFromObligations (checked : CheckedSignature) (structureName : Name)
     (obs : Array LFModelObligation) : CommandElabM (Array Syntax) := do
-  let fields ← lfModelStructureRenderedFieldsFromObligations checked obs
+  let fieldNames := lfModelFieldNameMap obs
+  let paramVis := lfParamVisibilityMapOfObligations obs
+  let defValues := lfDefinitionValueMap checked
+  let blockingUntyped := blockingUntypedLFOpaqueNames checked
+  let sidePredicateNames := lfSideConditionPredicateNames checked
+  let admittedIndex := mkLFModelAdmittedSyntaxDefIndex checked defValues obs
+  let helpers := lfAdmittedSyntaxDefHelpers checked structureName defValues obs admittedIndex
+  let helperInfos := lfAdmittedSyntaxDefHelperInfoMap helpers
+  let helperCmds ← helpers.mapM <|
+    lfAdmittedSyntaxDefHelperCommandSyntax checked fieldNames defValues paramVis blockingUntyped
+      sidePredicateNames helperInfos
+  let fields ← lfModelStructureRenderedFieldsFromObligations checked obs helperInfos
+    (some admittedIndex)
   let chunks := chunkLFRenderedModelFields fields
-  let mut cmds := #[]
+  let mut cmds := helperCmds
   let mut parent? : Option (Name × Array Name) := none
   let mut parentLevels : Array Name := #[]
   for h : i in [:chunks.size] do
@@ -4442,24 +4706,29 @@ def lfModelSectionNameSuffix (run : LFModelSectionRun) : String :=
 
 /-- Render fields for selected obligations, using the full field map. -/
 def lfModelStructureRenderedFieldsForObligations (checked : CheckedSignature) (allObs runObs :
-  Array LFModelObligation) : CommandElabM (Array LFRenderedModelField) := do
+  Array LFModelObligation) (helperInfos : NameMap LFAdmittedSyntaxDefHelperInfo := {})
+    (admittedIndex? : Option LFModelAdmittedSyntaxDefIndex := none) :
+    CommandElabM (Array LFRenderedModelField) := do
   let fieldNames := lfModelFieldNameMap allObs
   let paramVis := lfParamVisibilityMapOfObligations allObs
   let defValues := lfDefinitionValueMap checked
   let blockingUntyped := blockingUntypedLFOpaqueNames checked
   let sidePredicateNames := lfSideConditionPredicateNames checked
+  let admittedIndex := admittedIndex?.getD <|
+    mkLFModelAdmittedSyntaxDefIndex checked defValues allObs
+  let fallbackAdmittedDefs := admittedIndex.usedDefs.filter fun d =>
+    !(helperInfos.contains d.name.eraseMacroScopes)
+  let admittedTypes ←
+    renderAdmittedSyntaxDefTypeSyntaxes fieldNames defValues paramVis fallbackAdmittedDefs
   let mut fields := #[]
   for o in runObs do
+    let admittedSyntaxDefs := admittedIndex.defsFor o
     if let some field ←
       lfModelObligationFieldSyntax? checked fieldNames defValues paramVis blockingUntyped
-        sidePredicateNames o then
+        sidePredicateNames o (some admittedSyntaxDefs) admittedTypes helperInfos then
       let used :=
         lfModelObligationRenderedLevelParams defValues blockingUntyped sidePredicateNames o
-      let used := (lfModelObligationAdmittedSyntaxDefs checked defValues o).foldl
-        (init := used) fun used d =>
-          let used := insertNameSet used (levelExprParamSet d.resultLevel)
-          d.params.foldl (init := used) fun used b =>
-            insertNameSet used (lfExprRenderedLevelParams defValues {} {} b.checkedTypeExpr)
+      let used := insertNameSet used (admittedIndex.levelParamsFor o)
       fields := fields.push {
         obligation := o
         fieldSyntax := field
@@ -4482,14 +4751,26 @@ def lfModelSectionStructureSyntaxes (checked : CheckedSignature) (structureName 
     (admittedNames : NameSet := {}) (mode : LFModelInterfaceMode := .full) :
       CommandElabM (Array Syntax × Array Name) := do
   let obs ← validateLFModelObligations checked admittedNames mode
+  let fieldNames := lfModelFieldNameMap obs
+  let paramVis := lfParamVisibilityMapOfObligations obs
+  let defValues := lfDefinitionValueMap checked
+  let blockingUntyped := blockingUntypedLFOpaqueNames checked
+  let sidePredicateNames := lfSideConditionPredicateNames checked
+  let admittedIndex := mkLFModelAdmittedSyntaxDefIndex checked defValues obs
+  let helpers := lfAdmittedSyntaxDefHelpers checked structureName defValues obs admittedIndex
+  let helperInfos := lfAdmittedSyntaxDefHelperInfoMap helpers
+  let helperCmds ← helpers.mapM <|
+    lfAdmittedSyntaxDefHelperCommandSyntax checked fieldNames defValues paramVis blockingUntyped
+      sidePredicateNames helperInfos
   let runs := lfModelSectionRuns checked obs
-  let mut cmds := #[]
+  let mut cmds := helperCmds
   let mut names := #[]
   let mut parent? : Option (Name × Array Name) := none
   let mut parentLevels : Array Name := #[]
   for hRun : runIndex in [:runs.size] do
     let run := runs[runIndex]
     let renderedFields ← lfModelStructureRenderedFieldsForObligations checked obs run.fields
+      helperInfos (some admittedIndex)
     let chunks := chunkLFRenderedModelFields renderedFields lfModelSectionStructureChunkSize
     for hChunk : chunkIndex in [:chunks.size] do
       let isFinalGlobal := runIndex + 1 == runs.size && chunkIndex + 1 == chunks.size
@@ -5128,9 +5409,10 @@ def uxModelBackendLabel : String := "generic LF-model backend"
 def lfModelAdmittedSyntaxDefWarningStringFromObligations (checked : CheckedSignature)
     (obs : Array LFModelObligation) : Option String := Id.run do
   let defValues := lfDefinitionValueMap checked
+  let admittedIndex := mkLFModelAdmittedSyntaxDefIndex checked defValues obs
   let fieldDeps := obs.filterMap fun o =>
     if o.generatedRole == .field && o.renderable then
-      let deps := lfModelObligationAdmittedSyntaxDefs checked defValues o
+      let deps := admittedIndex.defsFor o
       if deps.isEmpty then none else some (o, deps)
     else
       none
@@ -5140,7 +5422,7 @@ def lfModelAdmittedSyntaxDefWarningStringFromObligations (checked : CheckedSigna
     deps.foldl (init := acc) fun acc d => acc.insert d.name.eraseMacroScopes
   let mut lines := #[
     s!"{usedNames.size} admitted syntax_def(s) used by generated model field type(s).",
-    "They are not user model fields; generated field types contain local sorry-backed derived \
+    "They are not user model fields; generated field types use generated sorry-backed helper \
       type families.",
     "Preferred fix: replace the admitted syntax_def bodies, then regenerate the model interface.",
     "admitted syntax_def dependencies:" ]
