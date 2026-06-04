@@ -121,6 +121,22 @@ declare_type_theory SyntaxDefChildSmoke extends SyntaxDefParentSmoke where
 #guard_syntax_def_admission_count SyntaxDefChildSmoke 1
 #guard_syntax_def_no_model_field_for SyntaxDefChildSmoke P
 
+/-- Cached internal-definition registration preserves implicit syntax-definition telescopes. -/
+declare_type_theory SyntaxDefCachedImplicitSmoke where
+  syntax_sort Obj
+  syntax_sort El (A : Obj)
+  lf_opaque A : Obj
+  lf_opaque a : El A
+  syntax_def P {A : Obj} (x : El A) : Type := Obj
+
+namespace SyntaxDefCachedImplicitSmoke
+
+internal def d : P a := A
+
+#check d
+
+end SyntaxDefCachedImplicitSmoke
+
 /-- Lint dependency smoke. -/
 declare_type_theory SyntaxDefLintDependencySmoke{u} where
   /-- Object sort. -/
@@ -189,6 +205,15 @@ declare_type_theory BadSyntaxDefMutualRecursion where
   syntax_sort Obj : Type
   syntax_def P (x : Obj) : Type := Q x
   syntax_def Q (x : Obj) : Type := P x
+
+/--
+error: syntax_def 'P' in type theory 'BadSyntaxDefParamForwardRef' references syntax_def 'Q'
+before it is available in parameter 'x' type
+-/
+#guard_msgs (whitespace := lax) in
+declare_type_theory BadSyntaxDefParamForwardRef where
+  syntax_def P (x : Q) : Type := sorry
+  syntax_def Q : Type := sorry
 
 /--
 error: context_zone 'z' in type theory 'BadSyntaxDefContextZone' uses unknown syntax sort 'P'
