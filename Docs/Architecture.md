@@ -171,21 +171,12 @@ example-specific core code.
 
 ## Adding new features
 
-Before adding a new core primitive, ask whether the feature can be expressed using existing generic
-vocabulary:
+New core primitives should be rare. Most extensions should first be tried as generic LF vocabulary:
+syntax sorts, judgments, rules, binders, context zones, side-condition certificates,
+conversion/rewrite metadata, theory-local notation, or backend hooks. This keeps the framework
+independent of any one example theory.
 
-- a syntax sort;
-- a judgment form;
-- a rule with premises;
-- a binder class or context-zone declaration;
-- a side-condition certificate;
-- a conversion plugin;
-- rewrite, transport, symmetry, or congruence metadata;
-- a theory-local macro or command alias;
-- a semantic backend hook.
-
-Core primitives should be reserved for features that cannot be represented cleanly through this
-vocabulary.
+For detailed implementation checklists, see `.agents/docs/InternalLeanDevelopmentNotes.md`.
 
 ## Related files
 

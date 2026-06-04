@@ -273,3 +273,4 @@ InternalLean is licensed under the Apache License, Version 2.0. See `LICENSE`.
 - LF trust boundary: `Docs/LFTrustBoundary.md`
 - Examples and tests guide: `Docs/Examples.md`
 - Release workflow: `Docs/Releases.md`
+- Shared agent/maintainer notes: `.agents/README.md`

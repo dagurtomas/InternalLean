@@ -1,21 +1,20 @@
 # Examples and tests guide
 
-This document explains the current example and regression files in the `InternalLean` repository.
-The test suite is organized as a separate `InternalLeanTest` library, similar to a Mathlib-style
-test tree.
+This document explains the example files and regression tests in the `InternalLean` repository.
+Use it to find a small file to read before trying a larger theory.
 
 ## How to read examples
 
-Most examples use:
+Most examples import the public command surface:
 
 ```lean
 import InternalLean.Command
 ```
 
-or a module-style public import. They declare a type theory with `declare_type_theory`, add
-internal declarations with `internal def`, and sometimes generate model interfaces or transports.
-
-Start with TinyNat, then use the focused regression files when changing a particular subsystem.
+They declare a type theory with `declare_type_theory`, add internal declarations with
+`internal def`, and sometimes generate model interfaces or transports. Start with the intro
+exercises or TinyNat, then use the focused regression files when you want to see a particular
+feature in isolation.
 
 ## Intro exercises
 
@@ -78,49 +77,24 @@ Files:
 - `InternalLeanTest/StructuralInternalAdmissionTest.lean`
 - `InternalLeanTest/CorrectnessRegressionTest.lean`
 
-These files are useful when changing frontend syntax, metadata validation, diagnostics, model
-workflow behavior, source-navigation metadata, object notation, evidence premises, admissions, or
+These files show focused behavior for frontend syntax, metadata validation, diagnostics, model
+workflow commands, source-navigation metadata, object notation, evidence premises, admissions, and
 regression coverage. They include malformed metadata diagnostics, role validation,
 rewrite/transport metadata, public/minimal model interfaces, generated transport signatures,
 structural equivalence generation, syntax-sort universe levels, and synthetic generated-interface
 stress cases.
 
-## Useful builds
+## Checking examples
 
-Library check:
+Useful commands for maintainers are:
 
 ```bash
 lake build InternalLean
-```
-
-Test-library check:
-
-```bash
 lake build InternalLeanTest
-```
-
-Focused checks:
-
-```bash
-lake build InternalLean.Command InternalLeanTest.APIExtensionTest
 lake build InternalLeanTest.InternalTacticTest
 lake build InternalLeanTest.TinyNat InternalLeanTest.TinyNatModel
-lake build InternalLeanTest.EndToEndTinyNatTest
 ```
 
-## Example-specific caution
-
-Examples should guide generic design but should not become core assumptions. If an example needs a
-new feature, first ask whether it can be expressed using generic LF vocabulary:
-
-- syntax sorts;
-- judgments;
-- rules and premises;
-- context zones and binder classes;
-- side-condition certificates;
-- conversion plugins;
-- rewrite and transport metadata;
-- model-interface metadata;
-- theory-local notation or macros.
-
-Only add a new core primitive when the generic vocabulary is insufficient.
+Examples should guide generic design, but they should not become hard-coded assumptions in the
+framework. More detailed design and checklists live in
+`.agents/docs/InternalLeanDevelopmentNotes.md`.
