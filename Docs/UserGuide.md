@@ -84,6 +84,28 @@ syntax_sort_role Nat : term_sort
 Roles are metadata. They do not make `Nat` into Lean's `Nat`; they tell the framework how this
 sort should be treated by generic tooling.
 
+## Syntax definitions
+
+Use `syntax_def` for a named derived syntax family:
+
+```lean
+declare_type_theory PackageExample{u} where
+  syntax_sort Obj : Type u
+  syntax_def Package (x : Obj) : Type u := Σ y : Obj, Obj
+  lf_opaque usePackage (x : Obj) (p : Package x) : Obj
+```
+
+A checked `syntax_def` unfolds during LF checking and model rendering. An admitted one marks design
+debt without turning the derived family into primitive model data:
+
+```lean
+syntax_def SideStructure (x : Obj) : Type u := sorry
+```
+
+`#lint_type_theory_sorries` reports admitted syntax definitions. Model interfaces do not ask model
+authors to provide fields for `syntax_def` declarations; field types that mention admitted syntax
+definitions use generated sorry-backed local families until the body is filled in.
+
 ## Judgments
 
 A judgment declares a predicate or relation in the declared type theory.

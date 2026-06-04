@@ -20,7 +20,9 @@ Depending on the theory, the generated fields can include:
 - inherited projection fields from parent theories or generated chunks.
 
 The interface is generated from checked LF artifacts. It should not depend on raw parser traces or
-unchecked tactic scripts.
+unchecked tactic scripts. Derived `syntax_def` families are not user-provided fields: checked bodies
+unfold during rendering, while admitted bodies remain lint-visible debt and are rendered with local
+sorry-backed type-family lets when later field types mention them.
 
 ## Basic workflow
 
@@ -128,6 +130,11 @@ Hom : (X : Obj) → (Y : Obj) → Type v
 
 Unannotated syntax sorts keep the older `Type` result. Generated chunked and sectioned interfaces
 only bind universe parameters that appear in their fields or inherited parent chunks.
+
+`syntax_def` declarations differ from primitive syntax sorts. A checked `syntax_def` is expanded as
+metadata when field types are rendered. An admitted `syntax_def` is not promoted to a temporary
+model field; affected field types contain local derived type-family lets with Lean `sorry` bodies,
+and `#lint_type_theory_sorries` reports the underlying admission.
 
 `generate_lf_model_structure T as M` is the older direct-LF spelling used by low-level tests and
 diagnostics. It emits the same flat model structure, projection exports, and docstrings as

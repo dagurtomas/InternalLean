@@ -188,6 +188,7 @@ def HLSignature.appendBlock (sig : HLSignature) (block : HLTheoryBlock) : HLSign
   { sig with
     syntaxSorts := sig.syntaxSorts ++ block.syntaxSorts
     syntaxAbbrevs := sig.syntaxAbbrevs ++ block.syntaxAbbrevs
+    syntaxDefs := sig.syntaxDefs ++ block.syntaxDefs
     judgmentAbbrevs := sig.judgmentAbbrevs ++ block.judgmentAbbrevs
     syntaxSortRoles := sig.syntaxSortRoles ++ block.syntaxSortRoles
     contextZones := sig.contextZones ++ block.contextZones
@@ -343,6 +344,8 @@ structure CompiledLFCheckCacheStamp where
   syntaxSortCount : Nat := 0
   /-- Number of checked syntax abbreviations. -/
   syntaxAbbrevCount : Nat := 0
+  /-- Number of checked syntax definitions. -/
+  syntaxDefCount : Nat := 0
   /-- Number of checked judgment abbreviations. -/
   judgmentAbbrevCount : Nat := 0
   /-- Number of checked context zones. -/
@@ -377,6 +380,7 @@ def ofCheckedSignature (checked : CheckedSignature) : CompiledLFCheckCacheStamp 
     levelParamCount := checked.levelParams.size
     syntaxSortCount := checked.lfSyntaxSorts.size
     syntaxAbbrevCount := checked.lfSyntaxAbbrevs.size
+    syntaxDefCount := checked.lfSyntaxDefs.size
     judgmentAbbrevCount := checked.lfJudgmentAbbrevs.size
     contextZoneCount := checked.lfContextZones.size
     binderClassCount := checked.lfBinderClasses.size
@@ -598,6 +602,8 @@ inductive InternalAdmissionKind where
   | lfOpaque
   /-- A theorem-shaped admission, checked as an LF judgment statement but not as a model field. -/
   | judgmentTheorem
+  /-- An admitted derived syntax-family definition, not a model field. -/
+  | syntaxDef
   deriving Inhabited, Repr, BEq
 
 namespace InternalAdmissionKind
@@ -606,11 +612,13 @@ namespace InternalAdmissionKind
 def label : InternalAdmissionKind → String
   | .lfOpaque => "lf_opaque"
   | .judgmentTheorem => "judgment theorem"
+  | .syntaxDef => "syntax_def"
 
 /-- User-facing source command category for admitted declaration diagnostics. -/
 def sourceNoun : InternalAdmissionKind → String
   | .lfOpaque => "internal def"
   | .judgmentTheorem => "internal theorem"
+  | .syntaxDef => "syntax_def"
 
 end InternalAdmissionKind
 
@@ -708,6 +716,7 @@ inductive SourceDocRole where
   | primitiveEq
   | syntaxSort
   | syntaxAbbrev
+  | syntaxDef
   | judgmentAbbrev
   | contextZone
   | binderClass
@@ -731,6 +740,7 @@ def label : SourceDocRole → String
   | .primitiveEq => "primitive equality"
   | .syntaxSort => "syntax sort"
   | .syntaxAbbrev => "syntax abbreviation"
+  | .syntaxDef => "syntax definition"
   | .judgmentAbbrev => "judgment abbreviation"
   | .contextZone => "context zone"
   | .binderClass => "binder class"

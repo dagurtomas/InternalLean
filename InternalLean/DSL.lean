@@ -478,6 +478,22 @@ structure SyntaxAbbrevDecl where
   value : ObjExpr
   deriving Inhabited, Repr, BEq
 
+/-- User-facing derived syntax-family definition.
+
+A checked `syntax_def` is a named type-valued LF definition. An admitted `syntax_def` stores only
+its telescope and result universe, so later declarations can mention the family while the package
+shape remains explicit `sorry` debt. -/
+structure SyntaxDefDecl where
+  /-- Definition name. -/
+  name : Name
+  /-- Parameters of the derived syntax family. -/
+  params : Array HLBinding := #[]
+  /-- Result universe for the derived family. -/
+  resultLevel : LevelExpr := .zero
+  /-- Checked source body when present; `none` means `:= sorry`. -/
+  value? : Option ObjExpr := none
+  deriving Inhabited, Repr, BEq
+
 /-- User-facing abbreviation for a judgment-shaped LF expression.
 
 A `judgment_abbrev` is expanded in later metadata before LF checking and model obligations are
@@ -758,6 +774,8 @@ inductive CheckedLFHeadKind where
   | local
   /-- A declared syntax-sort head. -/
   | syntaxSort
+  /-- A derived type-valued syntax definition head. -/
+  | syntaxDef
   /-- A staged sorted LF/object definition head. -/
   | lfDefinition
   /-- A staged custom-judgment theorem/proof head. -/
@@ -910,6 +928,22 @@ structure CheckedLFSyntaxAbbrev where
   value : ObjExpr
   /-- Resolved expanded body. -/
   checkedValue : CheckedLFExpr := default
+  /-- Resolved body head, when available. -/
+  head? : Option CheckedLFHead := none
+  deriving Inhabited, Repr, BEq
+
+/-- A checked derived syntax-family definition artifact. -/
+structure CheckedLFSyntaxDef where
+  /-- Definition name, with macro scopes erased. -/
+  name : Name
+  /-- Checked parameter telescope. -/
+  params : Array CheckedLFBinding := #[]
+  /-- Result universe for the derived family. -/
+  resultLevel : LevelExpr := .zero
+  /-- Expanded source body when the definition is checked; `none` means admitted. -/
+  value? : Option ObjExpr := none
+  /-- Resolved expanded body when present. -/
+  checkedValue? : Option CheckedLFExpr := none
   /-- Resolved body head, when available. -/
   head? : Option CheckedLFHead := none
   deriving Inhabited, Repr, BEq
@@ -1286,6 +1320,8 @@ structure CheckedLFEnvironment where
   syntaxSorts : Array CheckedLFSyntaxSort := #[]
   /-- Checked syntax-sort-shaped abbreviations. -/
   syntaxAbbrevs : Array CheckedLFSyntaxAbbrev := #[]
+  /-- Checked derived syntax-family definitions. -/
+  syntaxDefs : Array CheckedLFSyntaxDef := #[]
   /-- Checked judgment-shaped abbreviations. -/
   judgmentAbbrevs : Array CheckedLFJudgmentAbbrev := #[]
   /-- Checked syntax-sort role metadata, with names scope-normalized. -/
@@ -1338,6 +1374,8 @@ structure CheckedSignature where
   lfSyntaxSorts : Array CheckedLFSyntaxSort := #[]
   /-- Checked syntax-sort-shaped abbreviations, expanded before model obligation generation. -/
   lfSyntaxAbbrevs : Array CheckedLFSyntaxAbbrev := #[]
+  /-- Checked derived syntax-family definitions. -/
+  lfSyntaxDefs : Array CheckedLFSyntaxDef := #[]
   /-- Checked judgment-shaped abbreviations, expanded before model obligation generation. -/
   lfJudgmentAbbrevs : Array CheckedLFJudgmentAbbrev := #[]
   /-- Checked syntax-sort role metadata, with names scope-normalized. -/
@@ -1691,6 +1729,8 @@ inductive HLTheoryItem where
   | syntaxSort : SyntaxSortDecl → HLTheoryItem
   /-- Public syntax-sort-shaped abbreviation; expanded before model obligation generation. -/
   | syntaxAbbrev : SyntaxAbbrevDecl → HLTheoryItem
+  /-- Derived type-valued syntax family. -/
+  | syntaxDef : SyntaxDefDecl → HLTheoryItem
   /-- Public judgment-shaped abbreviation; expanded before LF checking/model generation. -/
   | judgmentAbbrev : JudgmentAbbrevDecl → HLTheoryItem
   /-- Non-semantic role metadata for a syntactic category. -/
@@ -1746,6 +1786,8 @@ structure HLSignature where
   syntaxSorts : Array SyntaxSortDecl := #[]
   /-- Public syntax-sort-shaped abbreviations expanded before checking/model generation. -/
   syntaxAbbrevs : Array SyntaxAbbrevDecl := #[]
+  /-- Derived type-valued syntax families. -/
+  syntaxDefs : Array SyntaxDefDecl := #[]
   /-- Public judgment-shaped abbreviations expanded before checking/model generation. -/
   judgmentAbbrevs : Array JudgmentAbbrevDecl := #[]
   /-- Non-semantic role metadata for syntactic categories. -/
@@ -1873,6 +1915,14 @@ syntax (name := ttSyntaxSortTypedDocDeclStx)
 syntax (name := ttSyntaxAbbrevDeclStx) "syntax_abbrev" ident ttBinder* " := " ttExpr : ttDecl
 syntax (name := ttSyntaxAbbrevDocDeclStx)
   atomic(docComment "syntax_abbrev") ident ttBinder* " := " ttExpr : ttDecl
+syntax (name := ttSyntaxDefDeclStx)
+  "syntax_def" ident ttBinder* " : " ttExpr " := " ttExpr : ttDecl
+syntax (name := ttSyntaxDefDocDeclStx)
+  atomic(docComment "syntax_def") ident ttBinder* " : " ttExpr " := " ttExpr : ttDecl
+syntax (name := ttSyntaxDefSorryDeclStx)
+  "syntax_def" ident ttBinder* " : " ttExpr " := " "sorry" : ttDecl
+syntax (name := ttSyntaxDefSorryDocDeclStx)
+  atomic(docComment "syntax_def") ident ttBinder* " : " ttExpr " := " "sorry" : ttDecl
 syntax (name := ttJudgmentAbbrevDeclStx) "judgment_abbrev" ident ttBinder* " := " ttExpr : ttDecl
 syntax (name := ttJudgmentAbbrevDocDeclStx)
   atomic(docComment "judgment_abbrev") ident ttBinder* " := " ttExpr : ttDecl
@@ -2110,13 +2160,13 @@ meta def elabHLBinding : TSyntax `ttBinder → CommandElabM HLBinding
   | stx => throwError "unsupported type-theory binder syntax:{indentD stx}"
 
 /-- Parse and validate a syntax-sort result universe annotation. -/
-meta def elabSyntaxSortResultLevel (sortName : Name) (tyStx : TSyntax `ttExpr) :
-    CommandElabM LevelExpr := do
+meta def elabSyntaxSortResultLevel (sortName : Name) (tyStx : TSyntax `ttExpr)
+    (kind : String := "syntax_sort") : CommandElabM LevelExpr := do
   match ← elabObjExpr tyStx with
   | .sort => pure .zero
   | .univ u => pure u
   | _ =>
-      throwErrorAt tyStx "syntax_sort '{sortName}' result annotation must be an object universe \
+      throwErrorAt tyStx "{kind} '{sortName}' result annotation must be an object universe \
         (`Type`, `Type u`, `Type (u+1)`, ...)"
 
 /-- Parsed item in a future multi-premise rule declaration. -/
@@ -2219,6 +2269,37 @@ meta def elabHLTheoryItem : TSyntax `ttDecl → CommandElabM HLTheoryItem
       let _ := doc.raw
       let bs ← bs.mapM elabHLBinding
       pure <| .syntaxAbbrev { name := n.getId, params := bs, value := (← elabObjExpr value) }
+  | `(ttDecl| syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := sorry) => do
+      let bs ← bs.mapM elabHLBinding
+      pure <| .syntaxDef {
+        name := n.getId
+        params := bs
+        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
+        value? := none }
+  | `(ttDecl| $doc:docComment syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := sorry) => do
+      let _ := doc.raw
+      let bs ← bs.mapM elabHLBinding
+      pure <| .syntaxDef {
+        name := n.getId
+        params := bs
+        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
+        value? := none }
+  | `(ttDecl| syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := $value:ttExpr) => do
+      let bs ← bs.mapM elabHLBinding
+      pure <| .syntaxDef {
+        name := n.getId
+        params := bs
+        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
+        value? := some (← elabObjExpr value) }
+  | `(ttDecl| $doc:docComment syntax_def $n:ident $bs:ttBinder* : $result:ttExpr :=
+      $value:ttExpr) => do
+      let _ := doc.raw
+      let bs ← bs.mapM elabHLBinding
+      pure <| .syntaxDef {
+        name := n.getId
+        params := bs
+        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
+        value? := some (← elabObjExpr value) }
   | `(ttDecl| judgment_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
       let bs ← bs.mapM elabHLBinding
       pure <| .judgmentAbbrev { name := n.getId, params := bs, value := (← elabObjExpr value) }
@@ -2494,6 +2575,7 @@ meta def elabHLTheoryItem : TSyntax `ttDecl → CommandElabM HLTheoryItem
 structure HLTheoryBlock where
   syntaxSorts : Array SyntaxSortDecl := #[]
   syntaxAbbrevs : Array SyntaxAbbrevDecl := #[]
+  syntaxDefs : Array SyntaxDefDecl := #[]
   judgmentAbbrevs : Array JudgmentAbbrevDecl := #[]
   syntaxSortRoles : Array SyntaxSortRoleDecl := #[]
   contextZones : Array ContextZoneDecl := #[]
@@ -2537,6 +2619,9 @@ meta def HLTheoryBlock.ofItems (items : Array HLTheoryItem) : HLTheoryBlock := I
     | .syntaxAbbrev d =>
         block := assignCurrentSection currentSection?
           { block with syntaxAbbrevs := block.syntaxAbbrevs.push d } d.name
+    | .syntaxDef d =>
+        block := assignCurrentSection currentSection?
+          { block with syntaxDefs := block.syntaxDefs.push d } d.name
     | .judgmentAbbrev d =>
         block := assignCurrentSection currentSection?
           { block with judgmentAbbrevs := block.judgmentAbbrevs.push d } d.name
@@ -2615,6 +2700,19 @@ def summary (d : SyntaxAbbrevDecl) : MessageData :=
   m!"syntax_abbrev {d.name} {params} := {d.value}"
 
 end SyntaxAbbrevDecl
+
+namespace SyntaxDefDecl
+
+/-- Render a derived syntax-family definition. -/
+def summary (d : SyntaxDefDecl) : MessageData :=
+  let params := String.intercalate " " (d.params.toList.map HLBinding.summary)
+  let paramText := if params.isEmpty then "" else s!" {params}"
+  let body := match d.value? with
+    | some value => m!"{value}"
+    | none => m!"sorry"
+  m!"syntax_def {d.name}{paramText} : Type {d.resultLevel} := {body}"
+
+end SyntaxDefDecl
 
 namespace JudgmentAbbrevDecl
 

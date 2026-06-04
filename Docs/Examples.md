@@ -37,13 +37,14 @@ Files:
 - `InternalLeanTest/TinyNatModel.lean`
 - `InternalLeanTest/NaturalNumbersTest.lean`
 - `InternalLeanTest/EndToEndTinyNatTest.lean`
+- `InternalLeanTest/SyntaxDefTest.lean`
 
 TinyNat is the smallest direct-LF arithmetic example. It declares internal natural-number syntax,
 wellformedness, conversion, primitive recursion, and internal equality proof terms.
 
 It is useful for learning:
 
-- `syntax_sort`, `judgment`, `lf_opaque`, and `rule`;
+- `syntax_sort`, `syntax_def`, `judgment`, `lf_opaque`, and `rule`;
 - `judgment_role` and `rule_role` metadata;
 - computation rules for internal `rw` and `simp`;
 - internal declarations and tactic proofs;

@@ -31,6 +31,7 @@ import InternalLeanTest.RawConversionTest
 import InternalLeanTest.SoundnessRegressionTest
 import InternalLeanTest.StructuralInternalAdmissionTest
 import InternalLeanTest.SyntaxAbbrevPiTest
+import InternalLeanTest.SyntaxDefTest
 import InternalLeanTest.TheoryAnchorTest
 import InternalLeanTest.TinyNatModel
 import InternalLeanTest.TransportPlanTest

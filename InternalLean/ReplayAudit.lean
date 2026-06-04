@@ -335,16 +335,16 @@ def replayAuditDerivationString (derivation : KernelLFDerivation) : String :=
 def kernelLFReplayCertificateSignature (checked : CheckedSignature)
     (derivation : KernelLFDerivation) : Signature :=
   let usedRules := kernelLFDerivationRuleAppNames derivation
+  let checkedLFDefValues := checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs
   let allRules :=
     (checked.lfKernelRuleSchemas ++
-      kernelLFRuleSchemasOfTheorems (checkedLFDefinitionValues checked.lfObjectDefs)
-        checked.lfJudgmentTheorems).toList
+      kernelLFRuleSchemasOfTheorems checkedLFDefValues checked.lfJudgmentTheorems).toList
   let rules := allRules.filter (fun r => usedRules.contains r.name.eraseMacroScopes)
   let usedGlobals := rules.foldl
     (fun names r => insertNameSet names (ruleSchemaGlobalHeadNames r))
     (kernelLFDerivationGlobalHeadNames derivation)
   { name := checked.name
-    constants := (checkedLFConstantsToKernel (checkedLFDefinitionValues checked.lfObjectDefs)
+    constants := (checkedLFConstantsToKernel checkedLFDefValues checked.lfSyntaxDefs
       checked.lfOpaqueConsts checked.lfObjectDefs |>.toList).filter (fun c =>
         usedGlobals.contains c.name.eraseMacroScopes)
     contextZones := checked.lfContextZones.toList.map checkedLFContextZoneToKernel

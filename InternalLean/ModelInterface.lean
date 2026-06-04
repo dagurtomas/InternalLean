@@ -210,6 +210,11 @@ def checkedLFExprAppOfArgs (head : CheckedLFExpr) (args : Array CheckedLFExpr) :
     CheckedLFExpr :=
   args.foldl (init := head) fun f a => .app f a
 
+/-- Whether a checked LF head kind unfolds through the model-rendering definition map. -/
+def checkedLFHeadKindUnfoldsInModel : CheckedLFHeadKind → Bool
+  | .lfDefinition | .syntaxDef => true
+  | _ => false
+
 /-- Apply a checked LF lambda to arguments, using LF-level substitution instead of relying on
 Lean to elaborate a generated beta-redex under a dependent expected type. -/
 def checkedLFExprBetaApply (fn : CheckedLFExpr) (args : Array CheckedLFExpr) : CheckedLFExpr :=
@@ -252,7 +257,7 @@ def reduceCheckedLFDefinitionHeadApp? (defs : CheckedLFDefinitionValueMap) (loca
     match head with
     | .ident h =>
         let key := h.name.eraseMacroScopes
-        if h.kind == .lfDefinition && !locals.contains key then
+        if checkedLFHeadKindUnfoldsInModel h.kind && !locals.contains key then
           match defs.find? key with
           | some value =>
               let reduced := checkedLFExprBetaApply value args
@@ -268,7 +273,7 @@ def reduceCheckedLFDefinitionValue? (defs : CheckedLFDefinitionValueMap) (locals
   match e with
   | .ident h =>
       let key := h.name.eraseMacroScopes
-      if h.kind == .lfDefinition && !locals.contains key then
+      if checkedLFHeadKindUnfoldsInModel h.kind && !locals.contains key then
         match defs.find? key with
         | some value => if value == e then none else some value
         | none => none
@@ -479,9 +484,15 @@ partial def objExprGlobalHeadNames : ObjExpr → NameSet
 def lfBindingMentionsAny (names : NameSet) (b : CheckedLFBinding) : Bool :=
   lfExprMentionsAny names b.checkedTypeExpr
 
-/-- Checked LF object definitions available for model-side rendering, keyed by definition name. -/
-def lfDefinitionValueMap (checked : CheckedSignature) : NameMap CheckedLFExpr :=
-  checked.lfObjectDefs.foldl (init := {}) fun acc d => acc.insert d.name d.checkedValue
+/-- Checked LF definitions available for model-side rendering, keyed by definition name. -/
+def lfDefinitionValueMap (checked : CheckedSignature) : NameMap CheckedLFExpr := Id.run do
+  let mut out : NameMap CheckedLFExpr := {}
+  for d in checked.lfSyntaxDefs do
+    if let some value := checkedLFSyntaxDefValue? d then
+      out := out.insert d.name value
+  for d in checked.lfObjectDefs do
+    out := out.insert d.name d.checkedValue
+  return out
 
 /-- Lookup an LF definition value, tolerating harmless macro-scope differences in the key. -/
 def lfDefinitionValue? (defValues : NameMap CheckedLFExpr) (n : Name) : Option CheckedLFExpr :=
@@ -499,6 +510,10 @@ partial def lfExprRenderableInModel (defValues : NameMap CheckedLFExpr)
       match h.kind with
       | .local | .syntaxSort | .judgment | .opaque | .lfRule =>
           !blockingUntyped.contains h.name || sidePredicateNames.contains h.name
+      | .syntaxDef =>
+          match lfDefinitionValue? defValues h.name with
+          | some value => lfExprRenderableInModel defValues blockingUntyped sidePredicateNames value
+          | none => true
       | .lfDefinition =>
           match lfDefinitionValue? defValues h.name with
           | some value => lfExprRenderableInModel defValues blockingUntyped sidePredicateNames value
@@ -576,7 +591,11 @@ partial def lfExprSyntaxInModel (defValues : NameMap CheckedLFExpr)
     (locals : LFLocalSyntaxCtx) : CheckedLFExpr → CommandElabM (TSyntax `term)
   | .ident h =>
       match h.kind, lfDefinitionValue? defValues h.name with
-      | .lfDefinition, some value => lfExprSyntaxInModel defValues locals value
+      | kind, some value =>
+          if checkedLFHeadKindUnfoldsInModel kind then
+            lfExprSyntaxInModel defValues locals value
+          else
+            pure <| (findLFLocalIdent? locals h.name).getD (mkIdent h.name)
       | _, _ => pure <| (findLFLocalIdent? locals h.name).getD (mkIdent h.name)
   | .sort => `(Type)
   | .univ u => typeSyntaxOfLevel u
@@ -647,8 +666,12 @@ partial def lfExprSyntaxInModelInstance (defValues : NameMap CheckedLFExpr)
       | some localId => pure localId
       | none =>
           match h.kind, lfDefinitionValue? defValues h.name with
-          | .lfDefinition, some value =>
-            lfExprSyntaxInModelInstance defValues modelIdent locals value
+          | kind, some value =>
+            if checkedLFHeadKindUnfoldsInModel kind then
+              lfExprSyntaxInModelInstance defValues modelIdent locals value
+            else
+              let field := mkIdent h.name
+              `($modelIdent.$field:ident)
           | _, _ => do
               let field := mkIdent h.name
               `($modelIdent.$field:ident)
@@ -1214,6 +1237,7 @@ inductive LFModelObligationSource where
   | judgment
   | typedOpaque
   | admittedOpaque
+  | syntaxDef
   | untypedOpaque
   | sideConditionPredicate
   | theoremSideConditionCertificate
@@ -1230,6 +1254,7 @@ def label : LFModelObligationSource → String
   | .judgment => "judgment"
   | .typedOpaque => "typed lf_opaque"
   | .admittedOpaque => "admitted lf_opaque"
+  | .syntaxDef => "admitted syntax_def"
   | .untypedOpaque => "untyped lf_opaque"
   | .sideConditionPredicate => "side-condition predicate"
   | .theoremSideConditionCertificate => "theorem side-condition certificate"
@@ -1424,7 +1449,7 @@ partial def lfExprRenderedFieldDependencies (defValues : NameMap CheckedLFExpr)
       let n := h.name.eraseMacroScopes
       if h.kind == .local || locals.contains n then
         {}
-      else if h.kind == .lfDefinition then
+      else if checkedLFHeadKindUnfoldsInModel h.kind then
         match lfDefinitionValue? defValues n with
         | some value =>
             if visitedDefs.contains n then {}
@@ -1544,7 +1569,7 @@ partial def lfExprRenderedLevelParams (defValues : NameMap CheckedLFExpr)
       let n := h.name.eraseMacroScopes
       if h.kind == .local || locals.contains n then
         {}
-      else if h.kind == .lfDefinition then
+      else if checkedLFHeadKindUnfoldsInModel h.kind then
         match lfDefinitionValue? defValues n with
         | some value =>
             if visitedDefs.contains n then {}
@@ -1756,6 +1781,25 @@ def lfModelObligations (checked : CheckedSignature) (admittedNames : NameSet := 
       name := s.name, source := .syntaxSort, generatedRole := .field,
       generatedName? := some s.name, params := s.params, paramCount := s.params.size,
       typeExpr? := some (checkedLFTypeOfLevel s.resultLevel) }
+  for d in checked.lfSyntaxDefs do
+    match d.checkedValue? with
+    | some value =>
+        let renderable := lfExprRenderableInModel defValues blockingUntyped sidePredicateNames value
+        out := out.push {
+          name := d.name, source := .syntaxDef,
+          generatedRole := if renderable then .metadataExpansion else .omitted,
+          generatedName? := some d.name, params := d.params, paramCount := d.params.size,
+          typeExpr? := some (checkedLFTypeOfLevel d.resultLevel), extraStatements := #[value],
+          renderable := renderable,
+          diagnostic? := if renderable then some "expanded during model expression rendering" else
+            some "checked syntax_def body is not renderable by the LF-model backend" }
+    | none =>
+        out := out.push {
+          name := d.name, source := .syntaxDef, generatedRole := .metadataExpansion,
+          generatedName? := none, params := d.params, paramCount := d.params.size,
+          typeExpr? := some (checkedLFTypeOfLevel d.resultLevel), renderable := true,
+          diagnostic? := some "admitted syntax_def: not a model field; generated field types \
+            that mention it use a local sorry-backed derived type family" }
   for c in checked.lfOpaqueConsts do
     match c.checkedTypeExpr? with
     | some ty =>
@@ -1907,11 +1951,14 @@ def lfModelObligationSummaryString (checked : CheckedSignature) (admittedNames :
   let abbrevCount := checked.lfSyntaxAbbrevs.size + checked.lfJudgmentAbbrevs.size
   let abbrevText := if abbrevCount == 0 then "" else
     s!", {abbrevCount} LF abbreviation(s) expanded before fields"
+  let admittedSyntaxDefs := checked.lfSyntaxDefs.countP (fun d => d.checkedValue?.isNone)
+  let admittedSyntaxText := if admittedSyntaxDefs == 0 then "" else
+    s!", {admittedSyntaxDefs} admitted syntax_def(s) kept as generated local type families"
   let modeText := if mode == .full then "" else s!" [{mode.label}]"
   s!"LF model obligations for {nameString checked.name}{modeText}: {obs.size} obligation(s), \
     {fields} user field(s), {derived} generated method/declaration(s), {params} theorem-local \
       certificate parameter(s), {replay} replay artifact(s), {expanded} metadata expansion(s), \
-        {omitted} blocked/omitted obligation(s){abbrevText}"
+        {omitted} blocked/omitted obligation(s){abbrevText}{admittedSyntaxText}"
 
 /-- Compact counts for renderable LF model fields grouped by source role. -/
 def lfModelFieldSourceBreakdown (obs : Array LFModelObligation) : String :=
@@ -2005,6 +2052,11 @@ def lfModelInterfaceGuideString (theoryName structureName : Name) (checked : Che
         notation, not model obligations."
   if let some warning := lfModelTemporaryAdmissionWarningStringFromObligations checked obs then
     lines := lines.push s!"WARNING: {warning}"
+  let admittedSyntaxDefs := checked.lfSyntaxDefs.countP (fun d => d.checkedValue?.isNone)
+  if admittedSyntaxDefs != 0 then
+    lines := lines.push s!"WARNING: {admittedSyntaxDefs} admitted syntax_def(s) are not user \
+      fields; generated field types that mention them use local sorry-backed derived type \
+        families."
   if !heavy.isEmpty then
     lines := lines.push "dependency-heavy fields to inspect first:"
     for o in heavy.take 8 do
@@ -2050,7 +2102,7 @@ def lfModelContractString (checked : CheckedSignature) : String :=
     "  derived parameter: theorem-local certificate argument supplied when generating a derived \
       declaration",
     "  replay artifact: checked/generated LF replay evidence used as a gate, not a user field",
-    "  metadata expansion: checked lf_def expanded during model expression rendering",
+    "  metadata expansion: checked lf_def/syntax_def expanded during model expression rendering",
     "  omitted: blocked obligation with an actionable diagnostic",
     "source classes:",
     "  syntax_sort/judgment/typed lf_opaque/rule: normally become model fields",
@@ -2058,6 +2110,8 @@ def lfModelContractString (checked : CheckedSignature) : String :=
       model field",
     "  admitted lf_opaque: admissions stay generated declarations unless needed by \
       model-field dependencies, including structural package-shaped admissions",
+    "  admitted syntax_def: not a field; model field types use local sorry-backed derived type \
+      families until the body is checked",
     "  side-condition predicate: inferred model predicate field used by rule evidence arguments",
     "  theorem side-condition certificate: derived theorem parameter when renderable",
     "  lf_def: expanded metadata, not a field when renderable",
@@ -2269,6 +2323,11 @@ def lfModelInterfaceLevelParams (checked : CheckedSignature) (admittedNames : Na
     if o.generatedRole == .field && o.renderable then
       used := insertNameSet used <|
         lfModelObligationRenderedLevelParams defValues blockingUntyped sidePredicateNames o
+  for d in checked.lfSyntaxDefs do
+    if d.checkedValue?.isNone then
+      used := insertNameSet used (levelExprParamSet d.resultLevel)
+      for b in d.params do
+        used := insertNameSet used (lfExprRenderedLevelParams defValues {} {} b.checkedTypeExpr)
   pure (orderedModelLevelParams checked used)
 
 /-- Emit the default warning for temporary admitted-definition model fields, if any. -/
@@ -2313,8 +2372,11 @@ partial def lfExprSyntaxInModelWithFields (fieldNames : NameMap Name)
   | .ident h =>
       match findLFLocalIdent? locals h.name, h.kind, lfDefinitionValue? defValues h.name with
       | some localId, _, _ => pure localId
-      | none, .lfDefinition, some value =>
-        lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis value
+      | none, kind, some value =>
+        if checkedLFHeadKindUnfoldsInModel kind then
+          lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis value
+        else
+          pure <| mkIdent (lfModelFieldName fieldNames h.name)
       | none, _, _ => pure <| mkIdent (lfModelFieldName fieldNames h.name)
   | .sort => `(Type)
   | .univ u => typeSyntaxOfLevel u
@@ -2471,9 +2533,13 @@ partial def lfExprSyntaxInModelInstanceWithFields (fieldNames : NameMap Name)
       | some localId => pure localId
       | none =>
           match h.kind, lfDefinitionValue? defValues h.name with
-          | .lfDefinition, some value =>
-            lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis
-              value
+          | kind, some value =>
+            if checkedLFHeadKindUnfoldsInModel kind then
+              lfExprSyntaxInModelInstanceWithFields fieldNames defValues modelIdent locals paramVis
+                value
+            else
+              let field := mkIdent (lfModelFieldName fieldNames h.name)
+              `($modelIdent.$field:ident)
           | _, _ => do
               let field := mkIdent (lfModelFieldName fieldNames h.name)
               `($modelIdent.$field:ident)
@@ -2688,6 +2754,54 @@ partial def lfTelescopeSyntaxInModelWithFields (fieldNames : NameMap Name)
   else
     pure result
 
+/-- Whether an LF expression mentions an admitted/stuck syntax definition. -/
+partial def lfExprMentionsStuckSyntaxDef (defValues : NameMap CheckedLFExpr) (locals : NameSet) :
+    CheckedLFExpr → Bool
+  | .ident h =>
+      let key := h.name.eraseMacroScopes
+      if locals.contains key then
+        false
+      else if checkedLFHeadKindUnfoldsInModel h.kind then
+        match lfDefinitionValue? defValues key with
+        | some value => lfExprMentionsStuckSyntaxDef defValues locals value
+        | none => h.kind == .syntaxDef
+      else
+        false
+  | .sort | .univ _ => false
+  | .app f a | .pair f a | .jeq f a =>
+      lfExprMentionsStuckSyntaxDef defValues locals f ||
+        lfExprMentionsStuckSyntaxDef defValues locals a
+  | .arrow x A B | .sigma x A B =>
+      let left := lfExprMentionsStuckSyntaxDef defValues locals A
+      let locals := match x with
+        | some x => locals.insert x.eraseMacroScopes
+        | none => locals
+      left || lfExprMentionsStuckSyntaxDef defValues locals B
+  | .fst e | .snd e => lfExprMentionsStuckSyntaxDef defValues locals e
+  | .lam xs body =>
+      let locals := xs.foldl (fun locals x => locals.insert x.eraseMacroScopes) locals
+      lfExprMentionsStuckSyntaxDef defValues locals body
+
+/-- Whether a model obligation mentions an admitted/stuck syntax definition in rendered inputs. -/
+def lfModelObligationMentionsStuckSyntaxDef (defValues : NameMap CheckedLFExpr)
+    (o : LFModelObligation) : Bool := Id.run do
+  for b in o.params do
+    if lfExprMentionsStuckSyntaxDef defValues {} b.checkedTypeExpr then
+      return true
+  if let some expr := o.typeExpr? then
+    if lfExprMentionsStuckSyntaxDef defValues {} expr then
+      return true
+  for p in o.premises do
+    if lfExprMentionsStuckSyntaxDef defValues {} p.checkedJudgmentExpr then
+      return true
+  for e in o.paramEvidences do
+    if lfExprMentionsStuckSyntaxDef defValues {} e.checkedJudgmentExpr then
+      return true
+  for sc in o.sideConditions do
+    if lfExprMentionsStuckSyntaxDef defValues {} sc.checkedInput then
+      return true
+  return false
+
 /-- Local terms used while rendering structural-equivalence fields. -/
 abbrev LFLocalTermCtx := List (Name × TSyntax `term)
 
@@ -2709,9 +2823,13 @@ partial def lfExprSyntaxInModelInstanceWithTermLocals (fieldNames : NameMap Name
       | some localTerm => pure localTerm
       | none =>
           match h.kind, lfDefinitionValue? defValues h.name with
-          | .lfDefinition, some value =>
-            lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
-              paramVis value
+          | kind, some value =>
+            if checkedLFHeadKindUnfoldsInModel kind then
+              lfExprSyntaxInModelInstanceWithTermLocals fieldNames defValues modelIdent locals
+                paramVis value
+            else
+              let field := mkIdent (lfModelFieldName fieldNames h.name)
+              `($modelIdent.$field:ident)
           | _, _ => do
               let field := mkIdent (lfModelFieldName fieldNames h.name)
               `($modelIdent.$field:ident)
@@ -2876,7 +2994,11 @@ partial def collectLFStructuralArrowBinders (defValues : NameMap CheckedLFExpr) 
     (start : Nat) : CheckedLFExpr → Array LFStructuralBinder × CheckedLFExpr
   | .ident h =>
       match h.kind, lfDefinitionValue? defValues h.name with
-      | .lfDefinition, some value => collectLFStructuralArrowBinders defValues owner start value
+      | kind, some value =>
+          if checkedLFHeadKindUnfoldsInModel kind then
+            collectLFStructuralArrowBinders defValues owner start value
+          else
+            (#[], .ident h)
       | _, _ => (#[], .ident h)
   | .arrow x? A B =>
       let name := x?.getD (Name.mkSimple s!"{flatNameString owner}_arg{start}")
@@ -2889,7 +3011,11 @@ partial def lfStructuralResultIsType (defValues : NameMap CheckedLFExpr) : Check
   | .sort | .univ _ => true
   | .ident h =>
       match h.kind, lfDefinitionValue? defValues h.name with
-      | .lfDefinition, some value => lfStructuralResultIsType defValues value
+      | kind, some value =>
+          if checkedLFHeadKindUnfoldsInModel kind then
+            lfStructuralResultIsType defValues value
+          else
+            false
       | _, _ => false
   | _ => false
 
@@ -2918,7 +3044,8 @@ def lfStructuralFieldBindersAndResult? (defValues : NameMap CheckedLFExpr)
         else
           binders := binders.push { name := sc.name, typeExpr? := none }
       some (binders, conclusionExpr)
-  | .theoremSideConditionCertificate | .untypedOpaque | .objectDefinition | .judgmentTheorem =>
+  | .theoremSideConditionCertificate | .untypedOpaque | .objectDefinition | .judgmentTheorem
+  | .syntaxDef =>
       none
 
 /-- Whether a generated model-field obligation is interpreted as a type family in structural
@@ -2951,7 +3078,8 @@ def lfStructuralEquivNameMaps (checked : CheckedSignature) (obs : Array LFModelO
   let mut equivNames : NameMap Name := {}
   let mut preserveNames : NameMap Name := {}
   for o in obs do
-    if o.generatedRole == .field && o.renderable then
+    if o.generatedRole == .field && o.renderable &&
+        !lfModelObligationMentionsStuckSyntaxDef defValues o then
       if let some generated := o.generatedName? then
         if lfStructuralObligationIsTypeFamily defValues blockingUntyped sidePredicateNames o then
           let (name, nextUsed) := freshStructuralFieldName used generated "_equiv"
@@ -2986,7 +3114,11 @@ partial def structuralHeadArgs? (defValues : NameMap CheckedLFExpr) :
     CheckedLFExpr → Option (CheckedLFHead × Array CheckedLFExpr)
   | .ident h =>
       match h.kind, lfDefinitionValue? defValues h.name with
-      | .lfDefinition, some value => structuralHeadArgs? defValues value
+      | kind, some value =>
+          if checkedLFHeadKindUnfoldsInModel kind then
+            structuralHeadArgs? defValues value
+          else
+            some (h, #[])
       | _, _ => some (h, #[])
   | .app f a => do
       let (h, args) ← structuralHeadArgs? defValues f
@@ -3083,7 +3215,7 @@ partial def structuralTermRelationTerm? (ctx : LFStructuralRenderCtx) (typeExpr 
   | .ident h =>
       if h.kind == .local then
         return findLFLocalTerm? ctx.relationLocals h.name
-      else if h.kind == .lfDefinition then
+      else if checkedLFHeadKindUnfoldsInModel h.kind then
         match lfDefinitionValue? ctx.defValues h.name with
         | some value => return ← structuralTermRelationTerm? ctx typeExpr value
         | none => pure ()
@@ -3135,7 +3267,11 @@ partial def structuralExprMentionsGeneratedField (ctx : LFStructuralRenderCtx) :
         false
       else
         match h.kind, lfDefinitionValue? ctx.defValues h.name with
-        | .lfDefinition, some value => structuralExprMentionsGeneratedField ctx value
+        | kind, some value =>
+            if checkedLFHeadKindUnfoldsInModel kind then
+              structuralExprMentionsGeneratedField ctx value
+            else
+              ctx.fieldBinders.contains h.name.eraseMacroScopes
         | _, _ => ctx.fieldBinders.contains h.name.eraseMacroScopes
   | .sort | .univ _ => false
   | .app f a => structuralExprMentionsGeneratedField ctx f ||
@@ -3288,9 +3424,10 @@ def lfModelStructuralEquivFieldSyntaxes (checked : CheckedSignature)
   let nameMaps := lfStructuralEquivNameMaps checked obs
   let mut fieldBinders : NameMap (Array LFStructuralBinder × CheckedLFExpr) := {}
   for o in fieldObs do
-    if let some data := lfStructuralFieldBindersAndResult? defValues blockingUntyped
-        sidePredicateNames o then
-      fieldBinders := fieldBinders.insert o.name.eraseMacroScopes data
+    unless lfModelObligationMentionsStuckSyntaxDef defValues o do
+      if let some data := lfStructuralFieldBindersAndResult? defValues blockingUntyped
+          sidePredicateNames o then
+        fieldBinders := fieldBinders.insert o.name.eraseMacroScopes data
   let mut activeCtx : LFStructuralRenderCtx := {
     fieldBinders := fieldBinders
     fieldNames := fieldNames
@@ -3302,7 +3439,10 @@ def lfModelStructuralEquivFieldSyntaxes (checked : CheckedSignature)
   let mut skipped : Array MessageData := #[]
   for o in fieldObs do
     if let some fieldName := o.generatedName? then
-      if let some (binders, resultExpr) := fieldBinders.find? o.name.eraseMacroScopes then
+      if lfModelObligationMentionsStuckSyntaxDef defValues o then
+        skipped := skipped.push m!"{fieldName}: mentions an admitted syntax_def; replace the \
+          syntax_def body before generating a strict structural-equivalence clause"
+      else if let some (binders, resultExpr) := fieldBinders.find? o.name.eraseMacroScopes then
         if let some equivName := nameMaps.equivNames.find? o.name.eraseMacroScopes then
           try
             let field ← structuralTypeFamilyFieldSyntax activeCtx o.name fieldName equivName binders
@@ -3358,6 +3498,7 @@ def lfModelStructuralEquivCommandSyntax (checked : CheckedSignature) (structureN
 def sourceDocRoleForLFModelObligation? (o : LFModelObligation) : Option SourceDocRole :=
   match o.source with
   | .syntaxSort => some .syntaxSort
+  | .syntaxDef => some .syntaxDef
   | .judgment => some .judgment
   | .typedOpaque | .admittedOpaque | .untypedOpaque | .sideConditionPredicate => some .lfOpaque
   | .rule => some .rule
@@ -3562,7 +3703,11 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
     | .ident h =>
         match findLFLocalIdent? locals h.name, h.kind, lfDefinitionValue? defValues h.name with
         | some localId, _, _ => pure localId
-        | none, .lfDefinition, some value => expr locals value
+        | none, kind, some value =>
+            if checkedLFHeadKindUnfoldsInModel kind then
+              expr locals value
+            else
+              pure (fieldTerm h.name)
         | none, _, _ => pure (fieldTerm h.name)
     | .sort => `(Type)
     | .univ u => typeSyntaxOfLevel u
@@ -3768,11 +3913,96 @@ partial def lfModelObligationFieldSyntaxWithTermMap? (fieldNames : NameMap Name)
       let concl ← expr locals conclusionExpr
       let ty ← lfRenderedTelescopeSyntax binders concl
       some <$> lfFieldSyntax o.source.label generatedName ty
-  | .untypedOpaque | .objectDefinition | .judgmentTheorem =>
+  | .untypedOpaque | .objectDefinition | .judgmentTheorem | .syntaxDef =>
       return none
 
+/-- Merge two name sets. -/
+def unionNameSets (a b : NameSet) : NameSet :=
+  b.toList.foldl (init := a) fun out n => out.insert n
+
+/-- Names of admitted syntax definitions in a checked theory. -/
+def admittedSyntaxDefNames (checked : CheckedSignature) : NameSet := Id.run do
+  let mut out : NameSet := {}
+  for d in checked.lfSyntaxDefs do
+    if d.checkedValue?.isNone then
+      out := out.insert d.name.eraseMacroScopes
+  return out
+
+/-- Admitted syntax definitions mentioned by a checked LF expression after unfolding checked
+LF/syntax definitions where available. -/
+partial def checkedLFExprAdmittedSyntaxDefNames (defValues : NameMap CheckedLFExpr)
+    (admitted : NameSet) (locals : NameSet) : CheckedLFExpr → NameSet
+  | .ident h =>
+      let key := h.name.eraseMacroScopes
+      if locals.contains key then
+        {}
+      else if checkedLFHeadKindUnfoldsInModel h.kind then
+        match lfDefinitionValue? defValues key with
+        | some value => checkedLFExprAdmittedSyntaxDefNames defValues admitted locals value
+        | none => if h.kind == .syntaxDef && admitted.contains key then ({ key } : NameSet) else {}
+      else
+        {}
+  | .sort | .univ _ => {}
+  | .app f a | .pair f a | .jeq f a =>
+      unionNameSets (checkedLFExprAdmittedSyntaxDefNames defValues admitted locals f)
+        (checkedLFExprAdmittedSyntaxDefNames defValues admitted locals a)
+  | .arrow x A B | .sigma x A B =>
+      let left := checkedLFExprAdmittedSyntaxDefNames defValues admitted locals A
+      let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
+      unionNameSets left (checkedLFExprAdmittedSyntaxDefNames defValues admitted locals B)
+  | .fst e | .snd e => checkedLFExprAdmittedSyntaxDefNames defValues admitted locals e
+  | .lam xs body =>
+      let locals := xs.foldl (fun locals x => locals.insert x.eraseMacroScopes) locals
+      checkedLFExprAdmittedSyntaxDefNames defValues admitted locals body
+
+/-- Admitted syntax definitions mentioned by a model obligation field type. -/
+def lfModelObligationAdmittedSyntaxDefs (checked : CheckedSignature)
+    (defValues : NameMap CheckedLFExpr) (o : LFModelObligation) : Array CheckedLFSyntaxDef :=
+  Id.run do
+  let admitted := admittedSyntaxDefNames checked
+  let collect (names : NameSet) (expr : CheckedLFExpr) : NameSet :=
+    unionNameSets names (checkedLFExprAdmittedSyntaxDefNames defValues admitted {} expr)
+  let mut names : NameSet := {}
+  for b in o.params do
+    names := collect names b.checkedTypeExpr
+  if let some expr := o.typeExpr? then
+    names := collect names expr
+  for p in o.premises do
+    names := collect names p.checkedJudgmentExpr
+  for e in o.paramEvidences do
+    names := collect names e.checkedJudgmentExpr
+  for sc in o.sideConditions do
+    names := collect names sc.checkedInput
+  let mut changed := true
+  while changed do
+    changed := false
+    for d in checked.lfSyntaxDefs do
+      let dName := d.name.eraseMacroScopes
+      if d.checkedValue?.isNone && names.contains dName then
+        for b in d.params do
+          let deps := checkedLFExprAdmittedSyntaxDefNames defValues admitted {} b.checkedTypeExpr
+          for dep in deps.toList do
+            unless names.contains dep do
+              names := names.insert dep
+              changed := true
+  return checked.lfSyntaxDefs.filter fun d =>
+    d.checkedValue?.isNone && names.contains d.name.eraseMacroScopes
+
+/-- Wrap a rendered model-field type in local `let`s for admitted syntax definitions it mentions. -/
+def wrapWithAdmittedSyntaxDefLets (fieldNames : NameMap Name)
+    (defValues : NameMap CheckedLFExpr) (paramVis : LFParamVisibilityMap)
+    (defs : Array CheckedLFSyntaxDef) (body : TSyntax `term) : CommandElabM (TSyntax `term) := do
+  let mut body := body
+  for d in defs.reverse do
+    let result ← typeSyntaxOfLevel d.resultLevel
+    let ty ← lfTelescopeSyntaxInModelWithFields fieldNames defValues d.params result [] 0 paramVis
+    let id := mkIdent d.name
+    body ← `(let $id:ident : $ty := (sorry : $ty); $body)
+  pure body
+
 /-- Syntax for one generated LF-model field, driven by the generic obligation IR. -/
-def lfModelObligationFieldSyntax? (fieldNames : NameMap Name) (defValues : NameMap CheckedLFExpr)
+def lfModelObligationFieldSyntax? (checked : CheckedSignature) (fieldNames : NameMap Name)
+    (defValues : NameMap CheckedLFExpr)
     (paramVis : LFParamVisibilityMap) (blockingUntyped sidePredicateNames : NameSet) (o :
       LFModelObligation) :
     CommandElabM (Option (TSyntax `Lean.Parser.Command.structSimpleBinder)) := do
@@ -3781,24 +4011,28 @@ def lfModelObligationFieldSyntax? (fieldNames : NameMap Name) (defValues : NameM
   let some generatedName := o.generatedName?
     | throwError "LF model obligation '{o.name}' is a renderable field but has no generated field \
       name"
+  let admittedSyntaxDefs := lfModelObligationAdmittedSyntaxDefs checked defValues o
   match o.source with
   | .syntaxSort | .judgment | .sideConditionPredicate =>
       let some typeExpr := o.typeExpr?
         | throwError "LF model field obligation '{o.name}' has no checked type expression"
       let result ← lfExprSyntaxInModelWithFields fieldNames defValues [] paramVis typeExpr
       let ty ← lfTelescopeSyntaxInModelWithFields fieldNames defValues o.params result [] 0 paramVis
+      let ty ← wrapWithAdmittedSyntaxDefLets fieldNames defValues paramVis admittedSyntaxDefs ty
       some <$> lfFieldSyntax o.source.label generatedName ty
   | .typedOpaque | .admittedOpaque =>
       let some typeExpr := o.typeExpr?
         | throwError "LF model field obligation '{o.name}' has no checked type expression"
       let result ← lfExprSyntaxInModelWithFields fieldNames defValues [] paramVis typeExpr
       let ty ← lfTelescopeSyntaxInModelWithFields fieldNames defValues o.params result [] 0 paramVis
+      let ty ← wrapWithAdmittedSyntaxDefLets fieldNames defValues paramVis admittedSyntaxDefs ty
       some <$> lfFieldSyntax o.source.label generatedName ty
   | .theoremSideConditionCertificate =>
       let some input := o.sourceObjExpr?
         | throwError "LF theorem side-condition obligation '{o.name}' has no source input \
           expression"
       let ty ← lfObjExprSyntaxInModelWithFields fieldNames defValues [] paramVis input
+      let ty ← wrapWithAdmittedSyntaxDefLets fieldNames defValues paramVis admittedSyntaxDefs ty
       some <$> lfFieldSyntax o.source.label generatedName ty
   | .rule =>
       let some conclusionExpr := o.typeExpr?
@@ -3829,8 +4063,9 @@ def lfModelObligationFieldSyntax? (fieldNames : NameMap Name) (defValues : NameM
         binders := binders.push { name := sc.name, typeStx := ty }
       let concl ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis conclusionExpr
       let ty ← lfRenderedTelescopeSyntax binders concl
+      let ty ← wrapWithAdmittedSyntaxDefLets fieldNames defValues paramVis admittedSyntaxDefs ty
       some <$> lfFieldSyntax o.source.label generatedName ty
-  | .untypedOpaque | .objectDefinition | .judgmentTheorem =>
+  | .untypedOpaque | .objectDefinition | .judgmentTheorem | .syntaxDef =>
       return none
 
 /-- Field-dependency diagnostics for generated LF-model fields. -/
@@ -3901,16 +4136,20 @@ def lfModelSummaryString (checked : CheckedSignature) (admittedNames : NameSet :
       o.renderable
   let typedOpaque := countFields .typedOpaque
   let tempAdmissions := countFields .admittedOpaque
+  let admittedSyntaxDefs := checked.lfSyntaxDefs.countP (fun d => d.checkedValue?.isNone)
   let sidePredicates := countFields .sideConditionPredicate
   let renderableRules := countFields .rule
   let tempText := if tempAdmissions == 0 then "" else
     s!", {tempAdmissions} temporary admitted-definition field(s)"
+  let syntaxDefText := if admittedSyntaxDefs == 0 then "" else
+    s!", {admittedSyntaxDefs} admitted syntax_def(s)"
   let abbrevCount := checked.lfSyntaxAbbrevs.size + checked.lfJudgmentAbbrevs.size
   let abbrevText := if abbrevCount == 0 then "" else
     s!", {abbrevCount} LF abbreviation(s) expanded"
   s!"LF model summary for {nameString checked.name}: {checked.lfSyntaxSorts.size} syntax sort \
-    field(s){abbrevText}, {checked.lfJudgments.size} judgment field(s), {typedOpaque} typed \
-      opaque constant field(s){tempText}, {sidePredicates} side-condition predicate field(s), \
+    field(s){abbrevText}{syntaxDefText}, {checked.lfJudgments.size} judgment field(s), \
+      {typedOpaque} typed opaque constant field(s){tempText}, {sidePredicates} side-condition \
+        predicate field(s), \
         {certParams} theorem side-condition certificate parameter(s), \
           {renderableRules}/{checked.lfRules.size} rule field(s); omitted {blockingUntyped.size} \
             untyped opaque placeholder(s)"
@@ -3931,6 +4170,8 @@ def lfModelOmissionsString (checked : CheckedSignature) (admittedNames : NameSet
     | .admittedOpaque, .derivedDeclaration, some d =>
       some s!"admitted opaque generated as Lean sorry declaration, not model field: \
         {nameString o.name} ({d})"
+    | .syntaxDef, .metadataExpansion, some d =>
+      some s!"admitted syntax_def is not a model field: {nameString o.name} ({d})"
     | _, _, _ => none
   let omittedLines := omitted.map fun o =>
     let generated := match o.generatedName? with
@@ -4010,10 +4251,15 @@ def lfModelStructureRenderedFieldsFromObligations (checked : CheckedSignature)
   let mut fields := #[]
   for o in obs do
     if let some field ←
-      lfModelObligationFieldSyntax? fieldNames defValues paramVis blockingUntyped
+      lfModelObligationFieldSyntax? checked fieldNames defValues paramVis blockingUntyped
         sidePredicateNames o then
       let used :=
         lfModelObligationRenderedLevelParams defValues blockingUntyped sidePredicateNames o
+      let used := (lfModelObligationAdmittedSyntaxDefs checked defValues o).foldl
+        (init := used) fun used d =>
+          let used := insertNameSet used (levelExprParamSet d.resultLevel)
+          d.params.foldl (init := used) fun used b =>
+            insertNameSet used (lfExprRenderedLevelParams defValues {} {} b.checkedTypeExpr)
       fields := fields.push {
         obligation := o
         fieldSyntax := field
@@ -4205,10 +4451,15 @@ def lfModelStructureRenderedFieldsForObligations (checked : CheckedSignature) (a
   let mut fields := #[]
   for o in runObs do
     if let some field ←
-      lfModelObligationFieldSyntax? fieldNames defValues paramVis blockingUntyped
+      lfModelObligationFieldSyntax? checked fieldNames defValues paramVis blockingUntyped
         sidePredicateNames o then
       let used :=
         lfModelObligationRenderedLevelParams defValues blockingUntyped sidePredicateNames o
+      let used := (lfModelObligationAdmittedSyntaxDefs checked defValues o).foldl
+        (init := used) fun used d =>
+          let used := insertNameSet used (levelExprParamSet d.resultLevel)
+          d.params.foldl (init := used) fun used b =>
+            insertNameSet used (lfExprRenderedLevelParams defValues {} {} b.checkedTypeExpr)
       fields := fields.push {
         obligation := o
         fieldSyntax := field
@@ -4873,6 +5124,33 @@ def theoryWorkflowSummaryString (sig : HLSignature) (checked : CheckedSignature)
 /-- User-facing name for the model backend used by short UX commands. -/
 def uxModelBackendLabel : String := "generic LF-model backend"
 
+/-- Warning text for admitted syntax definitions used by generated model fields. -/
+def lfModelAdmittedSyntaxDefWarningStringFromObligations (checked : CheckedSignature)
+    (obs : Array LFModelObligation) : Option String := Id.run do
+  let defValues := lfDefinitionValueMap checked
+  let fieldDeps := obs.filterMap fun o =>
+    if o.generatedRole == .field && o.renderable then
+      let deps := lfModelObligationAdmittedSyntaxDefs checked defValues o
+      if deps.isEmpty then none else some (o, deps)
+    else
+      none
+  if fieldDeps.isEmpty then
+    return none
+  let usedNames : NameSet := fieldDeps.foldl (init := {}) fun acc (_, deps) =>
+    deps.foldl (init := acc) fun acc d => acc.insert d.name.eraseMacroScopes
+  let mut lines := #[
+    s!"{usedNames.size} admitted syntax_def(s) used by generated model field type(s).",
+    "They are not user model fields; generated field types contain local sorry-backed derived \
+      type families.",
+    "Preferred fix: replace the admitted syntax_def bodies, then regenerate the model interface.",
+    "admitted syntax_def dependencies:" ]
+  for (o, deps) in fieldDeps.take 12 do
+    let depText := String.intercalate ", " (deps.toList.map fun d => nameString d.name)
+    lines := lines.push s!"  {nameString ((o.generatedName?).getD o.name)} uses {depText}"
+  if fieldDeps.size > 12 then
+    lines := lines.push s!"  ... {fieldDeps.size - 12} more field(s)"
+  return some (String.intercalate "\n" lines.toList)
+
 /-- Concise user-facing model-obligation summary for the LF model backend. -/
 def modelObligationsUXString (checked : CheckedSignature) (admittedNames : NameSet := {})
     (mode : LFModelInterfaceMode := .full) : CommandElabM String := do
@@ -4907,9 +5185,12 @@ def modelObligationsUXString (checked : CheckedSignature) (admittedNames : NameS
   let modeText := if mode == .full then uxModelBackendLabel else
     s!"{uxModelBackendLabel}, {mode.label} mode"
   let warningLines :=
-    match lfModelTemporaryAdmissionWarningStringFromObligations checked obs with
+    (match lfModelTemporaryAdmissionWarningStringFromObligations checked obs with
     | some warning => [s!"WARNING: {warning}"]
-    | none => []
+    | none => []) ++
+    (match lfModelAdmittedSyntaxDefWarningStringFromObligations checked obs with
+    | some warning => [s!"WARNING: {warning}"]
+    | none => [])
   pure <| String.intercalate "\n" <|
     ([s!"model obligations for {nameString checked.name} ({modeText})", summary,
       s!"field breakdown: {lfModelFieldSourceBreakdown obs}", nextAction] ++ warningLines ++

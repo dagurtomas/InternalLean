@@ -28,14 +28,30 @@ register_option internalLean.profileInternalDef : Bool := {
 
 /-- Count checked LF metadata declarations represented in a checked signature. -/
 def checkedLFMetadataDeclCount (checked : CheckedSignature) : Nat :=
-  checked.lfSyntaxSorts.size + checked.lfSyntaxAbbrevs.size + checked.lfJudgmentAbbrevs.size +
-    checked.lfSyntaxSortRoles.size + checked.lfContextZones.size +
+  checked.lfSyntaxSorts.size + checked.lfSyntaxAbbrevs.size + checked.lfSyntaxDefs.size +
+    checked.lfJudgmentAbbrevs.size + checked.lfSyntaxSortRoles.size +
+    checked.lfContextZones.size +
     checked.lfBinderClasses.size + checked.lfJudgments.size + checked.lfJudgmentRoles.size +
     checked.lfOpaqueConsts.size + checked.lfSideConditionSolvers.size +
     checked.lfConversionPlugins.size + checked.lfRules.size + checked.lfRuleRoles.size +
     checked.lfRewriteRelations.size + checked.lfRewriteSymmetries.size +
     checked.lfRewriteCongruences.size + checked.lfTransportRules.size +
     checked.lfTransportPositions.size
+
+/-- Admission records induced by `syntax_def ... := sorry` declarations. -/
+def syntaxDefAdmissions (theoryName : Name) (defs : Array CheckedLFSyntaxDef) :
+    Array InternalAdmission := Id.run do
+  let mut out : Array InternalAdmission := #[]
+  for d in defs do
+    if d.checkedValue?.isNone then
+      out := out.push {
+        theoryName := theoryName.eraseMacroScopes
+        declName := d.name.eraseMacroScopes
+        anchorName := theoryName.eraseMacroScopes ++ d.name.eraseMacroScopes
+        params := d.params.map checkedLFBindingToHLBinding
+        typeExpr := objExprTypeOfLevel d.resultLevel
+        kind := .syntaxDef }
+  return out
 
 /-- Extra profile detail for metadata-heavy registrations, omitted when all counts are zero. -/
 def internalRegistrationProfileMetadataSuffix (p : InternalRegistrationProfile) : String :=
@@ -94,6 +110,7 @@ def theoryAnchorSummaryString (sig : HLSignature) (sourceDoc? : Option String :=
     levelLine,
     s!"Syntax sorts: {sig.syntaxSorts.size}",
     s!"Syntax abbreviations: {sig.syntaxAbbrevs.size}",
+    s!"Syntax definitions: {sig.syntaxDefs.size}",
     s!"Judgment abbreviations: {sig.judgmentAbbrevs.size}",
     s!"Judgments: {sig.judgments.size}",
     s!"Rules: {sig.rules.size}",
@@ -353,6 +370,10 @@ def registerTheory (sig : HLSignature) : CoreM Unit := do
   let flatSource ← flattenSignature sig
   let checkedHL := checkedSignatureIncrementalHLSignature flatSource checked
   let compiledCache ← mkCompiledLFCheckCacheFromHL checkedHL checked
+  let ownSyntaxDefNames := sig.syntaxDefs.foldl (init := ({} : NameSet)) fun acc d =>
+    acc.insert d.name.eraseMacroScopes
+  let syntaxDefAdmissionRecords := syntaxDefAdmissions sig.name <|
+    checked.lfSyntaxDefs.filter (fun d => ownSyntaxDefNames.contains d.name.eraseMacroScopes)
   recordInternalRegistrationProfile {
     theoryName := sig.name.eraseMacroScopes
     declName := `declare_type_theory
@@ -366,7 +387,9 @@ def registerTheory (sig : HLSignature) : CoreM Unit := do
     let env := theoryExt.addEntry env (.sig sig)
     let env := checkedTheoryExt.addEntry env (.sig checked)
     let env := checkedHLSignatureExt.addEntry env (.sig sig.name checkedHL)
-    setCompiledLFCheckCacheInEnv env sig.name compiledCache
+    let env := setCompiledLFCheckCacheInEnv env sig.name compiledCache
+    syntaxDefAdmissionRecords.foldl (init := env) fun env admission =>
+      internalAdmissionExt.addEntry env (.admission admission)
 
 /-- Reopen an existing type theory and append one declaration block. -/
 def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : CoreM Unit := do
@@ -383,6 +406,7 @@ def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : C
       let candidate := sig.appendBlock result.blockForRegistry
       let compiledCache :=
         cacheLookup.cache.appendDelta result.checkedHL result.checked result.delta
+      let syntaxDefAdmissionRecords := syntaxDefAdmissions theoryName result.delta.syntaxDefs
       recordInternalRegistrationProfile {
         theoryName := theoryName.eraseMacroScopes
         declName := `extend_type_theory
@@ -396,7 +420,9 @@ def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : C
         let env := theoryExt.addEntry env (.sig candidate)
         let env := checkedTheoryExt.addEntry env (.sig result.checked)
         let env := checkedHLSignatureExt.addEntry env (.sig theoryName result.checkedHL)
-        setCompiledLFCheckCacheInEnv env theoryName compiledCache
+        let env := setCompiledLFCheckCacheInEnv env theoryName compiledCache
+        syntaxDefAdmissionRecords.foldl (init := env) fun env admission =>
+          internalAdmissionExt.addEntry env (.admission admission)
   | some reason =>
       let candidate := sig.appendBlock block
       let headSig ← flattenSignature candidate
@@ -405,6 +431,11 @@ def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : C
       let flatSource ← flattenSignature candidate
       let checkedHL := checkedSignatureIncrementalHLSignature flatSource checked
       let compiledCache ← mkCompiledLFCheckCacheFromHL checkedHL checked
+      let newSyntaxDefNames := block.syntaxDefs.foldl (init := ({} : NameSet)) fun acc d =>
+        acc.insert d.name.eraseMacroScopes
+      let syntaxDefAdmissionRecords :=
+        syntaxDefAdmissions theoryName <|
+          checked.lfSyntaxDefs.filter (fun d => newSyntaxDefNames.contains d.name.eraseMacroScopes)
       recordInternalRegistrationProfile {
         theoryName := theoryName.eraseMacroScopes
         declName := `extend_type_theory
@@ -424,7 +455,9 @@ def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : C
         let env := theoryExt.addEntry env (.sig candidate)
         let env := checkedTheoryExt.addEntry env (.sig checked)
         let env := checkedHLSignatureExt.addEntry env (.sig theoryName checkedHL)
-        setCompiledLFCheckCacheInEnv env theoryName compiledCache
+        let env := setCompiledLFCheckCacheInEnv env theoryName compiledCache
+        syntaxDefAdmissionRecords.foldl (init := env) fun env admission =>
+          internalAdmissionExt.addEntry env (.admission admission)
 
 /-- Split leading named function arrows in an admitted LF opaque annotation into a shallow
 LF parameter telescope. This lets users write
@@ -490,7 +523,8 @@ def classifyInternalSorryAdmissionShapes (theoryName : Name)
   let flatSourceBase ← flattenSignature sig
   let rawBlock : HLTheoryBlock := {
     lfOpaqueConsts := requests.map admittedInternalLFOpaqueDeclOfRequest }
-  let priorKnownTypes := checkedLFDefinitionTypeMapFromDefs checked.lfObjectDefs
+  let priorKnownTypes :=
+    checkedLFDefinitionTypeMapFromDefs checked.lfSyntaxDefs checked.lfObjectDefs
   let blockForRegistry ←
     elaborateImplicitAppsInTheoryBlockExtension flatSourceBase priorKnownTypes rawBlock
   let checkedBase :=
@@ -621,7 +655,7 @@ def registerAdmittedInternalLFOpaque (theoryName anchorName localName : Name)
 /-- Previously checked LF definition result types, used as available local type information for
 validating an admitted custom-judgment statement. -/
 def checkedLFDefinitionTypeMap (checked : CheckedSignature) : LFLocalTypes :=
-  checkedLFDefinitionTypeMapFromDefs checked.lfObjectDefs
+  checkedLFDefinitionTypeMapFromDefs checked.lfSyntaxDefs checked.lfObjectDefs
 
 /-- Append one checked LF object definition to an already checked signature. -/
 def appendCheckedLFObjectDef (checked : CheckedSignature) (d : CheckedLFObjectDef) :
@@ -968,6 +1002,7 @@ def checkNoDuplicateBlockNames (block : HLTheoryBlock) : CommandElabM Unit := do
   for (kind, n) in
       (block.syntaxSorts.map (fun d => ("syntax-sort", d.name)) ++
         block.syntaxAbbrevs.map (fun d => ("syntax abbreviation", d.name)) ++
+        block.syntaxDefs.map (fun d => ("syntax definition", d.name)) ++
         block.judgmentAbbrevs.map (fun d => ("judgment abbreviation", d.name)) ++
         block.contextZones.map (fun d => ("context-zone", d.name)) ++
         block.binderClasses.map (fun d => ("binder class", d.name)) ++
@@ -987,6 +1022,7 @@ def signatureWithBlock (sig : HLSignature) (block : HLTheoryBlock) : HLSignature
   { sig with
     syntaxSorts := block.syntaxSorts
     syntaxAbbrevs := block.syntaxAbbrevs
+    syntaxDefs := block.syntaxDefs
     judgmentAbbrevs := block.judgmentAbbrevs
     syntaxSortRoles := block.syntaxSortRoles
     contextZones := block.contextZones
@@ -1086,6 +1122,19 @@ def sourceDeclSyntaxRefOfTTDecl? (decl : TSyntax `ttDecl) :
   | `(ttDecl| $doc:docComment syntax_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) =>
       let _ := doc.raw; let _ := bs.size; let _ := value.raw
       pure <| mk .syntaxAbbrev n
+  | `(ttDecl| syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := sorry) =>
+      let _ := bs.size; let _ := result.raw
+      pure <| mk .syntaxDef n
+  | `(ttDecl| $doc:docComment syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := sorry) =>
+      let _ := doc.raw; let _ := bs.size; let _ := result.raw
+      pure <| mk .syntaxDef n
+  | `(ttDecl| syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := $value:ttExpr) =>
+      let _ := bs.size; let _ := result.raw; let _ := value.raw
+      pure <| mk .syntaxDef n
+  | `(ttDecl| $doc:docComment syntax_def $n:ident $bs:ttBinder* : $result:ttExpr :=
+      $value:ttExpr) =>
+      let _ := doc.raw; let _ := bs.size; let _ := result.raw; let _ := value.raw
+      pure <| mk .syntaxDef n
   | `(ttDecl| judgment_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) =>
       let _ := bs.size; let _ := value.raw
       pure <| mk .judgmentAbbrev n
@@ -1349,6 +1398,23 @@ def addTheoryBlockNavigationInfo (theoryName : Name) (decls : TSyntaxArray `ttDe
     | `(ttDecl| $doc:docComment syntax_abbrev $_:ident $bs:ttBinder* := $value:ttExpr) => do
         let _ := doc.raw
         let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals value
+    | `(ttDecl| syntax_def $_:ident $bs:ttBinder* : $result:ttExpr := sorry) => do
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals result
+    | `(ttDecl| $doc:docComment syntax_def $_:ident $bs:ttBinder* : $result:ttExpr := sorry) => do
+        let _ := doc.raw
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals result
+    | `(ttDecl| syntax_def $_:ident $bs:ttBinder* : $result:ttExpr := $value:ttExpr) => do
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals result
+        addObjExprNavigationInfo theoryName locals value
+    | `(ttDecl| $doc:docComment syntax_def $_:ident $bs:ttBinder* : $result:ttExpr :=
+      $value:ttExpr) => do
+        let _ := doc.raw
+        let locals ← addBinderNavigationInfos theoryName {} bs
+        addObjExprNavigationInfo theoryName locals result
         addObjExprNavigationInfo theoryName locals value
     | `(ttDecl| judgment_abbrev $_:ident $bs:ttBinder* := $value:ttExpr) => do
         let locals ← addBinderNavigationInfos theoryName {} bs

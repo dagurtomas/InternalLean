@@ -2298,7 +2298,7 @@ declare_type_theory DuplicateJudgmentRole where
   judgment_role wfCtx : term_typing
 
 /--
-error: syntax_sort_role for unknown syntax sort 'MissingSort' in type theory 'BadSyntaxSortRole'
+error: syntax_sort_role for unknown syntax family 'MissingSort' in type theory 'BadSyntaxSortRole'
 -/
 #guard_msgs (whitespace := lax) in
 declare_type_theory BadSyntaxSortRole where

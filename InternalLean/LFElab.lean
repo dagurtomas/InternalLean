@@ -188,6 +188,7 @@ def expandSurfaceFunctionsInSignature (sig : HLSignature) : CoreM HLSignature :=
 /-- Return whether a name is already used directly in a high-level signature. -/
 def HLSignature.containsName (sig : HLSignature) (n : Name) : Bool :=
   sig.syntaxSorts.any (fun d => d.name == n) || sig.syntaxAbbrevs.any (fun d => d.name == n) ||
+    sig.syntaxDefs.any (fun d => d.name == n) ||
     sig.judgmentAbbrevs.any (fun d => d.name == n) ||
     sig.contextZones.any (fun d => d.name == n) || sig.binderClasses.any (fun d => d.name == n) ||
     sig.judgments.any (fun d => d.name == n) || sig.rules.any (fun d => d.name == n) ||
@@ -207,6 +208,7 @@ partial def flattenSignature (sig : HLSignature) (seen : NameSet := {}) : CoreM 
   let seen := seen.insert sig.name
   let mut syntaxSorts := #[]
   let mut syntaxAbbrevs := #[]
+  let mut syntaxDefs := #[]
   let mut syntaxSortRoles := #[]
   let mut judgmentAbbrevs := #[]
   let mut contextZones := #[]
@@ -237,6 +239,7 @@ partial def flattenSignature (sig : HLSignature) (seen : NameSet := {}) : CoreM 
     let parentFlat ← flattenSignature parent seen
     syntaxSorts := syntaxSorts ++ parentFlat.syntaxSorts
     syntaxAbbrevs := syntaxAbbrevs ++ parentFlat.syntaxAbbrevs
+    syntaxDefs := syntaxDefs ++ parentFlat.syntaxDefs
     syntaxSortRoles := syntaxSortRoles ++ parentFlat.syntaxSortRoles
     judgmentAbbrevs := judgmentAbbrevs ++ parentFlat.judgmentAbbrevs
     contextZones := contextZones ++ parentFlat.contextZones
@@ -267,6 +270,7 @@ partial def flattenSignature (sig : HLSignature) (seen : NameSet := {}) : CoreM 
     levelParams := levelParams ++ sig.levelParams
     syntaxSorts := syntaxSorts ++ sig.syntaxSorts
     syntaxAbbrevs := syntaxAbbrevs ++ sig.syntaxAbbrevs
+    syntaxDefs := syntaxDefs ++ sig.syntaxDefs
     judgmentAbbrevs := judgmentAbbrevs ++ sig.judgmentAbbrevs
     syntaxSortRoles := syntaxSortRoles ++ sig.syntaxSortRoles
     contextZones := contextZones ++ sig.contextZones
@@ -308,6 +312,7 @@ def HLSignature.nameSet (sig : HLSignature) : NameSet := Id.run do
   let mut out : NameSet := {}
   for d in sig.syntaxSorts do out := out.insert d.name.eraseMacroScopes
   for d in sig.syntaxAbbrevs do out := out.insert d.name.eraseMacroScopes
+  for d in sig.syntaxDefs do out := out.insert d.name.eraseMacroScopes
   for d in sig.judgmentAbbrevs do out := out.insert d.name.eraseMacroScopes
   for d in sig.contextZones do out := out.insert d.name.eraseMacroScopes
   for d in sig.binderClasses do out := out.insert d.name.eraseMacroScopes
@@ -354,6 +359,7 @@ def checkNoDuplicateNamesInSignature (sig : HLSignature) : CoreM Unit := do
   for (kind, n) in
       (sig.syntaxSorts.map (fun d => ("syntax-sort", d.name)) ++
         sig.syntaxAbbrevs.map (fun d => ("syntax abbreviation", d.name)) ++
+        sig.syntaxDefs.map (fun d => ("syntax definition", d.name)) ++
         sig.judgmentAbbrevs.map (fun d => ("judgment abbreviation", d.name)) ++
         sig.contextZones.map (fun d => ("context-zone", d.name)) ++
         sig.binderClasses.map (fun d => ("binder class", d.name)) ++
@@ -459,6 +465,11 @@ def checkLFLocalBinderHygieneMetadata (sig : HLSignature) : CoreM Unit := do
     for b in a.params do
       checkNoLFLocalBinderShadowingInBinding sig "syntax_abbrev" a.name b
     checkNoLFLocalBinderShadowingInExpr sig "syntax_abbrev" a.name "value" a.value
+  for d in sig.syntaxDefs do
+    for b in d.params do
+      checkNoLFLocalBinderShadowingInBinding sig "syntax_def" d.name b
+    if let some value := d.value? then
+      checkNoLFLocalBinderShadowingInExpr sig "syntax_def" d.name "value" value
   for a in sig.judgmentAbbrevs do
     for b in a.params do
       checkNoLFLocalBinderShadowingInBinding sig "judgment_abbrev" a.name b
@@ -506,6 +517,12 @@ def checkLFUniverseLevelMetadata (sig : HLSignature) : CoreM Unit := do
     for b in a.params do
       checkDeclaredLevelParamsInLFBinding sig "syntax_abbrev" a.name b
     checkDeclaredLevelParamsInLFExpr sig "syntax_abbrev" a.name "value" a.value
+  for d in sig.syntaxDefs do
+    for b in d.params do
+      checkDeclaredLevelParamsInLFBinding sig "syntax_def" d.name b
+    checkDeclaredLevelParamsInLevelExpr sig "syntax_def" d.name "result universe" d.resultLevel
+    if let some value := d.value? then
+      checkDeclaredLevelParamsInLFExpr sig "syntax_def" d.name "value" value
   for a in sig.judgmentAbbrevs do
     for b in a.params do
       checkDeclaredLevelParamsInLFBinding sig "judgment_abbrev" a.name b
@@ -596,6 +613,15 @@ def checkSyntaxSortApplicationsInBindings (sig : HLSignature) (syntaxSortArities
     checkSyntaxSortApplicationsInExpr sig syntaxSortArities ownerKind ownerName
       s!"parameter '{b.name.eraseMacroScopes}' type" b.typeExpr
 
+/-- Arity map for type-valued syntax families accepted in binder/type positions. -/
+def lfSyntaxFamilyArities (sig : HLSignature) : NameMap Nat := Id.run do
+  let mut out : NameMap Nat := {}
+  for s in sig.syntaxSorts do
+    out := out.insert s.name.eraseMacroScopes s.params.size
+  for d in sig.syntaxDefs do
+    out := out.insert d.name.eraseMacroScopes d.params.size
+  return out
+
 /-- Collect globally known names for lightweight LF metadata expression validation. -/
 def lfKnownGlobalNames (sig : HLSignature) : NameSet := Id.run do
   let mut known : NameSet := {}
@@ -603,6 +629,8 @@ def lfKnownGlobalNames (sig : HLSignature) : NameSet := Id.run do
     known := known.insert s.name.eraseMacroScopes
   for a in sig.syntaxAbbrevs do
     known := known.insert a.name.eraseMacroScopes
+  for d in sig.syntaxDefs do
+    known := known.insert d.name.eraseMacroScopes
   for a in sig.judgmentAbbrevs do
     known := known.insert a.name.eraseMacroScopes
   for j in sig.judgments do
@@ -673,11 +701,21 @@ def mkInternalDefFunctionType (params : Array HLBinding) (result : ObjExpr) : Ob
 def mkInternalDefLambda (params : Array HLBinding) (body : ObjExpr) : ObjExpr :=
   if params.isEmpty then body else .lam (params.map (·.name)) body
 
+/-- Explicit LF type of a `syntax_def` family. -/
+def syntaxDefTypeExpr (d : SyntaxDefDecl) : ObjExpr :=
+  mkInternalDefFunctionType d.params (objExprTypeOfLevel d.resultLevel)
+
+/-- Lambda value of a checked `syntax_def`, when it has a body. -/
+def syntaxDefValueExpr? (d : SyntaxDefDecl) : Option ObjExpr :=
+  d.value?.map (mkInternalDefLambda d.params)
+
 /-- Declared global LF heads together with their syntactic head class and optional arity. -/
 def lfGlobalHeadInfo (sig : HLSignature) : NameMap (CheckedLFHeadKind × Option Nat) := Id.run do
   let mut heads : NameMap (CheckedLFHeadKind × Option Nat) := {}
   for s in sig.syntaxSorts do
     heads := heads.insert s.name.eraseMacroScopes (.syntaxSort, some s.params.size)
+  for d in sig.syntaxDefs do
+    heads := heads.insert d.name.eraseMacroScopes (.syntaxDef, some d.params.size)
   for j in sig.judgments do
     heads := heads.insert j.name.eraseMacroScopes (.judgment, some j.params.size)
   for o in sig.lfOpaqueConsts do
@@ -718,6 +756,7 @@ def checkedLFHead? (globalHeads : NameMap (CheckedLFHeadKind × Option Nat))
 def CheckedLFHeadKind.label : CheckedLFHeadKind → String
   | .local => "local"
   | .syntaxSort => "syntax_sort"
+  | .syntaxDef => "syntax_def"
   | .lfDefinition => "lf_definition"
   | .lfTheorem => "lf_theorem"
   | .lfRule => "lf_rule"
@@ -1301,6 +1340,9 @@ def unfoldLFDefinitionsInExprWithLocals (defs : LFDefinitionValueMap) (locals : 
 /-- LF-definition values declared in a high-level signature, keyed by erased names. -/
 def lfDefinitionValuesOfSignature (sig : HLSignature) : LFDefinitionValueMap := Id.run do
   let mut out : LFDefinitionValueMap := {}
+  for d in sig.syntaxDefs do
+    if let some value := syntaxDefValueExpr? d then
+      out := out.insert d.name.eraseMacroScopes (eraseObjExprScopes value)
   for d in sig.lfObjectDefs do
     out := out.insert d.name.eraseMacroScopes (eraseObjExprScopes d.value)
   return out
@@ -1372,6 +1414,11 @@ def findSyntaxSortDecl? (sig : HLSignature) (name : Name) : Option SyntaxSortDec
 def findSyntaxAbbrevDecl? (sig : HLSignature) (name : Name) : Option SyntaxAbbrevDecl :=
   let name := name.eraseMacroScopes
   sig.syntaxAbbrevs.find? (fun a => a.name.eraseMacroScopes == name)
+
+/-- Look up a declared syntax definition by name. -/
+def findSyntaxDefDecl? (sig : HLSignature) (name : Name) : Option SyntaxDefDecl :=
+  let name := name.eraseMacroScopes
+  sig.syntaxDefs.find? (fun d => d.name.eraseMacroScopes == name)
 
 /-- Look up a declared judgment abbreviation by name. -/
 def findJudgmentAbbrevDecl? (sig : HLSignature) (name : Name) : Option JudgmentAbbrevDecl :=
@@ -1518,6 +1565,14 @@ def expandSyntaxAbbrevsInSignature (sig : HLSignature) : CoreM HLSignature := do
         (lfAbbrevExpansionFuel sig) a.value
     pure { a with name := a.name.eraseMacroScopes, params, value }
   let sigForRest := { sig with syntaxAbbrevs, judgmentAbbrevs }
+  let syntaxDefs ← sigForRest.syntaxDefs.mapM fun d => do
+    let params ← expandSyntaxAbbrevsInBindings sigForRest "syntax_def" d.name d.params
+    let locals := params.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
+    let value? ←
+      d.value?.mapM (expandSyntaxAbbrevsInExpr sigForRest "syntax_def" d.name "value" locals
+        (lfAbbrevExpansionFuel sigForRest))
+    pure { d with name := d.name.eraseMacroScopes, params, value? }
+  let sigForRest := { sigForRest with syntaxDefs }
   let syntaxSorts ← sigForRest.syntaxSorts.mapM fun s => do
     let params ← expandSyntaxAbbrevsInBindings sigForRest "syntax_sort" s.name s.params
     pure { s with name := s.name.eraseMacroScopes, params }
@@ -1582,6 +1637,7 @@ def expandSyntaxAbbrevsInSignature (sig : HLSignature) : CoreM HLSignature := do
     pure { t with name := t.name.eraseMacroScopes, binders, judgmentExpr, proof }
   pure { sigForRest with
     syntaxSorts := syntaxSorts
+    syntaxDefs := syntaxDefs
     judgmentAbbrevs := judgmentAbbrevs
     judgments := judgments
     lfOpaqueConsts := lfOpaqueConsts
@@ -1613,9 +1669,9 @@ structure LFCheckLookupContext where
   globalTypeInfos : NameMap LFGlobalTypeInfo := {}
   /-- Rule and theorem proof constants. -/
   proofTypeInfos : NameMap LFGlobalTypeInfo := {}
-  /-- Source LF object-definition result types. -/
+  /-- Source LF object-definition and syntax-definition result types. -/
   lfObjectDefTypes : LFLocalTypes := {}
-  /-- Source LF object-definition values. -/
+  /-- Source LF object-definition and checked syntax-definition values. -/
   lfDefinitionValues : LFDefinitionValueMap := {}
   /-- Syntax-sort declarations by erased name. -/
   syntaxSortDecls : NameMap SyntaxSortDecl := {}
@@ -1642,6 +1698,12 @@ def mkLFCheckLookupContext (sig : HLSignature) : LFCheckLookupContext := Id.run 
     let name := j.name.eraseMacroScopes
     unless judgmentDecls.contains name do
       judgmentDecls := judgmentDecls.insert name j
+  for d in sig.syntaxDefs do
+    let name := d.name.eraseMacroScopes
+    unless lfObjectDefTypes.contains name do
+      lfObjectDefTypes := lfObjectDefTypes.insert name (eraseObjExprScopes (syntaxDefTypeExpr d))
+      if let some value := syntaxDefValueExpr? d then
+        lfDefinitionValues := lfDefinitionValues.insert name (eraseObjExprScopes value)
   for o in sig.lfOpaqueConsts do
     let name := o.name.eraseMacroScopes
     match o.typeExpr? with
@@ -2027,6 +2089,9 @@ def findImplicitCallableInfo? (sig : HLSignature) (name : Name) : Option Implici
   for a in sig.syntaxAbbrevs do
     if a.name.eraseMacroScopes == name then
       out := some { params := a.params, result? := some a.value }
+  for d in sig.syntaxDefs do
+    if d.name.eraseMacroScopes == name then
+      out := some { params := d.params, result? := some (objExprTypeOfLevel d.resultLevel) }
   for a in sig.judgmentAbbrevs do
     if a.name.eraseMacroScopes == name then
       out := some { params := a.params, result? := some a.value }
@@ -2069,6 +2134,9 @@ def mkImplicitCallableLookupContext (sig : HLSignature) : ImplicitCallableLookup
   for a in sig.syntaxAbbrevs do
     callableInfos := callableInfos.insert a.name.eraseMacroScopes {
       params := a.params, result? := some a.value }
+  for d in sig.syntaxDefs do
+    callableInfos := callableInfos.insert d.name.eraseMacroScopes {
+      params := d.params, result? := some (objExprTypeOfLevel d.resultLevel) }
   for a in sig.judgmentAbbrevs do
     callableInfos := callableInfos.insert a.name.eraseMacroScopes {
       params := a.params, result? := some a.value }
@@ -2438,6 +2506,23 @@ def elaborateImplicitAppsInSyntaxAbbrevDecl (sig : HLSignature) (d : SyntaxAbbre
     CoreM SyntaxAbbrevDecl :=
   elaborateImplicitAppsInSyntaxAbbrevDeclWithLookup (mkImplicitCallableLookupContext sig) sig d
 
+/-- Elaborate implicit applications in a syntax definition declaration. -/
+def elaborateImplicitAppsInSyntaxDefDeclWithLookup (lookup : ImplicitCallableLookupContext)
+    (sig : HLSignature) (d : SyntaxDefDecl) : CoreM SyntaxDefDecl := do
+  let (params, knownTypes, locals) ←
+    elaborateImplicitAppsInBindingsWithLookup lookup sig {} {} "syntax_def" d.name d.params
+  let value? ← match d.value? with
+    | some value =>
+        some <$> elaborateImplicitAppsInExprWithLookup lookup sig knownTypes locals "syntax_def"
+          d.name "value" (some (objExprTypeOfLevel d.resultLevel)) value
+    | none => pure none
+  pure { d with params, value? }
+
+/-- Elaborate implicit applications in a syntax definition declaration. -/
+def elaborateImplicitAppsInSyntaxDefDecl (sig : HLSignature) (d : SyntaxDefDecl) :
+    CoreM SyntaxDefDecl :=
+  elaborateImplicitAppsInSyntaxDefDeclWithLookup (mkImplicitCallableLookupContext sig) sig d
+
 /-- Elaborate implicit applications in a judgment abbreviation declaration. -/
 def elaborateImplicitAppsInJudgmentAbbrevDeclWithLookup (lookup : ImplicitCallableLookupContext)
     (sig : HLSignature) (d : JudgmentAbbrevDecl) : CoreM JudgmentAbbrevDecl := do
@@ -2557,6 +2642,8 @@ def elaborateImplicitAppsInSignatureWithEnv (headSig sig : HLSignature) : CoreM 
     sig.syntaxSorts.mapM (elaborateImplicitAppsInSyntaxSortDeclWithLookup lookup0 sig0)
   let syntaxAbbrevs ←
     sig.syntaxAbbrevs.mapM (elaborateImplicitAppsInSyntaxAbbrevDeclWithLookup lookup0 sig0)
+  let syntaxDefs ←
+    sig.syntaxDefs.mapM (elaborateImplicitAppsInSyntaxDefDeclWithLookup lookup0 sig0)
   let judgmentAbbrevs ←
     sig.judgmentAbbrevs.mapM
       (elaborateImplicitAppsInJudgmentAbbrevDeclWithLookup lookup0 sig0)
@@ -2569,6 +2656,7 @@ def elaborateImplicitAppsInSignatureWithEnv (headSig sig : HLSignature) : CoreM 
     sig with
     syntaxSorts := syntaxSorts
     syntaxAbbrevs := syntaxAbbrevs
+    syntaxDefs := syntaxDefs
     judgmentAbbrevs := judgmentAbbrevs
     judgments := judgments
     lfOpaqueConsts := lfOpaqueConsts
@@ -3052,6 +3140,30 @@ def inferredLFTypeIsUniverseWithLookup (lookup : LFCheckLookupContext)
 def inferredLFTypeIsUniverse (sig : HLSignature) (actualType : ObjExpr) : Bool :=
   inferredLFTypeIsUniverseWithLookup (mkLFCheckLookupContext sig) actualType
 
+/-- Extract the universe level from an inferred LF universe type. -/
+def inferredLFUniverseLevelWithLookup? (lookup : LFCheckLookupContext)
+    (actualType : ObjExpr) : Option LevelExpr :=
+  match normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actualType with
+  | .sort => some .zero
+  | .univ u => some (LevelExpr.normalize u)
+  | _ => none
+
+/-- Infer the universe level of a checked LF type expression when the shallow metadata is enough. -/
+partial def inferLFTypeExprUniverseLevelWithLookup? (lookup : LFCheckLookupContext)
+    (knownTypes : LFLocalTypes) : ObjExpr → Option LevelExpr
+  | .sort => some (LevelExpr.succ' .zero)
+  | .univ u => some (LevelExpr.succ' u)
+  | .arrow x A B | .funArrow x A B | .sigma x A B => do
+      let uA ← inferLFTypeExprUniverseLevelWithLookup? lookup knownTypes A
+      let knownTypes := match x with
+        | some x => knownTypes.insert x.eraseMacroScopes (eraseObjExprScopes A)
+        | none => knownTypes
+      let uB ← inferLFTypeExprUniverseLevelWithLookup? lookup knownTypes B
+      some (LevelExpr.max' uA uB)
+  | e => do
+      let actualType ← inferKnownLFExprTypeWithLookup? lookup knownTypes e
+      inferredLFUniverseLevelWithLookup? lookup actualType
+
 /-- Check that an expression is valid in a metadata telescope binder type position, using a
 reusable lookup context.
 
@@ -3261,6 +3373,25 @@ def checkedLFSyntaxAbbrevDeclArtifact (sig : HLSignature)
     checkedValue := checkedValue
     head? := head? }
 
+/-- Build the checked artifact for one syntax-definition declaration. -/
+def checkedLFSyntaxDefDeclArtifact (sig : HLSignature)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (d : SyntaxDefDecl) :
+    CoreM CheckedLFSyntaxDef := do
+  let (params, locals) ← checkedLFBindings sig globalHeads "syntax_def" d.name d.params
+  let (checkedValue?, checkedHead?) ← match d.value? with
+    | none => pure (none, none)
+    | some value => do
+        let checkedValue ← resolveLFExpr sig globalHeads locals "syntax_def" d.name "value" value
+        let head? := checkedLFHead? globalHeads locals value
+        pure (some checkedValue, head?)
+  pure {
+    name := d.name.eraseMacroScopes
+    params := params
+    resultLevel := LevelExpr.normalize d.resultLevel
+    value? := d.value?.map eraseObjExprScopes
+    checkedValue? := checkedValue?
+    head? := checkedHead? }
+
 /-- Build the checked artifact for one judgment-abbreviation declaration. -/
 def checkedLFJudgmentAbbrevDeclArtifact (sig : HLSignature)
     (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (a : JudgmentAbbrevDecl) :
@@ -3327,16 +3458,17 @@ def checkedLFConversionPluginDeclArtifact (p : ConversionPluginDecl) : CheckedLF
     trust := p.trust
     supportedSteps := p.supportedSteps }
 
-/-- Build checked LF declaration artifacts for syntax sorts, abbreviations, context zones,
-binder classes, judgments, and opaque placeholders. -/
+/-- Build checked LF declaration artifacts for syntax sorts, abbreviations, syntax definitions,
+context zones, binder classes, judgments, and opaque placeholders. -/
 def checkedLFDeclarations (sig : HLSignature) :
     CoreM (Array CheckedLFSyntaxSort × Array CheckedLFSyntaxAbbrev ×
-      Array CheckedLFJudgmentAbbrev × Array CheckedLFContextZone × Array CheckedLFBinderClass ×
-      Array CheckedLFJudgment × Array CheckedLFOpaqueConst × Array CheckedLFSideConditionSolver ×
-      Array CheckedLFConversionPlugin) := do
+      Array CheckedLFSyntaxDef × Array CheckedLFJudgmentAbbrev × Array CheckedLFContextZone ×
+      Array CheckedLFBinderClass × Array CheckedLFJudgment × Array CheckedLFOpaqueConst ×
+      Array CheckedLFSideConditionSolver × Array CheckedLFConversionPlugin) := do
   let globalHeads := lfGlobalHeadInfo sig
   let syntaxSorts ← sig.syntaxSorts.mapM (checkedLFSyntaxSortDeclArtifact sig globalHeads)
   let syntaxAbbrevs ← sig.syntaxAbbrevs.mapM (checkedLFSyntaxAbbrevDeclArtifact sig globalHeads)
+  let syntaxDefs ← sig.syntaxDefs.mapM (checkedLFSyntaxDefDeclArtifact sig globalHeads)
   let judgmentAbbrevs ←
     sig.judgmentAbbrevs.mapM (checkedLFJudgmentAbbrevDeclArtifact sig globalHeads)
   let contextZones := sig.contextZones.map checkedLFContextZoneDeclArtifact
@@ -3345,8 +3477,8 @@ def checkedLFDeclarations (sig : HLSignature) :
   let opaques ← sig.lfOpaqueConsts.mapM (checkedLFOpaqueConstDeclArtifact sig globalHeads)
   let solvers := sig.sideConditionSolvers.map checkedLFSideConditionSolverDeclArtifact
   let plugins := sig.conversionPlugins.map checkedLFConversionPluginDeclArtifact
-  pure (syntaxSorts, syntaxAbbrevs, judgmentAbbrevs, contextZones, binderClasses, judgments,
-    opaques, solvers, plugins)
+  pure (syntaxSorts, syntaxAbbrevs, syntaxDefs, judgmentAbbrevs, contextZones, binderClasses,
+    judgments, opaques, solvers, plugins)
 
 /-- Check that identifiers in an LF metadata expression are known globals or local binders.
 
@@ -3719,7 +3851,7 @@ partial def checkedLFExprToRaw : CheckedLFExpr → Raw
   | .ident h =>
       match h.kind with
       | .local => .leanParam h.name
-      | .syntaxSort => .tyConst h.name
+      | .syntaxSort | .syntaxDef => .tyConst h.name
       | .lfDefinition | .lfTheorem | .lfRule => .tmConst h.name
       | .judgment => .tmConst h.name
       | .primitive | .definition | .theorem | .opaque => .tmConst h.name
@@ -3731,7 +3863,7 @@ partial def checkedLFExprToRaw : CheckedLFExpr → Raw
       match head with
       | .ident h =>
           match h.kind with
-          | .syntaxSort => .tyApp h.name rawArgs
+          | .syntaxSort | .syntaxDef => .tyApp h.name rawArgs
           | .local => .tmApp h.name rawArgs
           | .lfDefinition | .lfTheorem | .lfRule => .tmApp h.name rawArgs
           | .judgment => .tmApp h.name rawArgs
@@ -4490,8 +4622,7 @@ def checkLFObjectOrStructuralTypeWithLookup (lookup : LFCheckLookupContext) (sig
     (typeExpr : ObjExpr) : CoreM (Option CheckedLFHead) := do
   let lfGlobals := lfKnownGlobalNames sig
   let opaqueArities := lfOpaqueArities sig
-  let syntaxSortArities : NameMap Nat := sig.syntaxSorts.foldl (init := {}) fun acc s =>
-    acc.insert s.name.eraseMacroScopes s.params.size
+  let syntaxSortArities : NameMap Nat := lfSyntaxFamilyArities sig
   checkKnownNamesInLFExpr sig lfGlobals locals opaqueArities ownerKind ownerName where_ typeExpr
   checkNoLFLocalBinderShadowingInExpr sig ownerKind ownerName where_ typeExpr
     (baseLocals := locals)
@@ -4506,10 +4637,11 @@ def checkLFObjectOrStructuralTypeWithLookup (lookup : LFCheckLookupContext) (sig
   let typeHead? := checkedLFHead? globalHeads locals typeExpr
   match typeHead? with
   | some typeHead =>
-      if typeHead.kind != .syntaxSort && typeHead.kind != .local then
+      if typeHead.kind != .syntaxSort && typeHead.kind != .syntaxDef &&
+          typeHead.kind != .local then
         throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} headed \
-          by {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-, local-family-, \
-            or structural package type"
+          by {typeHead.kind.label} '{typeHead.name}', expected a syntax-family-, \
+            local-family-, or structural package type"
   | none =>
       unless lfOpaqueResultIsStructuralType typeExpr do
         throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} not \
@@ -4540,9 +4672,9 @@ def checkLFObjectDefTypeAndResultHeadWithLookup? (lookup : LFCheckLookupContext)
   let typeHead? := checkedLFHead? globalHeads {} resultTypeExpr
   match typeHead? with
   | some typeHead =>
-      if typeHead.kind != .syntaxSort then
+      if typeHead.kind != .syntaxSort && typeHead.kind != .syntaxDef then
         throwError "lf_def '{d.name}' in type theory '{sig.name}' has result type headed by \
-          {typeHead.kind.label} '{typeHead.name}', expected a syntax_sort-headed or structural \
+          {typeHead.kind.label} '{typeHead.name}', expected a syntax-family-headed or structural \
             record/Sigma type"
   | none =>
       unless lfObjectDefResultIsStructuralRecord resultTypeExpr do
@@ -4571,8 +4703,7 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
   let lookup := mkLFCheckLookupContext sig
   let judgmentArities : NameMap Nat := sig.judgments.foldl (init := {}) fun acc j =>
     acc.insert j.name.eraseMacroScopes j.params.size
-  let syntaxSortArities : NameMap Nat := sig.syntaxSorts.foldl (init := {}) fun acc s =>
-    acc.insert s.name.eraseMacroScopes s.params.size
+  let syntaxSortArities : NameMap Nat := lfSyntaxFamilyArities sig
   let mut checkedDefs := #[]
   let mut knownLFDefTypes : LFLocalTypes := {}
   let mut knownLFDefValues : LFDefinitionValueMap := {}
@@ -4711,10 +4842,18 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
     availableLFTheoremNames := availableLFTheoremNames.insert t.name.eraseMacroScopes
   pure (checkedDefs, checkedTheorems)
 
-/-- Previously checked LF definition result types. -/
-def checkedLFDefinitionTypeMapFromDefs (defs : Array CheckedLFObjectDef) : LFLocalTypes :=
-  defs.foldl (init := {}) fun m d =>
-    m.insert d.name.eraseMacroScopes (eraseObjExprScopes d.typeExpr)
+/-- Previously checked LF definition and syntax-definition result types. -/
+def checkedLFDefinitionTypeMapFromDefs (syntaxDefs : Array CheckedLFSyntaxDef)
+    (defs : Array CheckedLFObjectDef) : LFLocalTypes := Id.run do
+  let mut out : LFLocalTypes := {}
+  for d in syntaxDefs do
+    let params := d.params.map fun b =>
+      ({ name := b.name, typeExpr := b.typeExpr, visibility := b.visibility } : HLBinding)
+    out := out.insert d.name.eraseMacroScopes
+      (eraseObjExprScopes (mkInternalDefFunctionType params (objExprTypeOfLevel d.resultLevel)))
+  for d in defs do
+    out := out.insert d.name.eraseMacroScopes (eraseObjExprScopes d.typeExpr)
+  return out
 
 /-- Declared LF definition result types from a source block. -/
 def lfDefinitionTypeMapFromDecls (defs : Array LFObjectDefDecl) : LFLocalTypes :=
@@ -4729,9 +4868,18 @@ def mergeLFLocalTypes (base extra : LFLocalTypes) : LFLocalTypes := Id.run do
   return out
 
 /-- Previously checked LF definition values. -/
-def lfDefinitionValueMapFromCheckedDefs (defs : Array CheckedLFObjectDef) : LFDefinitionValueMap :=
-  defs.foldl (init := {}) fun m d =>
-    m.insert d.name.eraseMacroScopes (eraseObjExprScopes d.value)
+def lfDefinitionValueMapFromCheckedDefs (syntaxDefs : Array CheckedLFSyntaxDef)
+    (defs : Array CheckedLFObjectDef) : LFDefinitionValueMap := Id.run do
+  let mut out : LFDefinitionValueMap := {}
+  for d in syntaxDefs do
+    if let some value := d.value? then
+      let params := d.params.map fun b =>
+        ({ name := b.name, typeExpr := b.typeExpr, visibility := b.visibility } : HLBinding)
+      out := out.insert d.name.eraseMacroScopes
+        (eraseObjExprScopes (mkInternalDefLambda params value))
+  for d in defs do
+    out := out.insert d.name.eraseMacroScopes (eraseObjExprScopes d.value)
+  return out
 
 /-- Statements available for binder-free checked LF theorem references. -/
 def availableLFTheoremStatementsFromChecked (theorems : Array CheckedLFJudgmentTheorem) :
@@ -4806,8 +4954,7 @@ def mkIntraBlockLFCheckContext (flatSig : HLSignature) (checkedBase : CheckedSig
   let lfGlobals := lfKnownGlobalNames flatSig
   let opaqueArities := lfOpaqueArities flatSig
   let globalHeads := lfGlobalHeadInfo flatSig
-  let syntaxSortArities : NameMap Nat := flatSig.syntaxSorts.foldl (init := {}) fun acc s =>
-    acc.insert s.name.eraseMacroScopes s.params.size
+  let syntaxSortArities : NameMap Nat := lfSyntaxFamilyArities flatSig
   let judgmentArities : NameMap Nat := flatSig.judgments.foldl (init := {}) fun acc j =>
     acc.insert j.name.eraseMacroScopes j.params.size
   let solvers : NameSet := flatSig.sideConditionSolvers.foldl (init := {}) fun acc s =>
@@ -4825,8 +4972,10 @@ def mkIntraBlockLFCheckContext (flatSig : HLSignature) (checkedBase : CheckedSig
     checkedRuleSchemas := checkedBase.lfRuleSchemas ++ newRuleSchemas
     checkedSideConditionCertificates :=
       checkedBase.lfSideConditionCertificates ++ newCertificates
-    knownLFDefTypes := checkedLFDefinitionTypeMapFromDefs checkedBase.lfObjectDefs
-    knownLFDefValues := lfDefinitionValueMapFromCheckedDefs checkedBase.lfObjectDefs
+    knownLFDefTypes :=
+      checkedLFDefinitionTypeMapFromDefs checkedBase.lfSyntaxDefs checkedBase.lfObjectDefs
+    knownLFDefValues :=
+      lfDefinitionValueMapFromCheckedDefs checkedBase.lfSyntaxDefs checkedBase.lfObjectDefs
     availableLFTheoremStatements :=
       availableLFTheoremStatementsFromChecked checkedBase.lfJudgmentTheorems
     availableLFTheoremNames :=
@@ -5182,6 +5331,19 @@ partial def lfExprContainsIdent (needle : Name) : ObjExpr → Bool
         lfExprContainsIdent needle body
   | .jeq lhs rhs => lfExprContainsIdent needle lhs || lfExprContainsIdent needle rhs
 
+/-- Check that one `syntax_def` does not mention unavailable syntax definitions. -/
+def checkNoUnavailableSyntaxDefRefs (sig : HLSignature) (d : SyntaxDefDecl)
+    (unavailable : Array Name) : CoreM Unit := do
+  for other in unavailable do
+    for b in d.params do
+      if lfExprContainsIdent other b.typeExpr then
+        throwError "syntax_def '{d.name}' in type theory '{sig.name}' references syntax_def \
+          '{other}' before it is available in parameter '{b.name.eraseMacroScopes}' type"
+    if let some value := d.value? then
+      if lfExprContainsIdent other value then
+        throwError "syntax_def '{d.name}' in type theory '{sig.name}' references syntax_def \
+          '{other}' before it is available in value"
+
 /-- Check one syntax-sort declaration's metadata. -/
 def checkOneSyntaxSortMetadataInSignature (sig : HLSignature) (lfGlobals : NameSet)
     (opaqueArities : NameMap (Option Nat))
@@ -5219,6 +5381,32 @@ def checkOneSyntaxAbbrevMetadataInSignature (sig : HLSignature) (lfGlobals : Nam
     abbr.value
   checkLFBinderType sig globalHeads "syntax_abbrev" abbr.name "value" abbrLocalTypes
     abbrLocals false abbr.value
+
+/-- Check one syntax-definition declaration's metadata. -/
+def checkOneSyntaxDefMetadataInSignature (sig : HLSignature) (lfGlobals : NameSet)
+    (opaqueArities : NameMap (Option Nat)) (syntaxSortArities : NameMap Nat)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (d : SyntaxDefDecl) :
+    CoreM Unit := do
+  checkNoDuplicateMetadataBinders sig "syntax_def" d.name d.params
+  let localNames ←
+    checkKnownNamesInMetadataBindings sig lfGlobals opaqueArities "syntax_def" d.name d.params
+  checkSyntaxSortApplicationsInBindings sig syntaxSortArities "syntax_def" d.name d.params
+  checkLFSyntaxSortArgumentsInBindings sig "syntax_def" d.name d.params
+  checkLFBinderTypesInBindings sig globalHeads "syntax_def" d.name d.params
+  let localTypes := lfLocalTypesOfBindings d.params
+  if let some value := d.value? then
+    checkKnownNamesInLFExpr sig lfGlobals localNames opaqueArities "syntax_def" d.name "value"
+      value
+    checkSyntaxSortApplicationsInExpr sig syntaxSortArities "syntax_def" d.name "value" value
+    checkLFSyntaxSortArgumentsInExpr sig "syntax_def" d.name "value" localTypes value
+    checkLFInferableApplicationArguments sig "syntax_def" d.name "value" localTypes value
+    checkLFBinderType sig globalHeads "syntax_def" d.name "value" localTypes localNames false value
+    let lookup := mkLFCheckLookupContext sig
+    if let some actualLevel := inferLFTypeExprUniverseLevelWithLookup? lookup localTypes value then
+      unless LevelExpr.equal actualLevel d.resultLevel do
+        throwError "syntax_def '{d.name}' in type theory '{sig.name}' has value in universe \
+          '{diagnosticObjExprString (objExprTypeOfLevel actualLevel)}', expected \
+            '{diagnosticObjExprString (objExprTypeOfLevel d.resultLevel)}'"
 
 /-- Check one judgment-abbreviation declaration's metadata. -/
 def checkOneJudgmentAbbrevMetadataInSignature (sig : HLSignature) (lfGlobals : NameSet)
@@ -5445,21 +5633,29 @@ def checkRuleMetadataInSignature (sig : HLSignature) : CoreM (Array CheckedLFRul
   let globalHeads := lfGlobalHeadInfo sig
   let syntaxSortNames : NameSet := sig.syntaxSorts.foldl (init := {}) fun acc s =>
     acc.insert s.name.eraseMacroScopes
-  let syntaxSortArities : NameMap Nat := sig.syntaxSorts.foldl (init := {}) fun acc s =>
-    acc.insert s.name.eraseMacroScopes s.params.size
+  let syntaxFamilyNames : NameSet := sig.syntaxDefs.foldl (init := syntaxSortNames) fun acc d =>
+    acc.insert d.name.eraseMacroScopes
+  let syntaxSortArities : NameMap Nat := lfSyntaxFamilyArities sig
   for sort in sig.syntaxSorts do
     checkOneSyntaxSortMetadataInSignature sig lfGlobals opaqueArities globalHeads
       syntaxSortArities sort
   for abbr in sig.syntaxAbbrevs do
     checkOneSyntaxAbbrevMetadataInSignature sig lfGlobals opaqueArities syntaxSortArities
       globalHeads abbr
+  let syntaxDefNames := sig.syntaxDefs.map (fun d => d.name.eraseMacroScopes)
+  for _h : i in [:sig.syntaxDefs.size] do
+    let d := sig.syntaxDefs[i]!
+    let unavailable := syntaxDefNames.extract i syntaxDefNames.size
+    checkNoUnavailableSyntaxDefRefs sig d unavailable
+    checkOneSyntaxDefMetadataInSignature sig lfGlobals opaqueArities syntaxSortArities
+      globalHeads d
   for abbr in sig.judgmentAbbrevs do
     checkOneJudgmentAbbrevMetadataInSignature sig lfGlobals opaqueArities syntaxSortArities
       globalHeads abbr
   let mut seenSortRoles : NameMap NameSet := {}
   for role in sig.syntaxSortRoles do
-    if !syntaxSortNames.contains role.sortName then
-      throwError "syntax_sort_role for unknown syntax sort '{role.sortName}' in type theory \
+    if !syntaxFamilyNames.contains role.sortName then
+      throwError "syntax_sort_role for unknown syntax family '{role.sortName}' in type theory \
         '{sig.name}'"
     let kinds := (seenSortRoles.find? role.sortName).getD {}
     if kinds.contains role.kind then
@@ -6022,6 +6218,16 @@ def checkedLFBinderClassToKernel (b : CheckedLFBinderClass) : BinderClassSchema 
     boundSort := .custom b.boundSortName
     dependsOn := b.dependsOn.toList }
 
+/-- Explicit checked LF type of a `syntax_def` family. -/
+def checkedLFSyntaxDefTypeExpr (d : CheckedLFSyntaxDef) : CheckedLFExpr :=
+  d.params.foldr (init := checkedLFTypeOfLevel d.resultLevel) fun b acc =>
+    .arrow (some b.name) b.checkedTypeExpr acc
+
+/-- Checked lambda value of a `syntax_def`, when it has a body. -/
+def checkedLFSyntaxDefValue? (d : CheckedLFSyntaxDef) : Option CheckedLFExpr :=
+  d.checkedValue?.map fun value =>
+    if d.params.isEmpty then value else .lam (d.params.map (·.name)) value
+
 /-- Convert a typed LF opaque placeholder to a typed kernel replay constant, when possible. -/
 def checkedLFOpaqueConstToKernelConstant? (defValues : CheckedLFDefinitionValueMap)
     (c : CheckedLFOpaqueConst) : Option LFConstantSchema := do
@@ -6051,6 +6257,13 @@ partial def checkedLFTypeToKernelConstantTelescope (e : CheckedLFExpr) (i : Nat 
       (param :: params, result)
   | e => ([], checkedLFExprToRaw e)
 
+/-- Convert a checked syntax definition to a typed kernel replay constant. -/
+def checkedLFSyntaxDefToKernelConstant (defValues : CheckedLFDefinitionValueMap)
+    (d : CheckedLFSyntaxDef) : LFConstantSchema :=
+  let typeExpr := unfoldLFDefinitionsInCheckedExpr defValues {} (checkedLFSyntaxDefTypeExpr d)
+  let (params, result) := checkedLFTypeToKernelConstantTelescope typeExpr
+  LFConstantSchema.mk d.name params result
+
 /-- Convert a checked LF definition to a typed kernel replay constant. -/
 def checkedLFObjectDefToKernelConstant (defValues : CheckedLFDefinitionValueMap)
     (d : CheckedLFObjectDef) : LFConstantSchema :=
@@ -6060,10 +6273,11 @@ def checkedLFObjectDefToKernelConstant (defValues : CheckedLFDefinitionValueMap)
 
 /-- Convert checked LF constants/definitions to typed kernel replay constants. -/
 def checkedLFConstantsToKernel (defValues : CheckedLFDefinitionValueMap)
-    (opaqueConsts : Array CheckedLFOpaqueConst) (objectDefs : Array CheckedLFObjectDef) :
-    Array LFConstantSchema :=
-  (opaqueConsts.filterMap (checkedLFOpaqueConstToKernelConstant? defValues)) ++
-    (objectDefs.map (checkedLFObjectDefToKernelConstant defValues))
+    (syntaxDefs : Array CheckedLFSyntaxDef) (opaqueConsts : Array CheckedLFOpaqueConst)
+    (objectDefs : Array CheckedLFObjectDef) : Array LFConstantSchema :=
+  (syntaxDefs.map (checkedLFSyntaxDefToKernelConstant defValues)) ++
+    (opaqueConsts.filterMap (checkedLFOpaqueConstToKernelConstant? defValues)) ++
+      (objectDefs.map (checkedLFObjectDefToKernelConstant defValues))
 
 /-- Convert a checked conversion-plugin handle to the low-level kernel replay schema. -/
 def checkedLFConversionPluginToKernel (p : CheckedLFConversionPlugin) : ConversionPluginSchema :=
@@ -6072,8 +6286,15 @@ def checkedLFConversionPluginToKernel (p : CheckedLFConversionPlugin) : Conversi
     supportedSteps := p.supportedSteps.toList }
 
 /-- Checked LF-definition values keyed by definition name. -/
-def checkedLFDefinitionValues (defs : Array CheckedLFObjectDef) : CheckedLFDefinitionValueMap :=
-  defs.foldl (init := {}) fun values d => values.insert d.name.eraseMacroScopes d.checkedValue
+def checkedLFDefinitionValues (syntaxDefs : Array CheckedLFSyntaxDef)
+    (defs : Array CheckedLFObjectDef) : CheckedLFDefinitionValueMap := Id.run do
+  let mut values : CheckedLFDefinitionValueMap := {}
+  for d in syntaxDefs do
+    if let some value := checkedLFSyntaxDefValue? d then
+      values := values.insert d.name.eraseMacroScopes value
+  for d in defs do
+    values := values.insert d.name.eraseMacroScopes d.checkedValue
+  return values
 
 /-- Convert a Phase-2/3 LF rule schema to the low-level kernel `RuleSchema` shape. -/
 def checkedLFRuleSchemaToKernel (defValues : CheckedLFDefinitionValueMap)
@@ -6203,11 +6424,11 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
     (t : CheckedLFJudgmentTheorem) : CoreM CheckedLFJudgmentTheorem := do
   let some kernelDeriv := t.kernelDerivation?
     | pure t
-  let lfCheckedDefValues := checkedLFDefinitionValues checked.lfObjectDefs
+  let lfCheckedDefValues := checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs
   let kernelSig : Signature := {
     name := sig.name.eraseMacroScopes
-    constants := (checkedLFConstantsToKernel lfCheckedDefValues checked.lfOpaqueConsts
-      checked.lfObjectDefs).toList
+    constants := (checkedLFConstantsToKernel lfCheckedDefValues checked.lfSyntaxDefs
+      checked.lfOpaqueConsts checked.lfObjectDefs).toList
     contextZones := checked.lfContextZones.toList.map checkedLFContextZoneToKernel
     binderClasses := checked.lfBinderClasses.toList.map checkedLFBinderClassToKernel
     conversionPlugins := checked.lfConversionPlugins.toList.map checkedLFConversionPluginToKernel
@@ -6220,7 +6441,8 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
       if let some priorKernel := prior.kernelDerivation? then
         replayCtx := replayCtx.addTheorem prior.name (KernelLFDerivation.statement priorKernel)
   let lfKernelGlobalHeads := lfGlobalHeadInfo sig
-  let lfKernelDefValues := lfDefinitionValueMapFromCheckedDefs checked.lfObjectDefs
+  let lfKernelDefValues :=
+    lfDefinitionValueMapFromCheckedDefs checked.lfSyntaxDefs checked.lfObjectDefs
   let assumptions ← kernelLFLocalAssumptionEntriesOfTheoremNormalized sig lfKernelGlobalHeads
     lfKernelDefValues t
   let localReplayCtx := { replayCtx with
@@ -6266,6 +6488,13 @@ def checkedLFSyntaxSortToHLDecl (s : CheckedLFSyntaxSort) : SyntaxSortDecl :=
 /-- Convert a checked syntax-abbreviation artifact to a high-level declaration. -/
 def checkedLFSyntaxAbbrevToHLDecl (a : CheckedLFSyntaxAbbrev) : SyntaxAbbrevDecl :=
   { name := a.name, params := a.params.map checkedLFBindingToHLBinding, value := a.value }
+
+/-- Convert a checked syntax-definition artifact to a high-level declaration. -/
+def checkedLFSyntaxDefToHLDecl (d : CheckedLFSyntaxDef) : SyntaxDefDecl :=
+  { name := d.name
+    params := d.params.map checkedLFBindingToHLBinding
+    resultLevel := d.resultLevel
+    value? := d.value? }
 
 /-- Convert a checked judgment-abbreviation artifact to a high-level declaration. -/
 def checkedLFJudgmentAbbrevToHLDecl (a : CheckedLFJudgmentAbbrev) : JudgmentAbbrevDecl :=
@@ -6336,6 +6565,7 @@ def checkedSignatureToHLSignature (sourceBase : HLSignature) (checked : CheckedS
     levelParams := checked.levelParams
     syntaxSorts := checked.lfSyntaxSorts.map checkedLFSyntaxSortToHLDecl
     syntaxAbbrevs := checked.lfSyntaxAbbrevs.map checkedLFSyntaxAbbrevToHLDecl
+    syntaxDefs := checked.lfSyntaxDefs.map checkedLFSyntaxDefToHLDecl
     judgmentAbbrevs := checked.lfJudgmentAbbrevs.map checkedLFJudgmentAbbrevToHLDecl
     syntaxSortRoles := checked.lfSyntaxSortRoles
     contextZones := checked.lfContextZones.map checkedLFContextZoneToHLDecl
@@ -6378,6 +6608,7 @@ def checkedHLSignatureMatchesChecked (checkedHL : HLSignature)
     checkedHL.levelParams.size == checked.levelParams.size &&
     checkedHL.syntaxSorts.size == checked.lfSyntaxSorts.size &&
     checkedHL.syntaxAbbrevs.size == checked.lfSyntaxAbbrevs.size &&
+    checkedHL.syntaxDefs.size == checked.lfSyntaxDefs.size &&
     checkedHL.judgmentAbbrevs.size == checked.lfJudgmentAbbrevs.size &&
     checkedHL.contextZones.size == checked.lfContextZones.size &&
     checkedHL.binderClasses.size == checked.lfBinderClasses.size &&
@@ -6410,11 +6641,11 @@ def checkedHLSignatureForCompiledCache (theoryName : Name) (checked : CheckedSig
 /-- Build a compiled LF checking cache from a checked high-level signature and checked artifacts. -/
 def mkCompiledLFCheckCacheFromHL (checkedHL : HLSignature) (checked : CheckedSignature) :
     CoreM CompiledLFCheckCache := do
-  let checkedLFDefValues := checkedLFDefinitionValues checked.lfObjectDefs
+  let checkedLFDefValues := checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs
   let kernelSig : Signature := {
     name := checked.name.eraseMacroScopes
-    constants := (checkedLFConstantsToKernel checkedLFDefValues checked.lfOpaqueConsts
-      checked.lfObjectDefs).toList
+    constants := (checkedLFConstantsToKernel checkedLFDefValues checked.lfSyntaxDefs
+      checked.lfOpaqueConsts checked.lfObjectDefs).toList
     contextZones := checked.lfContextZones.toList.map checkedLFContextZoneToKernel
     binderClasses := checked.lfBinderClasses.toList.map checkedLFBinderClassToKernel
     conversionPlugins := checked.lfConversionPlugins.toList.map checkedLFConversionPluginToKernel
@@ -6433,8 +6664,7 @@ def mkCompiledLFCheckCacheFromHL (checkedHL : HLSignature) (checked : CheckedSig
     lfGlobals := lfKnownGlobalNames checkedHL
     opaqueArities := lfOpaqueArities checkedHL
     globalHeads := lfGlobalHeadInfo checkedHL
-    syntaxSortArities := checkedHL.syntaxSorts.foldl (init := {}) fun acc s =>
-      acc.insert s.name.eraseMacroScopes s.params.size
+    syntaxSortArities := lfSyntaxFamilyArities checkedHL
     judgmentArities := checkedHL.judgments.foldl (init := {}) fun acc j =>
       acc.insert j.name.eraseMacroScopes j.params.size
     solvers := checkedHL.sideConditionSolvers.foldl (init := {}) fun acc s =>
@@ -6442,8 +6672,10 @@ def mkCompiledLFCheckCacheFromHL (checkedHL : HLSignature) (checked : CheckedSig
     checkedRules := checked.lfRules
     checkedRuleSchemas := checked.lfRuleSchemas
     checkedSideConditionCertificates := checked.lfSideConditionCertificates
-    knownLFDefTypes := checkedLFDefinitionTypeMapFromDefs checked.lfObjectDefs
-    knownLFDefValues := lfDefinitionValueMapFromCheckedDefs checked.lfObjectDefs
+    knownLFDefTypes :=
+      checkedLFDefinitionTypeMapFromDefs checked.lfSyntaxDefs checked.lfObjectDefs
+    knownLFDefValues :=
+      lfDefinitionValueMapFromCheckedDefs checked.lfSyntaxDefs checked.lfObjectDefs
     checkedLFDefValues := checkedLFDefValues
     availableLFTheoremStatements :=
       availableLFTheoremStatementsFromChecked checked.lfJudgmentTheorems
@@ -6557,9 +6789,9 @@ def unsupportedIncrementalTheoryBlockReason? (block : HLTheoryBlock) : Option St
 
 /-- Count declarations/metadata entries handled by the incremental extension checker. -/
 def theoryBlockIncrementalDeclCount (block : HLTheoryBlock) : Nat :=
-  block.syntaxSorts.size + block.syntaxAbbrevs.size + block.judgmentAbbrevs.size +
-    block.syntaxSortRoles.size + block.contextZones.size + block.binderClasses.size +
-    block.judgments.size +
+  block.syntaxSorts.size + block.syntaxAbbrevs.size + block.syntaxDefs.size +
+    block.judgmentAbbrevs.size + block.syntaxSortRoles.size + block.contextZones.size +
+    block.binderClasses.size + block.judgments.size +
     block.judgmentRoles.size + block.rules.size + block.ruleRoles.size +
     block.sideConditionSolvers.size + block.conversionPlugins.size + block.lfOpaqueConsts.size +
     block.modelVisibilities.size + block.modelSections.size + block.lfObjectDefs.size +
@@ -6582,6 +6814,8 @@ def checkNoExtensionNameCollisions (flatBase : HLSignature) (block : HLTheoryBlo
     seen ← checkName seen "syntax-sort" d.name
   for d in block.syntaxAbbrevs do
     seen ← checkName seen "syntax abbreviation" d.name
+  for d in block.syntaxDefs do
+    seen ← checkName seen "syntax definition" d.name
   for d in block.judgmentAbbrevs do
     seen ← checkName seen "judgment abbreviation" d.name
   for d in block.contextZones do
@@ -6614,6 +6848,8 @@ def elaborateImplicitAppsInTheoryBlockExtension (flatBase : HLSignature)
   let syntaxAbbrevs ←
     block.syntaxAbbrevs.mapM
       (elaborateImplicitAppsInSyntaxAbbrevDeclWithLookup headLookup headSig)
+  let syntaxDefs ←
+    block.syntaxDefs.mapM (elaborateImplicitAppsInSyntaxDefDeclWithLookup headLookup headSig)
   let judgmentAbbrevs ←
     block.judgmentAbbrevs.mapM
       (elaborateImplicitAppsInJudgmentAbbrevDeclWithLookup headLookup headSig)
@@ -6627,6 +6863,7 @@ def elaborateImplicitAppsInTheoryBlockExtension (flatBase : HLSignature)
     block with
     syntaxSorts := syntaxSorts
     syntaxAbbrevs := syntaxAbbrevs
+    syntaxDefs := syntaxDefs
     judgmentAbbrevs := judgmentAbbrevs
     judgments := judgments
     lfOpaqueConsts := lfOpaqueConsts
@@ -6670,6 +6907,13 @@ def expandSyntaxAbbrevsInTheoryBlockExtension (checkedBase : HLSignature)
     syntaxAbbrevs := syntaxAbbrevs
     judgmentAbbrevs := judgmentAbbrevs }
   let sigForRest := checkedBase.appendBlock blockWithAbbrevs
+  let syntaxDefs ← block.syntaxDefs.mapM fun d => do
+    let params ← expandSyntaxAbbrevsInBindings sigForRest "syntax_def" d.name d.params
+    let locals := params.foldl (fun locals b => locals.insert b.name.eraseMacroScopes) {}
+    let value? ←
+      d.value?.mapM (expandSyntaxAbbrevsInExpr sigForRest "syntax_def" d.name "value" locals
+        (lfAbbrevExpansionFuel sigForRest))
+    pure { d with name := d.name.eraseMacroScopes, params, value? }
   let syntaxSorts ← block.syntaxSorts.mapM fun s => do
     let params ← expandSyntaxAbbrevsInBindings sigForRest "syntax_sort" s.name s.params
     pure { s with name := s.name.eraseMacroScopes, params }
@@ -6736,6 +6980,7 @@ def expandSyntaxAbbrevsInTheoryBlockExtension (checkedBase : HLSignature)
   pure {
     blockWithAbbrevs with
     syntaxSorts := syntaxSorts
+    syntaxDefs := syntaxDefs
     judgmentAbbrevs := judgmentAbbrevs
     judgments := judgments
     lfOpaqueConsts := lfOpaqueConsts
@@ -6796,6 +7041,14 @@ def checkLFLocalBinderHygieneInSyntaxAbbrevDecl (sig : HLSignature) (a : SyntaxA
   for b in a.params do
     checkNoLFLocalBinderShadowingInBinding sig "syntax_abbrev" a.name b
   checkNoLFLocalBinderShadowingInExpr sig "syntax_abbrev" a.name "value" a.value
+
+/-- Check binder hygiene for one syntax-definition declaration. -/
+def checkLFLocalBinderHygieneInSyntaxDefDecl (sig : HLSignature) (d : SyntaxDefDecl) :
+    CoreM Unit := do
+  for b in d.params do
+    checkNoLFLocalBinderShadowingInBinding sig "syntax_def" d.name b
+  if let some value := d.value? then
+    checkNoLFLocalBinderShadowingInExpr sig "syntax_def" d.name "value" value
 
 /-- Check binder hygiene for one judgment-abbreviation declaration. -/
 def checkLFLocalBinderHygieneInJudgmentAbbrevDecl (sig : HLSignature)
@@ -6862,6 +7115,14 @@ def checkLFUniverseLevelInSyntaxAbbrevDecl (sig : HLSignature) (a : SyntaxAbbrev
     checkDeclaredLevelParamsInLFBinding sig "syntax_abbrev" a.name b
   checkDeclaredLevelParamsInLFExpr sig "syntax_abbrev" a.name "value" a.value
 
+/-- Check universe parameters for one syntax-definition declaration. -/
+def checkLFUniverseLevelInSyntaxDefDecl (sig : HLSignature) (d : SyntaxDefDecl) : CoreM Unit := do
+  for b in d.params do
+    checkDeclaredLevelParamsInLFBinding sig "syntax_def" d.name b
+  checkDeclaredLevelParamsInLevelExpr sig "syntax_def" d.name "result universe" d.resultLevel
+  if let some value := d.value? then
+    checkDeclaredLevelParamsInLFExpr sig "syntax_def" d.name "value" value
+
 /-- Check universe parameters for one judgment-abbreviation declaration. -/
 def checkLFUniverseLevelInJudgmentAbbrevDecl (sig : HLSignature) (a : JudgmentAbbrevDecl) :
     CoreM Unit := do
@@ -6915,6 +7176,7 @@ def checkLFUniverseLevelInLFJudgmentTheoremDecl (sig : HLSignature)
 structure CheckedTheoryDelta where
   syntaxSorts : Array CheckedLFSyntaxSort := #[]
   syntaxAbbrevs : Array CheckedLFSyntaxAbbrev := #[]
+  syntaxDefs : Array CheckedLFSyntaxDef := #[]
   judgmentAbbrevs : Array CheckedLFJudgmentAbbrev := #[]
   syntaxSortRoles : Array SyntaxSortRoleDecl := #[]
   contextZones : Array CheckedLFContextZone := #[]
@@ -6945,6 +7207,7 @@ def appendCheckedTheoryDelta (checked : CheckedSignature) (delta : CheckedTheory
     CheckedSignature :=
   let lfSyntaxSorts := checked.lfSyntaxSorts ++ delta.syntaxSorts
   let lfSyntaxAbbrevs := checked.lfSyntaxAbbrevs ++ delta.syntaxAbbrevs
+  let lfSyntaxDefs := checked.lfSyntaxDefs ++ delta.syntaxDefs
   let lfJudgmentAbbrevs := checked.lfJudgmentAbbrevs ++ delta.judgmentAbbrevs
   let lfSyntaxSortRoles := checked.lfSyntaxSortRoles ++ delta.syntaxSortRoles
   let lfContextZones := checked.lfContextZones ++ delta.contextZones
@@ -6970,7 +7233,7 @@ def appendCheckedTheoryDelta (checked : CheckedSignature) (delta : CheckedTheory
   let modelSections := dedupeModelSections (checked.modelSections ++ delta.modelSections)
   let modelSectionMemberships :=
     checked.modelSectionMemberships ++ delta.modelSectionMemberships
-  let defValues := checkedLFDefinitionValues lfObjectDefs
+  let defValues := checkedLFDefinitionValues lfSyntaxDefs lfObjectDefs
   let lfKernelRuleSchemas :=
     if delta.objectDefs.isEmpty && delta.ruleSchemas.isEmpty then
       checked.lfKernelRuleSchemas
@@ -6980,6 +7243,7 @@ def appendCheckedTheoryDelta (checked : CheckedSignature) (delta : CheckedTheory
     checked.lfEnvironment with
     syntaxSorts := lfSyntaxSorts
     syntaxAbbrevs := lfSyntaxAbbrevs
+    syntaxDefs := lfSyntaxDefs
     judgmentAbbrevs := lfJudgmentAbbrevs
     syntaxSortRoles := lfSyntaxSortRoles
     contextZones := lfContextZones
@@ -7003,6 +7267,7 @@ def appendCheckedTheoryDelta (checked : CheckedSignature) (delta : CheckedTheory
   { checked with
     lfSyntaxSorts := lfSyntaxSorts
     lfSyntaxAbbrevs := lfSyntaxAbbrevs
+    lfSyntaxDefs := lfSyntaxDefs
     lfJudgmentAbbrevs := lfJudgmentAbbrevs
     lfSyntaxSortRoles := lfSyntaxSortRoles
     lfContextZones := lfContextZones
@@ -7036,6 +7301,7 @@ def appendDeltaGlobals (globals : NameSet) (delta : CheckedTheoryDelta) : NameSe
   let mut globals := globals
   for s in delta.syntaxSorts do globals := globals.insert s.name.eraseMacroScopes
   for a in delta.syntaxAbbrevs do globals := globals.insert a.name.eraseMacroScopes
+  for d in delta.syntaxDefs do globals := globals.insert d.name.eraseMacroScopes
   for a in delta.judgmentAbbrevs do globals := globals.insert a.name.eraseMacroScopes
   for j in delta.judgments do globals := globals.insert j.name.eraseMacroScopes
   for o in delta.opaqueConsts do globals := globals.insert o.name.eraseMacroScopes
@@ -7061,6 +7327,8 @@ def appendDeltaGlobalHeads (heads : NameMap (CheckedLFHeadKind × Option Nat))
   let mut heads := heads
   for s in delta.syntaxSorts do
     heads := heads.insert s.name.eraseMacroScopes (.syntaxSort, some s.arity)
+  for d in delta.syntaxDefs do
+    heads := heads.insert d.name.eraseMacroScopes (.syntaxDef, some d.params.size)
   for j in delta.judgments do
     heads := heads.insert j.name.eraseMacroScopes (.judgment, some j.arity)
   for o in delta.opaqueConsts do
@@ -7079,9 +7347,13 @@ def appendDeltaGlobalHeads (heads : NameMap (CheckedLFHeadKind × Option Nat))
 
 /-- Extend cached syntax-sort arities with checked syntax sorts from one delta. -/
 def appendDeltaSyntaxSortArities (arities : NameMap Nat)
-    (delta : CheckedTheoryDelta) : NameMap Nat :=
-  delta.syntaxSorts.foldl (init := arities) fun arities s =>
-    arities.insert s.name.eraseMacroScopes s.arity
+    (delta : CheckedTheoryDelta) : NameMap Nat := Id.run do
+  let mut arities := arities
+  for s in delta.syntaxSorts do
+    arities := arities.insert s.name.eraseMacroScopes s.arity
+  for d in delta.syntaxDefs do
+    arities := arities.insert d.name.eraseMacroScopes d.params.size
+  return arities
 
 /-- Extend cached judgment arities with checked judgments from one delta. -/
 def appendDeltaJudgmentArities (arities : NameMap Nat)
@@ -7101,6 +7373,14 @@ def appendDeltaLFDefMaps (typeMap : LFLocalTypes) (valueMap : LFDefinitionValueM
   let mut typeMap := typeMap
   let mut valueMap := valueMap
   let mut checkedValueMap := checkedValueMap
+  for d in delta.syntaxDefs do
+    let defName := d.name.eraseMacroScopes
+    typeMap := typeMap.insert defName
+      (eraseObjExprScopes (syntaxDefTypeExpr (checkedLFSyntaxDefToHLDecl d)))
+    if let some checkedValue := checkedLFSyntaxDefValue? d then
+      if let some value := syntaxDefValueExpr? (checkedLFSyntaxDefToHLDecl d) then
+        valueMap := valueMap.insert defName (eraseObjExprScopes value)
+      checkedValueMap := checkedValueMap.insert defName checkedValue
   for d in delta.objectDefs do
     let defName := d.name.eraseMacroScopes
     typeMap := typeMap.insert defName (eraseObjExprScopes d.typeExpr)
@@ -7143,6 +7423,8 @@ def appendDelta (cache : CompiledLFCheckCache) (checkedHLAfter : HLSignature)
   let (knownLFDefTypes, knownLFDefValues, checkedLFDefValues) :=
     appendDeltaLFDefMaps cache.knownLFDefTypes cache.knownLFDefValues cache.checkedLFDefValues
       delta
+  let newSyntaxConstants :=
+    delta.syntaxDefs.map (checkedLFSyntaxDefToKernelConstant checkedLFDefValues)
   let newOpaqueConstants :=
     delta.opaqueConsts.filterMap (checkedLFOpaqueConstToKernelConstant? checkedLFDefValues)
   let newObjectConstants :=
@@ -7151,9 +7433,9 @@ def appendDelta (cache : CompiledLFCheckCache) (checkedHLAfter : HLSignature)
   let newTheoremSchemas := kernelLFRuleSchemasOfTheorems checkedLFDefValues
     delta.judgmentTheorems
   let oldObjectDefCount := cache.stamp.objectDefCount
-  let oldTypedOpaqueCount := cache.kernelSig.constants.length - oldObjectDefCount
-  let oldOpaqueConstants := cache.kernelSig.constants.take oldTypedOpaqueCount
-  let oldObjectConstants := cache.kernelSig.constants.drop oldTypedOpaqueCount
+  let oldPrefixConstantCount := cache.kernelSig.constants.length - oldObjectDefCount
+  let oldPrefixConstants := cache.kernelSig.constants.take oldPrefixConstantCount
+  let oldObjectConstants := cache.kernelSig.constants.drop oldPrefixConstantCount
   let oldPrimitiveRuleCount := cache.checkedRuleSchemas.size
   let oldPrimitiveRules := cache.kernelSig.rules.take oldPrimitiveRuleCount
   let oldTheoremRules := cache.kernelSig.rules.drop oldPrimitiveRuleCount
@@ -7179,8 +7461,8 @@ def appendDelta (cache : CompiledLFCheckCache) (checkedHLAfter : HLSignature)
     availableLFTheoremStatements := availableStatements
     availableLFTheoremNames := availableNames
     kernelSig := { cache.kernelSig with
-      constants := oldOpaqueConstants ++ newOpaqueConstants.toList ++ oldObjectConstants ++
-        newObjectConstants.toList
+      constants := oldPrefixConstants ++ newSyntaxConstants.toList ++ newOpaqueConstants.toList ++
+        oldObjectConstants ++ newObjectConstants.toList
       contextZones := cache.kernelSig.contextZones ++
         delta.contextZones.toList.map checkedLFContextZoneToKernel
       binderClasses := cache.kernelSig.binderClasses ++
@@ -7210,6 +7492,7 @@ def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignat
     (delta : CheckedTheoryDelta := {}) (objectDefs : Array CheckedLFObjectDef := #[])
     (theoremCandidates : Array CheckedLFJudgmentTheorem := #[]) :
     IntraBlockKernelReplayContext :=
+  let lfSyntaxDefs := checked.lfSyntaxDefs ++ delta.syntaxDefs
   let lfOpaqueConsts := checked.lfOpaqueConsts ++ delta.opaqueConsts
   let lfContextZones := checked.lfContextZones ++ delta.contextZones
   let lfBinderClasses := checked.lfBinderClasses ++ delta.binderClasses
@@ -7217,10 +7500,12 @@ def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignat
   let lfRuleSchemas := checked.lfRuleSchemas ++ delta.ruleSchemas
   let lfObjectDefs := checked.lfObjectDefs ++ objectDefs
   let lfJudgmentTheorems := checked.lfJudgmentTheorems ++ theoremCandidates
-  let lfCheckedDefValues := checkedLFDefinitionValues lfObjectDefs
+  let lfCheckedDefValues := checkedLFDefinitionValues lfSyntaxDefs lfObjectDefs
   let kernelSig : Signature := {
     name := sig.name.eraseMacroScopes
-    constants := (checkedLFConstantsToKernel lfCheckedDefValues lfOpaqueConsts lfObjectDefs).toList
+    constants :=
+      (checkedLFConstantsToKernel lfCheckedDefValues lfSyntaxDefs lfOpaqueConsts
+        lfObjectDefs).toList
     contextZones := lfContextZones.toList.map checkedLFContextZoneToKernel
     binderClasses := lfBinderClasses.toList.map checkedLFBinderClassToKernel
     conversionPlugins := lfConversionPlugins.toList.map checkedLFConversionPluginToKernel
@@ -7238,7 +7523,7 @@ def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignat
   { kernelSig := kernelSig
     replayCtx := replayCtx
     lfKernelGlobalHeads := lfGlobalHeadInfo sig
-    lfKernelDefValues := lfDefinitionValueMapFromCheckedDefs lfObjectDefs }
+    lfKernelDefValues := lfDefinitionValueMapFromCheckedDefs lfSyntaxDefs lfObjectDefs }
 
 /-- Replay-check one theorem against cached block-level kernel state and update availability. -/
 def validateLFTheoremKernelReplayInContext (sig : HLSignature)
@@ -7280,6 +7565,9 @@ def checkIncrementalRoleMetadataDelta (flatForCheck : HLSignature)
     CoreM (Array SyntaxSortRoleDecl × Array JudgmentRoleDecl × Array RuleRoleDecl) := do
   let syntaxSortNames : NameSet :=
     flatForCheck.syntaxSorts.foldl (init := {}) fun acc s => acc.insert s.name.eraseMacroScopes
+  let syntaxFamilyNames : NameSet :=
+    flatForCheck.syntaxDefs.foldl (init := syntaxSortNames) fun acc d =>
+      acc.insert d.name.eraseMacroScopes
   let judgmentNames : NameSet :=
     flatForCheck.judgments.foldl (init := {}) fun acc j => acc.insert j.name.eraseMacroScopes
   let ruleNames : NameSet :=
@@ -7293,8 +7581,8 @@ def checkIncrementalRoleMetadataDelta (flatForCheck : HLSignature)
   for role in block.syntaxSortRoles do
     let sortName := role.sortName.eraseMacroScopes
     let kind := role.kind.eraseMacroScopes
-    if !syntaxSortNames.contains sortName then
-      throwError "syntax_sort_role for unknown syntax sort '{role.sortName}' in type theory \
+    if !syntaxFamilyNames.contains sortName then
+      throwError "syntax_sort_role for unknown syntax family '{role.sortName}' in type theory \
         '{flatForCheck.name}'"
     let kinds := (seenSortRoles.find? sortName).getD {}
     if kinds.contains kind then
@@ -7407,8 +7695,7 @@ def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : Ch
   let lfGlobals := lfKnownGlobalNames flatForCheck
   let opaqueArities := lfOpaqueArities flatForCheck
   let globalHeads := lfGlobalHeadInfo flatForCheck
-  let syntaxSortArities : NameMap Nat := flatForCheck.syntaxSorts.foldl (init := {}) fun acc s =>
-    acc.insert s.name.eraseMacroScopes s.params.size
+  let syntaxSortArities : NameMap Nat := lfSyntaxFamilyArities flatForCheck
   let judgmentArities : NameMap Nat := flatForCheck.judgments.foldl (init := {}) fun acc j =>
     acc.insert j.name.eraseMacroScopes j.params.size
   let solvers : NameSet := flatForCheck.sideConditionSolvers.foldl (init := {}) fun acc s =>
@@ -7429,6 +7716,18 @@ def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : Ch
       syntaxSortArities globalHeads a
     checkedSyntaxAbbrevs :=
       checkedSyntaxAbbrevs.push (← checkedLFSyntaxAbbrevDeclArtifact flatForCheck globalHeads a)
+  let blockSyntaxDefNames := block.syntaxDefs.map (fun d => d.name.eraseMacroScopes)
+  let mut checkedSyntaxDefs : Array CheckedLFSyntaxDef := #[]
+  for _h : i in [:block.syntaxDefs.size] do
+    let d := block.syntaxDefs[i]!
+    let unavailable := blockSyntaxDefNames.extract i blockSyntaxDefNames.size
+    checkNoUnavailableSyntaxDefRefs flatForCheck d unavailable
+    checkLFLocalBinderHygieneInSyntaxDefDecl flatForCheck d
+    checkLFUniverseLevelInSyntaxDefDecl flatForCheck d
+    checkOneSyntaxDefMetadataInSignature flatForCheck lfGlobals opaqueArities syntaxSortArities
+      globalHeads d
+    checkedSyntaxDefs :=
+      checkedSyntaxDefs.push (← checkedLFSyntaxDefDeclArtifact flatForCheck globalHeads d)
   let mut checkedJudgmentAbbrevs : Array CheckedLFJudgmentAbbrev := #[]
   for a in block.judgmentAbbrevs do
     checkLFLocalBinderHygieneInJudgmentAbbrevDecl flatForCheck a
@@ -7450,7 +7749,7 @@ def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : Ch
     checkedJudgments :=
       checkedJudgments.push (← checkedLFJudgmentDeclArtifact flatForCheck globalHeads j)
   let knownLFDefTypes := mergeLFLocalTypes
-    (checkedLFDefinitionTypeMapFromDefs checkedBase.lfObjectDefs)
+    (checkedLFDefinitionTypeMapFromDefs checkedBase.lfSyntaxDefs checkedBase.lfObjectDefs)
     (lfDefinitionTypeMapFromDecls block.lfObjectDefs)
   let mut checkedOpaques : Array CheckedLFOpaqueConst := #[]
   for o in block.lfOpaqueConsts do
@@ -7480,6 +7779,7 @@ def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : Ch
   pure {
     syntaxSorts := checkedSyntaxSorts
     syntaxAbbrevs := checkedSyntaxAbbrevs
+    syntaxDefs := checkedSyntaxDefs
     judgmentAbbrevs := checkedJudgmentAbbrevs
     syntaxSortRoles := checkedSyntaxSortRoles
     contextZones := checkedContextZones
@@ -7556,7 +7856,8 @@ def checkTheoryBlockExtensionIncremental (theoryName : Name) (sig : HLSignature)
     flattenSignature sig
   profileLFCheckPhase m!"{theoryName}: extension collision check" do
     checkNoExtensionNameCollisions flatSourceBase block
-  let priorKnownTypes := checkedLFDefinitionTypeMapFromDefs checked.lfObjectDefs
+  let priorKnownTypes :=
+    checkedLFDefinitionTypeMapFromDefs checked.lfSyntaxDefs checked.lfObjectDefs
   let blockForRegistry ← profileLFCheckPhase m!"{theoryName}: elaborate implicit apps" do
     elaborateImplicitAppsInTheoryBlockExtension flatSourceBase priorKnownTypes block
   let checkedBase ← profileLFCheckPhase m!"{theoryName}: checked-to-HL baseline" do
@@ -7596,8 +7897,8 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
     checkLFObjectArtifactsInSignatureStreaming flat lfRules
   let lfObjectDefs := lfObjectDefsFromDecls
   let lfJudgmentTheoremsRaw := lfJudgmentTheoremsFromDecls
-  let (lfSyntaxSorts, lfSyntaxAbbrevs, lfJudgmentAbbrevs, lfContextZones, lfBinderClasses,
-    lfJudgments, lfOpaqueConsts, lfSideConditionSolvers, lfConversionPlugins) ←
+  let (lfSyntaxSorts, lfSyntaxAbbrevs, lfSyntaxDefs, lfJudgmentAbbrevs, lfContextZones,
+    lfBinderClasses, lfJudgments, lfOpaqueConsts, lfSideConditionSolvers, lfConversionPlugins) ←
       checkedLFDeclarations flat
   let lfSyntaxSortRoles := flat.syntaxSortRoles.map fun r =>
     { sortName := r.sortName.eraseMacroScopes, kind := r.kind.eraseMacroScopes }
@@ -7630,11 +7931,12 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
       argumentIndex := p.argumentIndex }
   let lfRuleSchemas := checkedLFRuleSchemasOfRules lfContextZones lfBinderClasses lfRules
   let lfSideConditionCertificates := checkedLFSideConditionCertificatesOfSchemas lfRuleSchemas
-  let lfCheckedDefValues := checkedLFDefinitionValues lfObjectDefs
+  let lfCheckedDefValues := checkedLFDefinitionValues lfSyntaxDefs lfObjectDefs
   let lfKernelRuleSchemas := checkedLFRuleSchemasToKernel lfCheckedDefValues lfRuleSchemas
   let replayDelta : CheckedTheoryDelta := {
     syntaxSorts := lfSyntaxSorts
     syntaxAbbrevs := lfSyntaxAbbrevs
+    syntaxDefs := lfSyntaxDefs
     judgmentAbbrevs := lfJudgmentAbbrevs
     syntaxSortRoles := lfSyntaxSortRoles
     contextZones := lfContextZones
@@ -7666,6 +7968,7 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
       levelParams := flat.levelParams.map Name.eraseMacroScopes
       syntaxSorts := lfSyntaxSorts
       syntaxAbbrevs := lfSyntaxAbbrevs
+      syntaxDefs := lfSyntaxDefs
       judgmentAbbrevs := lfJudgmentAbbrevs
       syntaxSortRoles := lfSyntaxSortRoles
       contextZones := lfContextZones
@@ -7691,6 +7994,7 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
     levelParams := flat.levelParams.map Name.eraseMacroScopes
     lfSyntaxSorts := lfSyntaxSorts
     lfSyntaxAbbrevs := lfSyntaxAbbrevs
+    lfSyntaxDefs := lfSyntaxDefs
     lfJudgmentAbbrevs := lfJudgmentAbbrevs
     lfSyntaxSortRoles := lfSyntaxSortRoles
     lfContextZones := lfContextZones

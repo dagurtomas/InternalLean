@@ -361,6 +361,7 @@ def isLFModelAdmission (checked : CheckedSignature) (admittedNames : NameSet)
         | some c => c.checkedTypeExpr?.isSome
         | none => false
   | .judgmentTheorem => LeanTypeModelGeneration.isLFJudgmentAdmission checked a
+  | .syntaxDef => false
 
 /-- Check whether a generated LF model-interface method name is available. -/
 def ensureLFModelMethodNameAvailable (theoryName structureName methodName : Name) :

@@ -19,7 +19,7 @@ The trusted boundary is not the surface command text. The meaningful boundary is
 
 LF is the project's internal logical-framework language for representing declared type-theory data:
 
-- syntax sorts;
+- syntax sorts and derived syntax definitions;
 - internal expressions;
 - judgment forms;
 - rules and premises;
@@ -54,14 +54,14 @@ LF artifacts before model generation or transport should rely on it.
 
 The checker validates and stores information such as:
 
-- declared syntax sorts and their parameters;
+- declared syntax sorts, syntax definitions, and their parameters;
 - declared judgment heads and their parameters;
 - rule schemas, premises, side conditions, and conclusions;
 - checked local references and telescope dependencies;
 - duplicate-name and dependency checks;
 - scoped binders and capture-safe instantiation;
 - typed LF opaque constants where type information is supplied;
-- checked LF definitions and theorem declarations;
+- checked syntax definitions, LF definitions, and theorem declarations;
 - side-condition certificate slots and checked certificate evidence;
 - conversion plugin declarations and supported step classes;
 - rewrite, symmetry, congruence, transport, and transport-position metadata.
@@ -111,11 +111,14 @@ An admitted declaration can be written as:
 ```lean
 internal def admitted : J := sorry
 internal theorem admittedTheorem : J := sorry
+syntax_def admittedFamily (x : A) : Type u := sorry
 ```
 
-The annotation `J` is still checked as a judgment or type in the declared theory, but the body is
-not checked. `internal theorem ... := sorry` records theorem-shaped debt without adding a model
-field. The admission is stored explicitly and can be inspected with:
+The annotation `J`, or the `syntax_def` header and result universe, is still checked in the
+declared theory, but the admitted body is not checked. `internal theorem ... := sorry` records
+theorem-shaped debt without adding a model field. An admitted `syntax_def` records derived-family
+debt without becoming primitive model data. The admission is stored explicitly and can be inspected
+with:
 
 ```lean
 #lint_type_theory_sorries T

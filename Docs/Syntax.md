@@ -140,7 +140,7 @@ syntax_sort_role S : role
 
 Unknown role names are stored as metadata, but only recognized names affect generic automation.
 
-### Syntax abbreviations
+### Syntax abbreviations and definitions
 
 ```lean
 syntax_abbrev Name (x : A) {y : B} := value
@@ -149,6 +149,20 @@ syntax_abbrev Name (x : A) {y : B} := value
 A syntax abbreviation is public notation. It expands before checking and model-obligation
 generation, so it normally does not become a model field. The value may be any checked LF type
 expression, including structural function and Sigma/record types.
+
+```lean
+syntax_def Name (x : A) {y : B} : Type u := value
+syntax_def Name (x : A) {y : B} : Type u := sorry
+```
+
+A syntax definition is a named derived syntax family. Its result annotation is mandatory and must
+be an object universe (`Type`, `Type u`, `Type (u+1)`, `Type max u v`, ...). A checked body unfolds
+during LF conversion and model rendering like a checked `lf_def`; an admitted body stays opaque and
+is reported by `#lint_type_theory_sorries` as admitted `syntax_def` debt.
+
+Use `syntax_sort` for primitive model data, `syntax_abbrev` for transparent notation, and
+`syntax_def` for a derived type family that should not become a user-provided model field.
+`syntax_sort_role` may tag either a primitive syntax sort or a derived syntax definition.
 
 ### Context zones and binder classes
 
@@ -161,7 +175,8 @@ binder_class var : Tm in Γ depends_on Δ
 ```
 
 Context zones and binder classes are metadata for scoped syntax and future multi-zone judgments.
-They should describe generic binding structure, not example-specific behavior.
+They require primitive syntax sorts, not derived `syntax_def` families. They should describe generic
+binding structure, not example-specific behavior.
 
 ### Judgments
 
