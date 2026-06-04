@@ -105,6 +105,8 @@ blocked/omitted: none -/
 #guard_msgs (whitespace := lax) in
 #print_model_obligations ModelWorkflowLF
 
+#print_model_provenance ModelWorkflowLF
+#print_lf_model_provenance ModelWorkflowLF
 #print_model_interface ModelWorkflowLF as LFUXModel
 #print_model_template ModelWorkflowLF as LFUXModel
 #print_model_sections ModelWorkflowLF
