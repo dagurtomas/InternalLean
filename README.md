@@ -61,7 +61,7 @@ downstream project should use a compatible Lean toolchain. Until compatibility r
 use the same toolchain as this repository, currently:
 
 ```text
-leanprover/lean4:v4.30.0-rc2
+leanprover/lean4:v4.31.0-rc1
 ```
 
 In a `lakefile.toml`, add:
@@ -75,7 +75,7 @@ rev = "main"
 
 For reproducible projects, replace `main` by a release tag or commit hash after one is available.
 InternalLean compatibility tags should normally match the Lean toolchain tag, for example
-`v4.30.0-rc2`.
+`v4.31.0-rc1`.
 
 In a `lakefile.lean`, the equivalent is:
 

@@ -8,11 +8,11 @@ manually after a toolchain bump builds successfully.
 Use the helper script from the repository root:
 
 ```bash
-scripts/bump_lean_toolchain.py --to v4.30.0-rc2
+scripts/bump_lean_toolchain.py --to v4.31.0-rc1
 ```
 
-The `--to` argument accepts either a Lean tag such as `v4.30.0-rc2` or a full toolchain string such
-as `leanprover/lean4:v4.30.0-rc2`.
+The `--to` argument accepts either a Lean tag such as `v4.31.0-rc1` or a full toolchain string such
+as `leanprover/lean4:v4.31.0-rc1`.
 
 The script updates `lean-toolchain`, runs `lake update`, and then runs the standard checks:
 
@@ -27,8 +27,8 @@ scripts/check_lean_line_lengths.py --max 100
 Useful options:
 
 ```bash
-scripts/bump_lean_toolchain.py --to v4.30.0-rc2 --dry-run
-scripts/bump_lean_toolchain.py --to v4.30.0-rc2 --no-checks
+scripts/bump_lean_toolchain.py --to v4.31.0-rc1 --dry-run
+scripts/bump_lean_toolchain.py --to v4.31.0-rc1 --no-checks
 ```
 
 After a successful run, review the diff. Usually the intended files are `lean-toolchain` and,
@@ -40,7 +40,7 @@ For Lean-ecosystem compatibility, prefer tags that match the Lean toolchain tag,
 pattern used by packages such as Batteries and Aesop:
 
 ```text
-v4.30.0-rc2
+v4.31.0-rc1
 ```
 
 This makes downstream `lakefile.toml` files simple:
@@ -49,7 +49,7 @@ This makes downstream `lakefile.toml` files simple:
 [[require]]
 name = "InternalLean"
 git = "https://github.com/dagurtomas/InternalLean.git"
-rev = "v4.30.0-rc2"
+rev = "v4.31.0-rc1"
 ```
 
 Release checklist:
@@ -61,24 +61,24 @@ Release checklist:
 5. Create an annotated tag:
 
    ```bash
-   git tag -a v4.30.0-rc2 -m "InternalLean for Lean v4.30.0-rc2"
+   git tag -a v4.31.0-rc1 -m "InternalLean for Lean v4.31.0-rc1"
    ```
 
 6. Push the commit and tag:
 
    ```bash
    git push origin main
-   git push origin v4.30.0-rc2
+   git push origin v4.31.0-rc1
    ```
 
 7. Optionally create a GitHub release from the tag:
 
    ```bash
-   gh release create v4.30.0-rc2 \
-     --title "InternalLean for Lean v4.30.0-rc2" \
-     --notes "Compatibility release for Lean v4.30.0-rc2."
+   gh release create v4.31.0-rc1 \
+     --title "InternalLean for Lean v4.31.0-rc1" \
+     --notes "Compatibility release for Lean v4.31.0-rc1."
    ```
 
 Do not move or force-push public release tags. If a fix is needed for the same Lean version after a
-tag is public, create a new unique tag such as `v4.30.0-rc2-patch` or
-`v4.30.0-rc2-internallean.1` and ask downstream projects to use that tag.
+tag is public, create a new unique tag such as `v4.31.0-rc1-patch` or
+`v4.31.0-rc1-internallean.1` and ask downstream projects to use that tag.
