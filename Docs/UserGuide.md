@@ -242,7 +242,10 @@ Side-condition and certificate obligations can be inspected with:
 ## Inspecting a theory
 
 Use these commands when you want to check that a theory was registered, inspect its generated
-navigation anchor, or find missing documentation/admissions.
+navigation anchor, or find missing documentation/admissions. InternalLean also emits editor
+navigation metadata for source declarations and references, so Lean's ordinary go-to-definition can
+jump to declarations inside theory blocks and top-level internal declarations when the relevant
+module is available.
 
 ```lean
 #check_theory TinyNat
@@ -308,6 +311,14 @@ typed LF opaque fields, rule fields, side-condition predicates, and omitted/gene
 
 Runs the obligation validator without printing the full generated interface. Use this as a quick
 sanity check before generating model code.
+
+```lean
+#print_model_provenance TinyNat
+```
+
+Prints where generated obligations came from, their generated roles, and which generated fields
+their rendered types depend on. Use this when a model field is surprising or a public/minimal
+interface omits something. The public/minimal variant is `#print_public_model_provenance`.
 
 ```lean
 #print_model_interface TinyNat as TinyNatModel

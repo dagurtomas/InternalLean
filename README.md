@@ -191,6 +191,7 @@ Model workflow:
 ```lean
 #print_model_obligations T
 #check_model_obligations T
+#print_model_provenance T
 #print_model_interface T as M
 generate_model_interface T as M
 #print_model_template T as M
@@ -205,9 +206,10 @@ generate_model_transports T only f g h for M
 ```
 
 Run model-generation commands at the root namespace. `generate_model_interface` creates the model
-structure; use `generate_model_structural_equiv` separately when a strict structure-preserving
-comparison type is useful. Selected model transport generation includes checked theorem
-dependencies before selected theorem transports.
+structure; use `#print_model_provenance` when you need to explain generated fields or omissions.
+Use `generate_model_structural_equiv` separately when a strict structure-preserving comparison type
+is useful. Selected model transport generation includes checked theorem dependencies before
+selected theorem transports.
 
 Longer `#check_default_profile_lf_*`, `#print_default_profile_*`, `#print_lean_type_*`, and
 `#print_lf_model_*` commands are developer diagnostics for inspecting replay/model internals.

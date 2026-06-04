@@ -465,7 +465,9 @@ end T
 ```
 
 Declarations in the batch are registered in source order; later declarations may refer to earlier
-ones. Batched definitions support both direct terms and internal tactic scripts.
+ones, but earlier declarations cannot refer to later declarations in the same block. Direct checked
+object definitions in an all-object block are checked as one incremental batch; theorem-shaped,
+tactic, placeholder, admitted, or mixed blocks fall back to the ordinary source-order paths.
 `internal theorem ... := sorry` records theorem-shaped formalization debt without adding a model
 field.
 
