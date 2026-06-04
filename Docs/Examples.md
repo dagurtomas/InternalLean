@@ -60,7 +60,7 @@ This is the best place to see small internal tactic examples. It contains focuse
 `exact`, `apply`, `assumption`, `show`, `change`, `rw`, `simp`, conversion plugins, fuel
 diagnostics, and generated model transports for tactic-proved declarations.
 
-## API and metadata tests
+## API, metadata, and workflow tests
 
 Files:
 
@@ -69,11 +69,21 @@ Files:
 - `InternalLeanTest/ModelWorkflowUXTest.lean`
 - `InternalLeanTest/TransportPlanTest.lean`
 - `InternalLeanTest/LFModelStressTest.lean`
+- `InternalLeanTest/ModelStructuralEquivTest.lean`
+- `InternalLeanTest/ModelUniverseLevelsTest.lean`
+- `InternalLeanTest/NavigationTest.lean`
+- `InternalLeanTest/ObjectNotationTest.lean`
+- `InternalLeanTest/JudgmentAbbrevTest.lean`
+- `InternalLeanTest/EvidencePremiseTest.lean`
+- `InternalLeanTest/StructuralInternalAdmissionTest.lean`
+- `InternalLeanTest/CorrectnessRegressionTest.lean`
 
-These files are useful when changing frontend syntax, metadata validation, diagnostics, or model
-workflow behavior. They include malformed metadata diagnostics, role validation, rewrite/transport
-metadata, public/minimal model interfaces, generated transport signatures, and synthetic generated
-interface stress cases.
+These files are useful when changing frontend syntax, metadata validation, diagnostics, model
+workflow behavior, source-navigation metadata, object notation, evidence premises, admissions, or
+regression coverage. They include malformed metadata diagnostics, role validation,
+rewrite/transport metadata, public/minimal model interfaces, generated transport signatures,
+structural equivalence generation, syntax-sort universe levels, and synthetic generated-interface
+stress cases.
 
 ## Useful builds
 

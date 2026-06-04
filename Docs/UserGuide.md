@@ -112,8 +112,9 @@ lf_opaque zero : Nat
 lf_opaque succ (n : Nat) : Nat
 ```
 
-Opaque constants are trusted leaves of the declared type theory. Models must usually provide
-semantic interpretations for them unless they are hidden by later generated or derived declarations.
+Opaque constants are trusted leaves of the declared type theory. Typed opaque constants usually
+become model-interface obligations; public/minimal interfaces can omit them when model-visibility
+metadata hides them or hides their dependencies.
 
 ## Rules
 
@@ -168,8 +169,8 @@ end T
 This syntax lowers to an explicit internal function type and internal lambda. It still relies on the
 declared theory having suitable function/lambda LF structure for the result to check.
 
-For large chapters, `internal_defs where` registers many internal declarations in source order
-through the same incremental path:
+For large chapters, `internal_defs where` registers many internal declarations in source order.
+Supported object-definition and object-admission batches use incremental registration:
 
 ```lean
 namespace T
@@ -181,8 +182,11 @@ internal_defs where
 end T
 ```
 
-Use `internal theorem th : J := sorry` for theorem-shaped formalization debt that should be
-reported by `#lint_type_theory_sorries` without becoming a model field.
+All-direct checked object-definition blocks are checked as one batch, and consecutive object
+admissions are appended through the opaque-cache path. Tactic, theorem-shaped, placeholder, or
+mixed blocks still follow source-order paths. Use `internal theorem th : J := sorry` for
+theorem-shaped formalization debt that should be reported by `#lint_type_theory_sorries` without
+becoming a model field.
 
 ## Internal tactic scripts
 
@@ -333,8 +337,9 @@ generate_model_interface TinyNat as TinyNatModel
 
 Generates the Lean model-interface structure and inherited projection exports. Run generation
 commands at the root namespace; InternalLean rejects generation under wrapper namespaces to keep
-Lean names deterministic. After this command, `TinyNatModel` is available as a Lean structure to
-instantiate.
+Lean names deterministic. After this command, the full structure name is
+`TinyNat.TinyNatModel`. Inside `namespace TinyNat`, or after `open TinyNat`, it can be referred to
+as `TinyNatModel`.
 
 Strict structural equivalences are optional. To inspect or generate one, use:
 
@@ -382,7 +387,8 @@ Prints the Lean type/signature of the transport that would be generated for the 
 generate_model_transport TinyNat myZero for TinyNatModel
 ```
 
-Generates the Lean declaration specializing `TinyNat.myZero` to a model `TinyNatModel`.
+Generates the Lean declaration specializing `TinyNat.myZero` to a model of
+`TinyNat.TinyNatModel`.
 
 `generate_model_interface` does not generate these transports. Use transport commands after the
 interface exists. For bulk generation, use `#print_model_transports T for M` and then
@@ -411,7 +417,8 @@ entry. Use extensions for narrow additions rather than copying an existing theor
 `object_def` and `object_theorem` are deprecated compatibility shims. New code should use
 `internal def`.
 
-Regression files should avoid these compatibility shims except when they are testing legacy behavior.
+Regression files should avoid these compatibility shims except when they are testing legacy
+behavior.
 
 ## Good examples to read
 
@@ -427,10 +434,8 @@ After reading this guide, the next useful public docs are:
 
 - frontend syntax reference: `Docs/Syntax.md`;
 - architecture overview: `Docs/Architecture.md`;
-- focused direct-LF declaration reference;
 - internal tactic guide: `Docs/ObjectTactics.md`;
 - model workflow guide: `Docs/ModelWorkflow.md`;
 - LF trust-boundary guide: `Docs/LFTrustBoundary.md`;
-- examples guide: `Docs/Examples.md`.
-
-Those focused guides will be added under `Docs/` as the public docs mature.
+- examples and tests guide: `Docs/Examples.md`;
+- release workflow: `Docs/Releases.md`.

@@ -30,8 +30,9 @@ declare_type_theory T{u, v} extends Parent₁, Parent₂ where
   ...
 ```
 
-The braces after the theory name declare universe parameters for the type theory. They are not Lean
-universe parameters, although backends may later translate them.
+The braces after the theory name declare universe parameters for the type theory. In LF checking
+they are theory-level parameters; model-interface generation renders the names as Lean universe
+parameters when generated fields mention them.
 
 A previously declared theory can be reopened with:
 
@@ -466,10 +467,10 @@ end T
 
 Declarations in the batch are registered in source order; later declarations may refer to earlier
 ones, but earlier declarations cannot refer to later declarations in the same block. Direct checked
-object definitions in an all-object block are checked as one incremental batch; theorem-shaped,
-tactic, placeholder, admitted, or mixed blocks fall back to the ordinary source-order paths.
-`internal theorem ... := sorry` records theorem-shaped formalization debt without adding a model
-field.
+object definitions in an all-object block are checked as one incremental batch. Consecutive object
+admissions are appended through the opaque-cache path. Theorem-shaped, tactic, placeholder, or
+mixed blocks fall back to the ordinary source-order paths. `internal theorem ... := sorry` records
+theorem-shaped formalization debt without adding a model field.
 
 Declaration-local universe parameters are supported:
 
@@ -558,6 +559,8 @@ Model workflow commands:
 #print_public_model_obligations T
 #check_model_obligations T
 #check_public_model_obligations T
+#print_model_provenance T
+#print_public_model_provenance T
 #print_model_interface T as M
 #print_public_model_interface T as M
 generate_model_interface T as M

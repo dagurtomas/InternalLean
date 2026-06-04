@@ -1,5 +1,10 @@
 # InternalLean
 
+> [!WARNING]
+> Most of the code in this repository was written by AI coding agents. Treat the implementation
+> and documentation as research-prototype material that needs human review before reuse in
+> high-assurance settings.
+
 InternalLean is a standalone Lean project for declaring user-defined type theories, checking
 internal artifacts, replaying derivations in a small logical framework (LF), and generating model
 interfaces or transports from checked artifacts.
@@ -56,28 +61,28 @@ lake build InternalLeanTest
 
 ## Depending on InternalLean from another project
 
-Once this repository is published, another Lake project can depend on it through Git. The
-downstream project should use a compatible Lean toolchain. Until compatibility ranges are tested,
-use the same toolchain as this repository, currently:
+Another Lake project can depend on InternalLean through Git. The downstream project should use a
+compatible Lean toolchain. Until compatibility ranges are tested, use the same toolchain as this
+repository, currently:
 
 ```text
 leanprover/lean4:v4.31.0-rc1
 ```
 
-In a `lakefile.toml`, add:
+In a `lakefile.toml`, add the current compatibility tag:
 
 ```toml
 [[require]]
 name = "InternalLean"
 git = "https://github.com/dagurtomas/InternalLean.git"
-rev = "main"
+rev = "v4.31.0-rc1"
 ```
 
-For reproducible projects, replace `main` by a release tag or commit hash after one is available.
-InternalLean compatibility tags should normally match the Lean toolchain tag, for example
-`v4.31.0-rc1`.
+InternalLean compatibility tags normally match the Lean toolchain tag. For development against the
+latest unreleased repository state, use `rev = "main"`; for reproducible projects, prefer a tag or
+commit hash.
 
-In a `lakefile.lean`, the equivalent is:
+In a `lakefile.lean`, the equivalent tagged dependency is:
 
 ```lean
 import Lake
@@ -86,7 +91,7 @@ open Lake DSL
 package «MyProject» where
 
 require InternalLean from git
-  "https://github.com/dagurtomas/InternalLean.git" @ "main"
+  "https://github.com/dagurtomas/InternalLean.git" @ "v4.31.0-rc1"
 
 @[default_target]
 lean_lib «MyProject» where
@@ -159,10 +164,13 @@ internal def f (x : A) : B := body
 
 The generic LF frontend lowers this syntax to an explicit internal function type and internal
 lambda. It still relies on the declared theory having suitable function/lambda LF structure for the
-result to check. Large files can group declarations with `internal_defs where`; standalone and batched
-internal declarations use incremental registration instead of rechecking all previous internal
-definitions. Use `internal theorem name : J := sorry` for theorem-shaped admissions that remain
-lint-visible without becoming model fields.
+result to check. Large files can group declarations with `internal_defs where`; standalone
+declarations and supported batches use incremental registration instead of rechecking all previous
+internal definitions. All-direct checked object-definition blocks are checked as one batch, and
+consecutive object admissions are appended through the opaque-cache path. Tactic, theorem-shaped,
+placeholder, or mixed blocks still follow source-order paths. Use
+`internal theorem name : J := sorry` for theorem-shaped admissions that remain lint-visible without
+becoming model fields.
 
 ## Common commands
 
@@ -190,10 +198,15 @@ Model workflow:
 
 ```lean
 #print_model_obligations T
+#print_public_model_obligations T
 #check_model_obligations T
+#check_public_model_obligations T
 #print_model_provenance T
+#print_public_model_provenance T
 #print_model_interface T as M
+#print_public_model_interface T as M
 generate_model_interface T as M
+generate_public_model_interface T as M
 #print_model_template T as M
 #print_model_structural_equiv T for M
 generate_model_structural_equiv T for M
@@ -258,5 +271,5 @@ InternalLean is licensed under the Apache License, Version 2.0. See `LICENSE`.
 - Internal tactic guide: `Docs/ObjectTactics.md`
 - Model workflow guide: `Docs/ModelWorkflow.md`
 - LF trust boundary: `Docs/LFTrustBoundary.md`
-- Examples and tests: `Docs/Examples.md`
-- Releases and Lean-version bumps: `Docs/Releases.md`
+- Examples and tests guide: `Docs/Examples.md`
+- Release workflow: `Docs/Releases.md`

@@ -17,7 +17,7 @@ Depending on the theory, the generated fields can include:
 - interpretations of typed `lf_opaque` constants;
 - realizers for rules;
 - side-condition predicates and certificate parameters;
-- inherited fields from parent theories or generated chunks.
+- inherited projection fields from parent theories or generated chunks.
 
 The interface is generated from checked LF artifacts. It should not depend on raw parser traces or
 unchecked tactic scripts.
@@ -50,8 +50,9 @@ generate_model_transports TinyNat only someTheorem anotherTheorem for TinyNatMod
 ```
 
 Generation commands must be run at the root namespace so generated declarations have deterministic
-names. After `generate_model_interface`, `TinyNatModel` is a Lean structure available in the
-current environment.
+names. After `generate_model_interface TinyNat as TinyNatModel`, the full structure name is
+`TinyNat.TinyNatModel`. Inside `namespace TinyNat`, or after `open TinyNat`, it can be referred to
+as `TinyNatModel`.
 
 ## Inspecting obligations
 
@@ -275,7 +276,7 @@ If you do not need section bundles, stay with the flat `generate_model_interface
 
 A model transport specializes a checked internal declaration or LF theorem to a completed model.
 For example, if an internal theorem was checked in `TinyNat`, a transport command can generate the
-corresponding Lean theorem over a `TinyNatModel`.
+corresponding Lean theorem over a model of `TinyNat.TinyNatModel`.
 
 Transport generation consumes checked LF artifacts. It should not inspect unchecked source terms or
 raw tactic traces.

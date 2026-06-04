@@ -1,7 +1,8 @@
 # Releases and Lean-version bumps
 
 InternalLean is intended to track recent Lean releases closely. For now, releases should be made
-manually after a toolchain bump builds successfully.
+manually after a toolchain bump builds successfully. The current compatibility release is
+`v4.31.0-rc1` for Lean `v4.31.0-rc1`.
 
 ## Bumping Lean
 
@@ -71,12 +72,14 @@ Release checklist:
    git push origin v4.31.0-rc1
    ```
 
-7. Optionally create a GitHub release from the tag:
+7. Optionally create a GitHub release from the tag. Mark release-candidate or nightly Lean tags
+   as prereleases:
 
    ```bash
    gh release create v4.31.0-rc1 \
      --title "InternalLean for Lean v4.31.0-rc1" \
-     --notes "Compatibility release for Lean v4.31.0-rc1."
+     --notes "Compatibility release for Lean v4.31.0-rc1." \
+     --prerelease
    ```
 
 Do not move or force-push public release tags. If a fix is needed for the same Lean version after a
