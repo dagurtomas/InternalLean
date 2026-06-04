@@ -3,6 +3,7 @@ import InternalLeanTest.TinyNat
 import InternalLeanTest.APIExtensionTest
 import InternalLeanTest.CheckerHardeningTest
 import InternalLeanTest.CheckerPerformanceSmokeTest
+import InternalLeanTest.CorrectnessRegressionTest
 import InternalLeanTest.DocLintTest
 import InternalLeanTest.EndToEndTinyNatTest
 import InternalLeanTest.EvidencePremiseTest
