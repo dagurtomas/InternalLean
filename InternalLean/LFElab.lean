@@ -2494,7 +2494,10 @@ mutual
             let hasForeignFresh :=
               objExprMentionsForeignImplicitFresh implicitVars expected ||
                 objExprMentionsForeignImplicitFresh implicitVars result
-            if implicitVars.isEmpty || hasForeignFresh then pure () else
+            let allImplicitArgsSourceSupplied := fullPositional ||
+              params.all fun p =>
+                p.visibility != .implicit || (named.find? p.sourceName.eraseMacroScopes).isSome
+            if implicitVars.isEmpty || allImplicitArgsSourceSupplied || hasForeignFresh then pure () else
               throwError "{ownerKind} '{ownerName}' could not infer implicit arguments for \
                 application '{headName}' in {where_} from expected expression\n  \
                   {expected}\nwhile matching result\n  {result}\nreason: {err}"
