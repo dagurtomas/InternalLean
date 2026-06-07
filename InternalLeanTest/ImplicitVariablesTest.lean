@@ -58,6 +58,25 @@ internal def has_id_a_tactic : Has A (id a) := by
 
 end ImplicitVariablesSmoke
 
+/-- Nested implicit-head inference freshens reused source parameter names per application. -/
+declare_type_theory ImplicitNestedHeads where
+  syntax_sort Cat
+  syntax_sort Functor (A : Cat) (B : Cat)
+  lf_opaque IdFunctor (A : Cat) : Functor A A
+  lf_opaque CompFunctor {A : Cat} {B : Cat} {C : Cat}
+    (F : Functor A B) (G : Functor B C) : Functor A C
+  syntax_sort NatIso {A : Cat} {B : Cat}
+    (F : Functor A B) (G : Functor A B)
+  syntax_abbrev RetractionWitness {A : Cat} {B : Cat}
+    (F : Functor A B) (G : Functor B A)
+    (ρ : NatIso (CompFunctor F G) (IdFunctor A)) :=
+      NatIso (CompFunctor G F) (IdFunctor B)
+  syntax_abbrev NamedNatIso {A : Cat} {B : Cat}
+    (F : Functor A B) (G : Functor A B) :=
+      NatIso {A := A} {B := B} F G
+
+#check_type_theory_anchor ImplicitNestedHeads
+
 /-- info: type theory ImplicitVariablesSmoke with 15 logical-framework declarations
 ---
 info: syntax_sort Obj

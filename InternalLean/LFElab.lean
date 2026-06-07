@@ -2174,6 +2174,83 @@ def implicitVarsOfParams (params : Array HLBinding) : NameSet := Id.run do
       vars := vars.insert p.name.eraseMacroScopes
   return vars
 
+/-- One source callable parameter freshened for a single implicit-inference problem. -/
+structure FreshImplicitParam where
+  sourceName : Name
+  freshName : Name
+  visibility : BinderVisibility
+  sourceTypeExpr : ObjExpr
+  typeExpr : ObjExpr
+  deriving Inhabited, Repr, BEq
+
+/-- Implicit variables associated to a freshened callable telescope. -/
+def implicitVarsOfFreshParams (params : Array FreshImplicitParam) : NameSet := Id.run do
+  let mut vars : NameSet := {}
+  for p in params do
+    if p.visibility == .implicit then
+      vars := vars.insert p.freshName.eraseMacroScopes
+  return vars
+
+/-- Names to avoid when freshening one callable-head telescope for implicit inference. -/
+def implicitFreshAvoidSet (sig : HLSignature) (knownTypes : LFLocalTypes) (locals : NameSet)
+    (info : ImplicitCallableInfo) (rawArgs : Array ObjExpr) (expected? : Option ObjExpr) :
+    NameSet := Id.run do
+  let mut avoid := sig.nameSet ++ locals
+  for (n, ty) in knownTypes.toList do
+    avoid := avoid.insert n.eraseMacroScopes
+    avoid := avoid ++ freeLFObjectIdentifiers ty
+  for p in info.params do
+    avoid := avoid.insert p.name.eraseMacroScopes
+    avoid := avoid ++ freeLFObjectIdentifiers p.typeExpr
+  if let some result := info.result? then
+    avoid := avoid ++ freeLFObjectIdentifiers result
+  for arg in rawArgs do
+    avoid := avoid ++ freeLFObjectIdentifiers arg
+  if let some expected := expected? then
+    avoid := avoid ++ freeLFObjectIdentifiers expected
+  return avoid
+
+/-- Whether a name is one of the internal fresh implicit-inference names. -/
+partial def isImplicitFreshName : Name → Bool
+  | .anonymous => false
+  | .str parent _ => parent == `_ilImplicit || isImplicitFreshName parent
+  | .num parent _ => isImplicitFreshName parent
+
+/-- Deterministic internal name for one fresh implicit-inference parameter. -/
+def freshImplicitParamName (idx : Nat) (avoid : NameSet) : Name :=
+  freshLFNameAvoiding (.str `_ilImplicit s!"p{idx}") avoid
+
+/-- Whether an expression mentions an implicit-inference fresh name not owned by this
+application. -/
+def objExprMentionsForeignImplicitFresh (vars : NameSet) (e : ObjExpr) : Bool :=
+  (freeLFObjectIdentifiers e).toList.any fun n =>
+    isImplicitFreshName n && !vars.contains n.eraseMacroScopes
+
+/-- Alpha-freshen one callable telescope so nested heads with the same source binder names do not
+share one implicit-inference metavariable namespace. -/
+def freshImplicitCallableParams (sig : HLSignature) (knownTypes : LFLocalTypes)
+    (locals : NameSet) (info : ImplicitCallableInfo) (rawArgs : Array ObjExpr)
+    (expected? : Option ObjExpr) :
+    Array FreshImplicitParam × Option ObjExpr := Id.run do
+  let mut avoid := implicitFreshAvoidSet sig knownTypes locals info rawArgs expected?
+  let mut subst : NameMap ObjExpr := {}
+  let mut out : Array FreshImplicitParam := #[]
+  for h : i in [:info.params.size] do
+    let p := info.params[i]
+    let sourceName := p.name.eraseMacroScopes
+    let freshName := freshImplicitParamName i avoid
+    avoid := avoid.insert freshName.eraseMacroScopes
+    let typeExpr := substLFParams subst p.typeExpr
+    out := out.push {
+      sourceName := sourceName
+      freshName := freshName.eraseMacroScopes
+      visibility := p.visibility
+      sourceTypeExpr := p.typeExpr
+      typeExpr := typeExpr }
+    subst := subst.insert sourceName (.ident freshName.eraseMacroScopes)
+  let result? := info.result?.map (substLFParams subst)
+  return (out, result?)
+
 /-- Collect and remove named implicit arguments from an application spine. -/
 def collectNamedImplicitArgs (ownerKind : String) (ownerName : Name) (headName : Name)
     (args : Array ObjExpr) : CoreM (NameMap ObjExpr × Array ObjExpr) := do
@@ -2348,29 +2425,31 @@ mutual
       (headName : Name) (info : ImplicitCallableInfo) (rawArgs : Array ObjExpr)
       (expected? : Option ObjExpr) : CoreM ObjExpr := do
     let (named, positional) ← collectNamedImplicitArgs ownerKind ownerName headName rawArgs
+    let (params, result?) :=
+      freshImplicitCallableParams sig knownTypes locals info rawArgs expected?
     let hasNamed := positional.size != rawArgs.size
     let fullPositional := !hasNamed
-      && positional.size == info.params.size + info.trailingExplicitArgs
-    let implicitVars := implicitVarsOfParams info.params
+      && positional.size == params.size + info.trailingExplicitArgs
+    let implicitVars := implicitVarsOfFreshParams params
     let mut subst : NameMap ObjExpr := {}
-    let mut argsByParam : Array (Option ObjExpr) := (List.replicate info.params.size none).toArray
+    let mut argsByParam : Array (Option ObjExpr) := (List.replicate params.size none).toArray
     let mut posIdx := 0
     if fullPositional then
-      for h : i in [:info.params.size] do
-        let param := info.params[i]
+      for h : i in [:params.size] do
+        let param := params[i]
         let raw := positional[i]!
         let expectedParam := substLFParams subst param.typeExpr
         let arg ←
           elaborateImplicitAppsInExprWithLookup lookup sig knownTypes locals ownerKind ownerName
-            s!"{where_} argument '{param.name.eraseMacroScopes}' of \
+            s!"{where_} argument '{param.sourceName}' of \
               '{headName}'" (some expectedParam) raw
         argsByParam := argsByParam.set! i (some arg)
-        subst := subst.insert param.name.eraseMacroScopes (eraseObjExprScopes arg)
-      posIdx := info.params.size
+        subst := subst.insert param.freshName (eraseObjExprScopes arg)
+      posIdx := params.size
     else
-      for h : i in [:info.params.size] do
-        let param := info.params[i]
-        let pName := param.name.eraseMacroScopes
+      for h : i in [:params.size] do
+        let param := params[i]
+        let pName := param.sourceName.eraseMacroScopes
         let expectedParam := substLFParams subst param.typeExpr
         match named.find? pName with
         | some rawNamed =>
@@ -2382,7 +2461,7 @@ mutual
                 s!"{where_} named implicit argument '{pName}' of \
                   '{headName}'" (some expectedParam) rawNamed
             argsByParam := argsByParam.set! i (some arg)
-            subst := subst.insert pName (eraseObjExprScopes arg)
+            subst := subst.insert param.freshName (eraseObjExprScopes arg)
         | none =>
             if param.visibility == .implicit then
               pure ()
@@ -2400,35 +2479,38 @@ mutual
                 | .ok subst' => subst := subst'
                 | .error _ => pure ()
               argsByParam := argsByParam.set! i (some arg)
-              subst := subst.insert pName (eraseObjExprScopes arg)
+              subst := subst.insert param.freshName (eraseObjExprScopes arg)
       for (n, _) in named.toList do
-        unless info.params.any (fun p => p.name.eraseMacroScopes == n
+        unless params.any (fun p => p.sourceName.eraseMacroScopes == n
           && p.visibility == .implicit) do
           throwError "{ownerKind} '{ownerName}' supplies unknown named implicit argument '{n}' in \
             application '{headName}'"
     if let some expected := expected? then
-      if let some result := info.result? then
+      if let some result := result? then
         let result := substLFParams subst result
         match matchImplicitObjectPattern implicitVars result expected subst with
         | .ok subst' => subst := subst'
         | .error err =>
-            if implicitVars.isEmpty then pure () else
+            let hasForeignFresh :=
+              objExprMentionsForeignImplicitFresh implicitVars expected ||
+                objExprMentionsForeignImplicitFresh implicitVars result
+            if implicitVars.isEmpty || hasForeignFresh then pure () else
               throwError "{ownerKind} '{ownerName}' could not infer implicit arguments for \
                 application '{headName}' in {where_} from expected expression\n  \
                   {expected}\nwhile matching result\n  {result}\nreason: {err}"
     let mut outArgs := #[]
-    for h : i in [:info.params.size] do
-      let param := info.params[i]
-      let pName := param.name.eraseMacroScopes
+    for h : i in [:params.size] do
+      let param := params[i]
+      let pName := param.sourceName.eraseMacroScopes
       match argsByParam[i]! with
       | some arg => outArgs := outArgs.push arg
       | none =>
-          match subst.find? pName with
-          | some inferred => outArgs := outArgs.push inferred
+          match subst.find? param.freshName with
+          | some inferred => outArgs := outArgs.push (substLFParams subst inferred)
           | none =>
               throwError "{ownerKind} '{ownerName}' could not infer implicit argument '{pName} : \
-                {param.typeExpr}' in application '{headName}' in {where_}; use a named implicit \
-                  argument or supply all arguments explicitly"
+                {param.sourceTypeExpr}' in application '{headName}' in {where_}; use a named \
+                  implicit argument or supply all arguments explicitly"
     let remaining := positional[posIdx:]
     if remaining.size != info.trailingExplicitArgs then
       if info.trailingExplicitArgs == 0 then

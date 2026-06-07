@@ -100,7 +100,11 @@ Binders in declaration telescopes use:
 {x : A}
 ```
 
-The second form marks an implicit LF binder.
+The second form marks an implicit LF binder. Applications may omit ordinary implicit binders when
+later explicit arguments or the expected result determine them. Named implicit arguments use the
+source binder name, for example `{A := A}`. Generated model interfaces may print applications as
+`@head ...` internally so that the fully explicit LF spine is accepted by Lean after some source
+binders render as Lean implicit binders.
 
 ## Declarations inside a theory block
 

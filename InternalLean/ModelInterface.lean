@@ -2363,6 +2363,41 @@ def lfParamVisibilityMapOfObligations (obs : Array LFModelObligation) : LFParamV
       out := out.insert o.name.eraseMacroScopes (o.params.map (·.visibility))
   return out
 
+/-- Source parameter visibility map induced by all checked LF callable heads. -/
+def lfParamVisibilityMapOfCheckedSignature (checked : CheckedSignature) : LFParamVisibilityMap :=
+  Id.run do
+  let insertParams (out : LFParamVisibilityMap) (name : Name)
+      (params : Array CheckedLFBinding) : LFParamVisibilityMap :=
+    if params.isEmpty then out else out.insert name.eraseMacroScopes (params.map (·.visibility))
+  let mut out : LFParamVisibilityMap := {}
+  for s in checked.lfSyntaxSorts do
+    out := insertParams out s.name s.params
+  for a in checked.lfSyntaxAbbrevs do
+    out := insertParams out a.name a.params
+  for d in checked.lfSyntaxDefs do
+    out := insertParams out d.name d.params
+  for a in checked.lfJudgmentAbbrevs do
+    out := insertParams out a.name a.params
+  for j in checked.lfJudgments do
+    out := insertParams out j.name j.params
+  for o in checked.lfOpaqueConsts do
+    out := insertParams out o.name o.params
+  for r in checked.lfRules do
+    out := insertParams out r.name r.params
+  for t in checked.lfJudgmentTheorems do
+    out := insertParams out t.name t.binders
+  return out
+
+/-- Complete parameter-visibility map used by model rendering.  The checked-signature map covers
+callable heads that are not model fields, while the obligation overlay keeps generated or inferred
+model-field-only heads such as side-condition predicates. -/
+def lfParamVisibilityMapForModel (checked : CheckedSignature) (obs : Array LFModelObligation) :
+    LFParamVisibilityMap := Id.run do
+  let mut out := lfParamVisibilityMapOfCheckedSignature checked
+  for (n, vis) in (lfParamVisibilityMapOfObligations obs).toList do
+    out := out.insert n.eraseMacroScopes vis
+  return out
+
 /-- Syntax for a checked LF expression in an LF-model structure field, using generated names
 from the model-obligation IR and expanding staged LF definitions. -/
 partial def lfExprSyntaxInModelWithFields (fieldNames : NameMap Name)
@@ -3418,7 +3453,7 @@ def lfModelStructuralEquivFieldSyntaxes (checked : CheckedSignature)
   let fieldObs := obs.filter (fun o => o.generatedRole == .field && o.renderable)
   let fieldNames := lfModelFieldNameMap obs
   let defValues := lfDefinitionValueMap checked
-  let paramVis := lfParamVisibilityMapOfObligations obs
+  let paramVis := lfParamVisibilityMapForModel checked obs
   let blockingUntyped := blockingUntypedLFOpaqueNames checked
   let sidePredicateNames := lfSideConditionPredicateNames checked
   let nameMaps := lfStructuralEquivNameMaps checked obs
@@ -4086,28 +4121,42 @@ structure LFAdmittedSyntaxDefHelperInfo where
 def wrapWithAdmittedSyntaxDefLets (fieldNames : NameMap Name)
     (defValues : NameMap CheckedLFExpr) (paramVis : LFParamVisibilityMap)
     (defs : Array CheckedLFSyntaxDef) (body : TSyntax `term)
-    (typeSyntaxes : NameMap (TSyntax `term) := {})
-    (helperInfos : NameMap LFAdmittedSyntaxDefHelperInfo := {}) : CommandElabM (TSyntax `term) :=
-  do
+    (_typeSyntaxes : NameMap (TSyntax `term) := {})
+    (helperInfos : NameMap LFAdmittedSyntaxDefHelperInfo := {})
+    (baseLocals : LFLocalSyntaxCtx := []) : CommandElabM (TSyntax `term) := do
+  let mkExplicitFamilyWrapper (d : CheckedLFSyntaxDef)
+      (mkBody : LFLocalSyntaxCtx → Array (TSyntax `term) → CommandElabM (TSyntax `term)) :
+      CommandElabM (TSyntax `term) := do
+    let mut locals := baseLocals
+    let mut binders : Array LFRenderedBinder := #[]
+    let mut args : Array (TSyntax `term) := #[]
+    for b in d.params do
+      let ty ← lfExprSyntaxInModelWithFields fieldNames defValues locals paramVis b.checkedTypeExpr
+      let xId := freshLFLocalIdent b.name locals
+      binders := binders.push { name := xId.getId, typeStx := ty }
+      args := args.push (xId : TSyntax `term)
+      locals := (b.name.eraseMacroScopes, xId) :: locals
+    let mut value ← mkBody locals args
+    for b in binders.reverse do
+      let id := mkIdent b.name
+      let ty := b.typeStx
+      value ← `(fun ($id:ident : $ty) => $value)
+    pure value
   let mut body := body
   for d in defs.reverse do
     let id := mkIdent d.name
     match helperInfos.find? d.name.eraseMacroScopes with
     | some info =>
-        let helper := mkIdent info.helperName
+        let helper ← explicitLeanHeadSyntax (mkIdent info.helperName)
         let depArgs := info.dependencyNames.map fun dep =>
           (mkIdent (lfModelFieldName fieldNames dep) : TSyntax `term)
-        let value ← mkTermAppSyntax helper depArgs
+        let value ← mkExplicitFamilyWrapper d fun _ paramArgs =>
+          mkTermAppSyntax helper (depArgs ++ paramArgs)
         body ← `(let $id:ident := $value; $body)
     | none =>
-        let ty ←
-          match typeSyntaxes.find? d.name.eraseMacroScopes with
-          | some ty => pure ty
-          | none => do
-              let result ← typeSyntaxOfLevel d.resultLevel
-              lfTelescopeSyntaxInModelWithFields fieldNames defValues d.params result [] 0
-                paramVis
-        body ← `(let $id:ident : $ty := (sorry : $ty); $body)
+        let result ← typeSyntaxOfLevel d.resultLevel
+        let value ← mkExplicitFamilyWrapper d fun _ _ => `((sorry : $result))
+        body ← `(let $id:ident := $value; $body)
   pure body
 
 /-- Render the type of one generated LF-model field. -/
@@ -4299,7 +4348,7 @@ def lfAdmittedSyntaxDefHelperCommandSyntax (checked : CheckedSignature) (fieldNa
     (paramDeps.find? helper.syntaxDef.name.eraseMacroScopes).getD {}
   let paramDepDefs := orderedAdmittedSyntaxDefsFromNames checked paramDepNames
   let familyTy ← wrapWithAdmittedSyntaxDefLets fieldNames defValues paramVis paramDepDefs
-    familyTy {} helperInfos
+    familyTy {} helperInfos (baseLocals := locals)
   let ty ← lfRenderedTelescopeSyntax depBinders familyTy
   let helperId := mkIdent helper.info.helperName
   let levelIds := checked.levelParams.map (mkIdent ·.eraseMacroScopes)
@@ -4336,7 +4385,7 @@ def lfModelDerivedStatementSummaries (checked : CheckedSignature) (structureName
     (admittedNames : NameSet := {}) : CommandElabM (Array MessageData) := do
   let obs ← validateLFModelObligations checked admittedNames
   let fieldNames := lfModelFieldNameMap obs
-  let paramVis := lfParamVisibilityMapOfObligations obs
+  let paramVis := lfParamVisibilityMapForModel checked obs
   let defValues := lfDefinitionValueMap checked
   let M := mkIdent `M
   let structTy := mkIdent structureName
@@ -4494,15 +4543,12 @@ def lfModelStructureRenderedFieldsFromObligations (checked : CheckedSignature)
     (admittedIndex? : Option LFModelAdmittedSyntaxDefIndex := none) :
     CommandElabM (Array LFRenderedModelField) := do
   let fieldNames := lfModelFieldNameMap obs
-  let paramVis := lfParamVisibilityMapOfObligations obs
+  let paramVis := lfParamVisibilityMapForModel checked obs
   let defValues := lfDefinitionValueMap checked
   let blockingUntyped := blockingUntypedLFOpaqueNames checked
   let sidePredicateNames := lfSideConditionPredicateNames checked
   let admittedIndex := admittedIndex?.getD <| mkLFModelAdmittedSyntaxDefIndex checked defValues obs
-  let fallbackAdmittedDefs := admittedIndex.usedDefs.filter fun d =>
-    !(helperInfos.contains d.name.eraseMacroScopes)
-  let admittedTypes ←
-    renderAdmittedSyntaxDefTypeSyntaxes fieldNames defValues paramVis fallbackAdmittedDefs
+  let admittedTypes : NameMap (TSyntax `term) := {}
   let mut fields := #[]
   for o in obs do
     let admittedSyntaxDefs := admittedIndex.defsFor o
@@ -4607,7 +4653,7 @@ internal chunks whose final structure keeps the requested public name. -/
 def lfModelStructureSyntaxesFromObligations (checked : CheckedSignature) (structureName : Name)
     (obs : Array LFModelObligation) : CommandElabM (Array Syntax) := do
   let fieldNames := lfModelFieldNameMap obs
-  let paramVis := lfParamVisibilityMapOfObligations obs
+  let paramVis := lfParamVisibilityMapForModel checked obs
   let defValues := lfDefinitionValueMap checked
   let blockingUntyped := blockingUntypedLFOpaqueNames checked
   let sidePredicateNames := lfSideConditionPredicateNames checked
@@ -4710,16 +4756,13 @@ def lfModelStructureRenderedFieldsForObligations (checked : CheckedSignature) (a
     (admittedIndex? : Option LFModelAdmittedSyntaxDefIndex := none) :
     CommandElabM (Array LFRenderedModelField) := do
   let fieldNames := lfModelFieldNameMap allObs
-  let paramVis := lfParamVisibilityMapOfObligations allObs
+  let paramVis := lfParamVisibilityMapForModel checked allObs
   let defValues := lfDefinitionValueMap checked
   let blockingUntyped := blockingUntypedLFOpaqueNames checked
   let sidePredicateNames := lfSideConditionPredicateNames checked
   let admittedIndex := admittedIndex?.getD <|
     mkLFModelAdmittedSyntaxDefIndex checked defValues allObs
-  let fallbackAdmittedDefs := admittedIndex.usedDefs.filter fun d =>
-    !(helperInfos.contains d.name.eraseMacroScopes)
-  let admittedTypes ←
-    renderAdmittedSyntaxDefTypeSyntaxes fieldNames defValues paramVis fallbackAdmittedDefs
+  let admittedTypes : NameMap (TSyntax `term) := {}
   let mut fields := #[]
   for o in runObs do
     let admittedSyntaxDefs := admittedIndex.defsFor o
@@ -4752,7 +4795,7 @@ def lfModelSectionStructureSyntaxes (checked : CheckedSignature) (structureName 
       CommandElabM (Array Syntax × Array Name) := do
   let obs ← validateLFModelObligations checked admittedNames mode
   let fieldNames := lfModelFieldNameMap obs
-  let paramVis := lfParamVisibilityMapOfObligations obs
+  let paramVis := lfParamVisibilityMapForModel checked obs
   let defValues := lfDefinitionValueMap checked
   let blockingUntyped := blockingUntypedLFOpaqueNames checked
   let sidePredicateNames := lfSideConditionPredicateNames checked
@@ -4893,7 +4936,7 @@ def lfModelSectionBundleSyntaxes (checked : CheckedSignature) (bundleName flatNa
   let fields := obs.filter (fun o => o.generatedRole == .field && o.renderable)
   let runs := lfModelSectionRuns checked obs
   let fieldNames := lfModelFieldNameMap obs
-  let paramVis := lfParamVisibilityMapOfObligations obs
+  let paramVis := lfParamVisibilityMapForModel checked obs
   let defValues := lfDefinitionValueMap checked
   let blockingUntyped := blockingUntypedLFOpaqueNames checked
   let sidePredicateNames := lfSideConditionPredicateNames checked
@@ -5196,7 +5239,7 @@ def lfJudgmentTheoremInterpretationSyntaxAs? (checked : CheckedSignature) (
   | .error _err => return none
   let obs ← validateLFModelObligations checked admittedNames
   let fieldNames := lfModelFieldNameMap obs
-  let paramVis := lfParamVisibilityMapOfObligations obs
+  let paramVis := lfParamVisibilityMapForModel checked obs
   let defValues := lfDefinitionValueMap checked
   let blockingUntyped := blockingUntypedLFOpaqueNames checked
   let sidePredicateNames := lfSideConditionPredicateNames checked
@@ -5260,7 +5303,7 @@ def lfObjectDefInterpretationSyntaxAs? (checked : CheckedSignature) (structureNa
     return none
   let obs ← validateLFModelObligations checked admittedNames
   let fieldNames := lfModelFieldNameMap obs
-  let paramVis := lfParamVisibilityMapOfObligations obs
+  let paramVis := lfParamVisibilityMapForModel checked obs
   let defValues := lfDefinitionValueMap checked
   let M := mkIdent `M
   let defId := mkIdent outputName
@@ -5320,7 +5363,7 @@ def admittedLFJudgmentTypeSyntax? (checked : CheckedSignature) (modelIdent : Ide
     return none
   let obs ← validateLFModelObligations checked
   let fieldNames := lfModelFieldNameMap obs
-  let paramVis := lfParamVisibilityMapOfObligations obs
+  let paramVis := lfParamVisibilityMapForModel checked obs
   let defValues := lfDefinitionValueMap checked
   let mut locals : LFLocalSyntaxCtx := []
   let mut binders : Array LFRenderedBinder := #[]
@@ -5351,7 +5394,7 @@ def admittedModelInterpretationSyntax (checked : CheckedSignature) (structureNam
         | some checkedType =>
             let obs ← validateLFModelObligations checked
             let fieldNames := lfModelFieldNameMap obs
-            let paramVis := lfParamVisibilityMapOfObligations obs
+            let paramVis := lfParamVisibilityMapForModel checked obs
             let defValues := lfDefinitionValueMap checked
             let mut locals : LFLocalSyntaxCtx := []
             let mut binders : Array LFRenderedBinder := #[]

@@ -105,6 +105,19 @@ declare_type_theory SyntaxDefHelperDependencySmoke{u} where
 
 generate_model_interface SyntaxDefHelperDependencySmoke as SyntaxDefHelperDependencySmokeModel
 
+/-- Admitted syntax-definition helpers preserve implicit-indexed family applications. -/
+declare_type_theory ImplicitSyntaxDefModelSmoke{u} where
+  syntax_sort Cat : Type u
+  syntax_sort Functor (C : Cat) (D : Cat) : Type u
+  syntax_sort NatTrans {C : Cat} {D : Cat}
+    (F : Functor C D) (G : Functor C D) : Type u
+  syntax_def ObjectwiseData {C : Cat} {D : Cat}
+    (F : Functor C D) (G : Functor C D) (α : NatTrans F G) : Type u := sorry
+  lf_opaque witness {C : Cat} {D : Cat}
+    (F : Functor C D) (G : Functor C D) (α : NatTrans F G) : ObjectwiseData F G α
+
+generate_model_interface ImplicitSyntaxDefModelSmoke as ImplicitSyntaxDefModelSmokeModel
+
 /-- Extension blocks can add and later use admitted syntax definitions. -/
 declare_type_theory SyntaxDefExtensionSmoke{u} where
   syntax_sort Obj : Type u
