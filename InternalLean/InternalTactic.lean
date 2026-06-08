@@ -21,6 +21,18 @@ open Lean Elab Command
 
 namespace InternalLean
 
+/-- Time an InternalLean command-elaboration phase when LF phase profiling is enabled. -/
+def profileInternalLeanCommandPhase (label : MessageData) (x : CommandElabM α) :
+    CommandElabM α := do
+  if (← getBoolOption `internalLean.profileLFCheckPhases) then
+    let start ← IO.monoMsNow
+    let result ← x
+    let stop ← IO.monoMsNow
+    logInfo m!"InternalLean command phase {label}: {stop - start}ms"
+    pure result
+  else
+    x
+
 declare_syntax_cat internalTactic
 declare_syntax_cat internalTacticArg
 declare_syntax_cat internalRwItem
@@ -3733,11 +3745,14 @@ def tryElabInternalDefsSorryOpaqueBatch (decls : Array (TSyntax `internalDefsDec
     CommandElabM Bool := do
   if decls.isEmpty then
     return false
-  let mut items : Array InternalDefsSorryBatchItem := #[]
-  for decl in decls do
-    match ← elabInternalDefsSorryBatchItem? decl with
-    | some item => items := items.push item
-    | none => return false
+  let some items ← profileInternalLeanCommandPhase "admitted opaque parse items" do
+      let mut items : Array InternalDefsSorryBatchItem := #[]
+      for decl in decls do
+        match ← elabInternalDefsSorryBatchItem? decl with
+        | some item => items := items.push item
+        | none => return none
+      return some items
+    | return false
   let some first := items[0]?
     | return false
   let theoryName := first.target.theoryName
@@ -3761,17 +3776,23 @@ def tryElabInternalDefsSorryOpaqueBatch (decls : Array (TSyntax `internalDefsDec
       anchorName := item.target.anchorName
       params := item.params
       typeExpr := item.typeExpr }
-  let shapes ← liftCoreM <| classifyInternalSorryAdmissionShapes theoryName requests
+  let shapes ← profileInternalLeanCommandPhase "admitted opaque classify" do
+    liftCoreM <| classifyInternalSorryAdmissionShapes theoryName requests
   unless shapes.all (· == .lfOpaque) do
     return false
-  liftCoreM <| registerAdmittedInternalLFOpaqueBatch theoryName requests
+  profileInternalLeanCommandPhase "admitted opaque register" do
+    liftCoreM <| registerAdmittedInternalLFOpaqueBatch theoryName requests
   for item in items do
     if let some doc := item.sourceDoc? then
-      liftCoreM <| registerSourceDoc item.target.theoryName .internalDef item.target.localName doc
-    addInternalDeclarationAnchor item.target item.typeExpr true item.sourceDoc? item.declStx
-      item.declNameStx
-    addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
-    logWarning m!"internal declaration '{item.target.anchorName}' was admitted by `sorry`; the \
+      profileInternalLeanCommandPhase "admitted opaque source doc" do
+        liftCoreM <| registerSourceDoc item.target.theoryName .internalDef item.target.localName doc
+    profileInternalLeanCommandPhase "admitted opaque source anchor" do
+      addInternalDeclarationAnchor item.target item.typeExpr true item.sourceDoc? item.declStx
+        item.declNameStx
+    profileInternalLeanCommandPhase "admitted opaque navigation info" do
+      addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
+    profileInternalLeanCommandPhase "admitted opaque warning" do
+      logWarning m!"internal declaration '{item.target.anchorName}' was admitted by `sorry`; the \
       annotation was checked in theory '{item.target.theoryName}', but the body was not checked. \
       Use `#lint_type_theory_sorries {item.target.theoryName}` to list current admissions."
   return true

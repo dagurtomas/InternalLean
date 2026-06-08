@@ -520,17 +520,20 @@ def classifyInternalSorryAdmissionShapes (theoryName : Name)
     | throwError "unknown type theory '{theoryName}'"
   let some checked ← getCheckedTheory? theoryName
     | throwError "no checked artifact stored for type theory '{theoryName}'"
-  let flatSourceBase ← flattenSignature sig
+  let flatSourceBase ← profileLFCheckPhase m!"{theoryName}: classify admission flatten" do
+    flattenSignature sig
   let rawBlock : HLTheoryBlock := {
     lfOpaqueConsts := requests.map admittedInternalLFOpaqueDeclOfRequest }
   let priorKnownTypes :=
     checkedLFDefinitionTypeMapFromDefs checked.lfSyntaxDefs checked.lfObjectDefs
   let blockForRegistry ←
-    elaborateImplicitAppsInTheoryBlockExtension flatSourceBase priorKnownTypes rawBlock
-  let checkedBase :=
-    (← getCheckedHLSignature? theoryName).getD
+    profileLFCheckPhase m!"{theoryName}: classify admission implicit apps" do
+      elaborateImplicitAppsInTheoryBlockExtension flatSourceBase priorKnownTypes rawBlock
+  let checkedBase ← profileLFCheckPhase m!"{theoryName}: classify admission checked baseline" do
+    pure <| (← getCheckedHLSignature? theoryName).getD
       (checkedSignatureIncrementalHLSignature flatSourceBase checked)
-  let blockForCheck ← expandSyntaxAbbrevsInTheoryBlockExtension checkedBase blockForRegistry
+  let blockForCheck ← profileLFCheckPhase m!"{theoryName}: classify admission abbrev expansion" do
+    expandSyntaxAbbrevsInTheoryBlockExtension checkedBase blockForRegistry
   let flatForCheck := checkedBase.appendBlock blockForCheck
   let globalHeads := lfGlobalHeadInfo flatForCheck
   let mut out := #[]
@@ -544,15 +547,17 @@ def classifyInternalSorryAdmissionShapes (theoryName : Name)
           out := out.push .judgmentTheorem
         else
           try
-            discard <| checkLFObjectOrStructuralType flatForCheck globalHeads knownTypes locals
-              "admitted internal declaration" req.localName "annotation" typeExpr
+            profileLFCheckPhase m!"{theoryName}: classify admission object type" do
+              discard <| checkLFObjectOrStructuralType flatForCheck globalHeads knownTypes locals
+                "admitted internal declaration" req.localName "annotation" typeExpr
             out := out.push .lfOpaque
           catch ex =>
             out := out.push <| .unsupported (← classificationExceptionMessage ex)
     | none =>
         try
-          discard <| checkLFObjectOrStructuralType flatForCheck globalHeads knownTypes locals
-            "admitted internal declaration" req.localName "annotation" typeExpr
+          profileLFCheckPhase m!"{theoryName}: classify admission object type" do
+            discard <| checkLFObjectOrStructuralType flatForCheck globalHeads knownTypes locals
+              "admitted internal declaration" req.localName "annotation" typeExpr
           out := out.push .lfOpaque
         catch ex =>
           out := out.push <| .unsupported (← classificationExceptionMessage ex)
@@ -582,17 +587,21 @@ def registerAdmittedInternalLFOpaqueBatch (theoryName : Name)
     | throwError "no checked artifact stored for type theory '{theoryName}'"
   let cacheLookup ← getOrBuildCompiledLFCheckCache theoryName checked
   let cache := cacheLookup.cache
-  let flatSourceBase ← flattenSignature sig
+  let flatSourceBase ← profileLFCheckPhase m!"{theoryName}: admitted opaque flatten" do
+    flattenSignature sig
   let rawBlock : HLTheoryBlock := {
     lfOpaqueConsts := requests.map admittedInternalLFOpaqueDeclOfRequest }
-  checkNoExtensionNameCollisions flatSourceBase rawBlock
+  profileLFCheckPhase m!"{theoryName}: admitted opaque collision check" do
+    checkNoExtensionNameCollisions flatSourceBase rawBlock
   let priorKnownTypes := cache.knownLFDefTypes
-  let blockForRegistry ←
+  let blockForRegistry ← profileLFCheckPhase m!"{theoryName}: admitted opaque implicit apps" do
     elaborateImplicitAppsInTheoryBlockExtension flatSourceBase priorKnownTypes rawBlock
   let checkedBase := cache.checkedHL
-  let blockForCheck ← expandSyntaxAbbrevsInTheoryBlockExtension checkedBase blockForRegistry
+  let blockForCheck ← profileLFCheckPhase m!"{theoryName}: admitted opaque abbrev expansion" do
+    expandSyntaxAbbrevsInTheoryBlockExtension checkedBase blockForRegistry
   let flatForCheck := checkedBase.appendBlock blockForCheck
-  let delta ← checkTheoryBlockMetadataDelta flatForCheck checked blockForCheck
+  let delta ← profileLFCheckPhase m!"{theoryName}: admitted opaque metadata delta" do
+    checkTheoryBlockMetadataDelta flatForCheck checked blockForCheck
   unless delta.opaqueConsts.size == requests.size do
     throwError "internal error: admitted LF opaque batch produced {delta.opaqueConsts.size} \
       checked opaque(s) for {requests.size} request(s)"
@@ -631,13 +640,14 @@ def registerAdmittedInternalLFOpaqueBatch (theoryName : Name)
     cacheStatus? := some cacheLookup.status
     cacheRebuilt := cacheLookup.rebuilt
     cacheOverlayDecls := requests.size }
-  modifyEnv fun env =>
-    let env := theoryExt.addEntry env (.sig (sig.appendBlock blockForRegistry))
-    let env := checkedTheoryExt.addEntry env (.sig checked')
-    let env := checkedHLSignatureExt.addEntry env (.sig theoryName flatForCheck)
-    let env := setCompiledLFCheckCacheInEnv env theoryName compiledCache
-    admissions.foldl (init := env) fun env admission =>
-      internalAdmissionExt.addEntry env (.admission admission)
+  profileLFCheckPhase m!"{theoryName}: admitted opaque environment update" do
+    modifyEnv fun env =>
+      let env := theoryExt.addEntry env (.sig (sig.appendBlock blockForRegistry))
+      let env := checkedTheoryExt.addEntry env (.sig checked')
+      let env := checkedHLSignatureExt.addEntry env (.sig theoryName flatForCheck)
+      let env := setCompiledLFCheckCacheInEnv env theoryName compiledCache
+      admissions.foldl (init := env) fun env admission =>
+        internalAdmissionExt.addEntry env (.admission admission)
 
 /-- Register an explicitly admitted internal declaration as a typed LF opaque constant.
 

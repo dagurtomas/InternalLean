@@ -433,8 +433,10 @@ structure CompiledLFCheckCache where
   checkedSideConditionCertificates : Array CheckedLFSideConditionCertificate := #[]
   /-- Available LF definition result types. -/
   knownLFDefTypes : NameMap ObjExpr := {}
-  /-- Available LF definition values. -/
+  /-- Available LF object-definition values. -/
   knownLFDefValues : NameMap ObjExpr := {}
+  /-- Available checked syntax-definition values, unfolded lazily by checker lookups. -/
+  knownLFSyntaxDefValues : NameMap ObjExpr := {}
   /-- Available checked LF definition values. -/
   checkedLFDefValues : NameMap CheckedLFExpr := {}
   /-- Available binder-free LF theorem statements. -/

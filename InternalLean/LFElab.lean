@@ -1671,8 +1671,10 @@ structure LFCheckLookupContext where
   proofTypeInfos : NameMap LFGlobalTypeInfo := {}
   /-- Source LF object-definition and syntax-definition result types. -/
   lfObjectDefTypes : LFLocalTypes := {}
-  /-- Source LF object-definition and checked syntax-definition values. -/
+  /-- Source LF object-definition values used by cheap LF type comparison. -/
   lfDefinitionValues : LFDefinitionValueMap := {}
+  /-- Checked syntax-definition values, unfolded only as a lazy conversion fallback. -/
+  lfSyntaxDefValues : LFDefinitionValueMap := {}
   /-- Syntax-sort declarations by erased name. -/
   syntaxSortDecls : NameMap SyntaxSortDecl := {}
   /-- Judgment declarations by erased name. -/
@@ -1690,6 +1692,7 @@ def mkLFCheckLookupContext (sig : HLSignature) : LFCheckLookupContext := Id.run 
   let mut syntaxSortDecls : NameMap SyntaxSortDecl := {}
   let mut judgmentDecls : NameMap JudgmentDecl := {}
   let mut untypedOpaqueArities : NameMap (Array (Option Nat)) := {}
+  let mut lfSyntaxDefValues : LFDefinitionValueMap := {}
   for s in sig.syntaxSorts do
     let name := s.name.eraseMacroScopes
     unless syntaxSortDecls.contains name do
@@ -1703,7 +1706,7 @@ def mkLFCheckLookupContext (sig : HLSignature) : LFCheckLookupContext := Id.run 
     unless lfObjectDefTypes.contains name do
       lfObjectDefTypes := lfObjectDefTypes.insert name (eraseObjExprScopes (syntaxDefTypeExpr d))
       if let some value := syntaxDefValueExpr? d then
-        lfDefinitionValues := lfDefinitionValues.insert name (eraseObjExprScopes value)
+        lfSyntaxDefValues := lfSyntaxDefValues.insert name (eraseObjExprScopes value)
   for o in sig.lfOpaqueConsts do
     let name := o.name.eraseMacroScopes
     match o.typeExpr? with
@@ -1734,6 +1737,7 @@ def mkLFCheckLookupContext (sig : HLSignature) : LFCheckLookupContext := Id.run 
     proofTypeInfos := proofTypeInfos
     lfObjectDefTypes := lfObjectDefTypes
     lfDefinitionValues := lfDefinitionValues
+    lfSyntaxDefValues := lfSyntaxDefValues
     syntaxSortDecls := syntaxSortDecls
     judgmentDecls := judgmentDecls
     untypedOpaqueArities := untypedOpaqueArities }
@@ -1797,10 +1801,32 @@ def findSyntaxSortDeclIn? (lookup : LFCheckLookupContext) (name : Name) :
 def findJudgmentDeclIn? (lookup : LFCheckLookupContext) (name : Name) : Option JudgmentDecl :=
   lookup.judgmentDecls.find? name.eraseMacroScopes
 
-/-- Shallow type comparison using the lookup context's LF-definition map. -/
+/-- LF-definition values including lazily unfolded checked syntax definitions. -/
+def lfDefinitionValuesWithSyntaxDefs (lookup : LFCheckLookupContext) : LFDefinitionValueMap :=
+  Id.run do
+  let mut out := lookup.lfDefinitionValues
+  for (n, value) in lookup.lfSyntaxDefValues.toList do
+    out := out.insert n value
+  return out
+
+/-- Normalize a pair for diagnostics, unfolding checked syntax definitions only if the cheap
+object-definition-only normal forms do not already match. -/
+def normalizeLFTypeComparisonPairInLookup (lookup : LFCheckLookupContext)
+    (actual expected : ObjExpr) : ObjExpr × ObjExpr :=
+  let actualCheap := normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actual
+  let expectedCheap := normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues expected
+  if lfExprAlphaEq actualCheap expectedCheap || lookup.lfSyntaxDefValues.isEmpty then
+    (actualCheap, expectedCheap)
+  else
+    let defs := lfDefinitionValuesWithSyntaxDefs lookup
+    (normalizeLFExprForTypeComparisonWithDefs defs actual,
+      normalizeLFExprForTypeComparisonWithDefs defs expected)
+
+/-- Shallow type comparison using the lookup context's LF-definition map. Checked syntax
+definitions are unfolded only as a fallback after cheap comparison fails. -/
 def lfTypeCompareEqInLookup (lookup : LFCheckLookupContext) (actual expected : ObjExpr) : Bool :=
-  lfExprAlphaEq (normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actual)
-    (normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues expected)
+  let (actualN, expectedN) := normalizeLFTypeComparisonPairInLookup lookup actual expected
+  lfExprAlphaEq actualN expectedN
 
 /-- Infer a shallow LF/object type using a reusable lookup context.
 
@@ -2497,7 +2523,9 @@ mutual
             let allImplicitArgsSourceSupplied := fullPositional ||
               params.all fun p =>
                 p.visibility != .implicit || (named.find? p.sourceName.eraseMacroScopes).isSome
-            if implicitVars.isEmpty || allImplicitArgsSourceSupplied || hasForeignFresh then pure () else
+            if implicitVars.isEmpty || allImplicitArgsSourceSupplied || hasForeignFresh then
+              pure ()
+            else
               throwError "{ownerKind} '{ownerName}' could not infer implicit arguments for \
                 application '{headName}' in {where_} from expected expression\n  \
                   {expected}\nwhile matching result\n  {result}\nreason: {err}"
@@ -2971,10 +2999,8 @@ partial def checkLFExprHasTypeWithLookup (lookup : LFCheckLookupContext) (sig : 
       match inferKnownLFExprTypeWithLookup? lookup knownTypes expr with
       | some actualType =>
           let actualType := normalizeLFExprBetaOnly actualType
-          let normalizedActualType :=
-            normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actualType
-          let normalizedExpected :=
-            normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues expected
+          let (normalizedActualType, normalizedExpected) :=
+            normalizeLFTypeComparisonPairInLookup lookup actualType expected
           if !lfExprAlphaEq normalizedActualType normalizedExpected then
             throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has {where_} with \
               type '{diagnosticObjExprString normalizedActualType}', expected \
@@ -4815,10 +4841,8 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
         if let some actualType :=
             inferKnownLFExprTypeWithLookup? lookup knownLFDefTypes d.value then
           let expectedType := eraseObjExprScopes d.typeExpr
-          let normalizedActualType :=
-            normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actualType
-          let normalizedExpectedType :=
-            normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues expectedType
+          let (normalizedActualType, normalizedExpectedType) :=
+            normalizeLFTypeComparisonPairInLookup lookup actualType expectedType
           if !lfExprAlphaEq normalizedActualType normalizedExpectedType then
             throwError "lf_def '{d.name}' in type theory '{sig.name}' has value LF definition \
               '{valueName}' with type '{diagnosticObjExprString normalizedActualType}', expected \
@@ -4952,9 +4976,9 @@ def mergeLFLocalTypes (base extra : LFLocalTypes) : LFLocalTypes := Id.run do
     out := out.insert n e
   return out
 
-/-- Previously checked LF definition values. -/
-def lfDefinitionValueMapFromCheckedDefs (syntaxDefs : Array CheckedLFSyntaxDef)
-    (defs : Array CheckedLFObjectDef) : LFDefinitionValueMap := Id.run do
+/-- Previously checked syntax-definition values. -/
+def lfSyntaxDefinitionValueMapFromCheckedDefs (syntaxDefs : Array CheckedLFSyntaxDef) :
+    LFDefinitionValueMap := Id.run do
   let mut out : LFDefinitionValueMap := {}
   for d in syntaxDefs do
     if let some value := d.value? then
@@ -4962,8 +4986,20 @@ def lfDefinitionValueMapFromCheckedDefs (syntaxDefs : Array CheckedLFSyntaxDef)
         ({ name := b.name, typeExpr := b.typeExpr, visibility := b.visibility } : HLBinding)
       out := out.insert d.name.eraseMacroScopes
         (eraseObjExprScopes (mkInternalDefLambda params value))
-  for d in defs do
-    out := out.insert d.name.eraseMacroScopes (eraseObjExprScopes d.value)
+  return out
+
+/-- Previously checked LF object-definition values. -/
+def lfObjectDefinitionValueMapFromCheckedDefs (defs : Array CheckedLFObjectDef) :
+    LFDefinitionValueMap :=
+  defs.foldl (init := {}) fun out d =>
+    out.insert d.name.eraseMacroScopes (eraseObjExprScopes d.value)
+
+/-- Previously checked LF definition values. -/
+def lfDefinitionValueMapFromCheckedDefs (syntaxDefs : Array CheckedLFSyntaxDef)
+    (defs : Array CheckedLFObjectDef) : LFDefinitionValueMap := Id.run do
+  let mut out := lfSyntaxDefinitionValueMapFromCheckedDefs syntaxDefs
+  for (n, value) in (lfObjectDefinitionValueMapFromCheckedDefs defs).toList do
+    out := out.insert n value
   return out
 
 /-- Statements available for binder-free checked LF theorem references. -/
@@ -5142,18 +5178,19 @@ def mkLFCheckLookupContextFromCache (cache : CompiledLFCheckCache)
     mkLFCheckLookupContext (checkedHLWithoutObjectDefs.appendBlock candidateWithoutObjectDefs)
   let mut lfObjectDefTypes := cache.knownLFDefTypes
   let mut lfDefinitionValues := cache.knownLFDefValues
+  let mut lfSyntaxDefValues := cache.knownLFSyntaxDefValues
   for d in candidate.syntaxDefs do
     let name := d.name.eraseMacroScopes
     unless lfObjectDefTypes.contains name do
       lfObjectDefTypes := lfObjectDefTypes.insert name (eraseObjExprScopes (syntaxDefTypeExpr d))
       if let some value := syntaxDefValueExpr? d then
-        lfDefinitionValues := lfDefinitionValues.insert name (eraseObjExprScopes value)
+        lfSyntaxDefValues := lfSyntaxDefValues.insert name (eraseObjExprScopes value)
   for d in candidate.lfObjectDefs do
     let name := d.name.eraseMacroScopes
     unless lfObjectDefTypes.contains name do
       lfObjectDefTypes := lfObjectDefTypes.insert name (eraseObjExprScopes d.typeExpr)
       lfDefinitionValues := lfDefinitionValues.insert name (eraseObjExprScopes d.value)
-  return { baseLookup with lfObjectDefTypes, lfDefinitionValues }
+  return { baseLookup with lfObjectDefTypes, lfDefinitionValues, lfSyntaxDefValues }
 
 /-- Construct implicit-argument callable lookup data from a compiled cache plus a small candidate
 block, without rescanning all previously checked LF object definitions. -/
@@ -5194,7 +5231,11 @@ def mkIntraBlockLFCheckContextFromCache (cache : CompiledLFCheckCache)
     checkedRuleSchemas := cache.checkedRuleSchemas ++ newRuleSchemas
     checkedSideConditionCertificates := cache.checkedSideConditionCertificates ++ newCertificates
     knownLFDefTypes := cache.knownLFDefTypes
-    knownLFDefValues := cache.knownLFDefValues
+    knownLFDefValues := Id.run do
+      let mut values := cache.knownLFDefValues
+      for (n, value) in cache.knownLFSyntaxDefValues.toList do
+        values := values.insert n value
+      return values
     availableLFTheoremStatements := cache.availableLFTheoremStatements
     availableLFTheoremNames := cache.availableLFTheoremNames }
 
@@ -5233,10 +5274,8 @@ def checkLFObjectDefInContext (ctx : IntraBlockLFCheckContext) (d : LFObjectDefD
           '{valueName}' before it is available"
       if let some actualType := inferKnownLFExprTypeWithLookup? lookup knownLFDefTypes d.value then
         let expectedType := eraseObjExprScopes d.typeExpr
-        let normalizedActualType :=
-          normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actualType
-        let normalizedExpectedType :=
-          normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues expectedType
+        let (normalizedActualType, normalizedExpectedType) :=
+          normalizeLFTypeComparisonPairInLookup lookup actualType expectedType
         if !lfExprAlphaEq normalizedActualType normalizedExpectedType then
           throwError "lf_def '{d.name}' in type theory '{sig.name}' has value LF definition \
             '{valueName}' with type '{diagnosticObjExprString normalizedActualType}', expected \
@@ -6408,6 +6447,12 @@ def checkedLFConversionPluginToKernel (p : CheckedLFConversionPlugin) : Conversi
     trust := p.trust
     supportedSteps := p.supportedSteps.toList }
 
+/-- Checked LF object-definition values keyed by definition name. -/
+def checkedLFObjectDefinitionValues (defs : Array CheckedLFObjectDef) :
+    CheckedLFDefinitionValueMap :=
+  defs.foldl (init := {}) fun values d =>
+    values.insert d.name.eraseMacroScopes d.checkedValue
+
 /-- Checked LF-definition values keyed by definition name. -/
 def checkedLFDefinitionValues (syntaxDefs : Array CheckedLFSyntaxDef)
     (defs : Array CheckedLFObjectDef) : CheckedLFDefinitionValueMap := Id.run do
@@ -6415,8 +6460,8 @@ def checkedLFDefinitionValues (syntaxDefs : Array CheckedLFSyntaxDef)
   for d in syntaxDefs do
     if let some value := checkedLFSyntaxDefValue? d then
       values := values.insert d.name.eraseMacroScopes value
-  for d in defs do
-    values := values.insert d.name.eraseMacroScopes d.checkedValue
+  for (n, value) in (checkedLFObjectDefinitionValues defs).toList do
+    values := values.insert n value
   return values
 
 /-- Convert a Phase-2/3 LF rule schema to the low-level kernel `RuleSchema` shape. -/
@@ -6584,8 +6629,13 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
     (t : CheckedLFJudgmentTheorem) : CoreM CheckedLFJudgmentTheorem := do
   let some kernelDeriv := t.kernelDerivation?
     | pure t
+  let lfKernelDefValues : LFDefinitionValueMap := Id.run do
+    let mut values := cache.knownLFDefValues
+    for (n, value) in cache.knownLFSyntaxDefValues.toList do
+      values := values.insert n value
+    return values
   let assumptions ← kernelLFLocalAssumptionEntriesOfTheoremNormalized cache.checkedHL
-    cache.globalHeads cache.knownLFDefValues t
+    cache.globalHeads lfKernelDefValues t
   let localReplayCtx := { cache.kernelReplayBase with
     localParameters := t.binders.toList.map (fun b => b.name)
     assumptions := assumptions }
@@ -6765,10 +6815,14 @@ def checkedHLSignatureForCompiledCache (theoryName : Name) (checked : CheckedSig
 def mkCompiledLFCheckCacheFromHL (checkedHL : HLSignature) (checked : CheckedSignature) :
     CoreM CompiledLFCheckCache := do
   let checkedLFDefValues := checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs
+  let checkedLFObjectDefValues := checkedLFObjectDefinitionValues checked.lfObjectDefs
   let kernelSig : Signature := {
     name := checked.name.eraseMacroScopes
-    constants := (checkedLFConstantsToKernel checkedLFDefValues checked.lfSyntaxDefs
-      checked.lfOpaqueConsts checked.lfObjectDefs).toList
+    constants :=
+      (checked.lfSyntaxDefs.map (checkedLFSyntaxDefToKernelConstant checkedLFDefValues) ++
+        checked.lfOpaqueConsts.filterMap
+          (checkedLFOpaqueConstToKernelConstant? checkedLFObjectDefValues) ++
+        checked.lfObjectDefs.map (checkedLFObjectDefToKernelConstant checkedLFDefValues)).toList
     contextZones := checked.lfContextZones.toList.map checkedLFContextZoneToKernel
     binderClasses := checked.lfBinderClasses.toList.map checkedLFBinderClassToKernel
     conversionPlugins := checked.lfConversionPlugins.toList.map checkedLFConversionPluginToKernel
@@ -6797,8 +6851,8 @@ def mkCompiledLFCheckCacheFromHL (checkedHL : HLSignature) (checked : CheckedSig
     checkedSideConditionCertificates := checked.lfSideConditionCertificates
     knownLFDefTypes :=
       checkedLFDefinitionTypeMapFromDefs checked.lfSyntaxDefs checked.lfObjectDefs
-    knownLFDefValues :=
-      lfDefinitionValueMapFromCheckedDefs checked.lfSyntaxDefs checked.lfObjectDefs
+    knownLFDefValues := lfObjectDefinitionValueMapFromCheckedDefs checked.lfObjectDefs
+    knownLFSyntaxDefValues := lfSyntaxDefinitionValueMapFromCheckedDefs checked.lfSyntaxDefs
     checkedLFDefValues := checkedLFDefValues
     availableLFTheoremStatements :=
       availableLFTheoremStatementsFromChecked checked.lfJudgmentTheorems
@@ -7489,12 +7543,15 @@ def appendDeltaSolvers (solvers : NameSet) (delta : CheckedTheoryDelta) : NameSe
   delta.sideConditionSolvers.foldl (init := solvers) fun solvers s =>
     solvers.insert s.name.eraseMacroScopes
 
-/-- Extend cached LF definition type/value maps with checked object definitions from one delta. -/
+/-- Extend cached LF definition type/value maps with checked definitions from one delta. -/
 def appendDeltaLFDefMaps (typeMap : LFLocalTypes) (valueMap : LFDefinitionValueMap)
-    (checkedValueMap : CheckedLFDefinitionValueMap) (delta : CheckedTheoryDelta) :
-    LFLocalTypes × LFDefinitionValueMap × CheckedLFDefinitionValueMap := Id.run do
+    (syntaxValueMap : LFDefinitionValueMap) (checkedValueMap : CheckedLFDefinitionValueMap)
+    (delta : CheckedTheoryDelta) :
+    LFLocalTypes × LFDefinitionValueMap × LFDefinitionValueMap ×
+      CheckedLFDefinitionValueMap := Id.run do
   let mut typeMap := typeMap
   let mut valueMap := valueMap
+  let mut syntaxValueMap := syntaxValueMap
   let mut checkedValueMap := checkedValueMap
   for d in delta.syntaxDefs do
     let defName := d.name.eraseMacroScopes
@@ -7502,14 +7559,14 @@ def appendDeltaLFDefMaps (typeMap : LFLocalTypes) (valueMap : LFDefinitionValueM
       (eraseObjExprScopes (syntaxDefTypeExpr (checkedLFSyntaxDefToHLDecl d)))
     if let some checkedValue := checkedLFSyntaxDefValue? d then
       if let some value := syntaxDefValueExpr? (checkedLFSyntaxDefToHLDecl d) then
-        valueMap := valueMap.insert defName (eraseObjExprScopes value)
+        syntaxValueMap := syntaxValueMap.insert defName (eraseObjExprScopes value)
       checkedValueMap := checkedValueMap.insert defName checkedValue
   for d in delta.objectDefs do
     let defName := d.name.eraseMacroScopes
     typeMap := typeMap.insert defName (eraseObjExprScopes d.typeExpr)
     valueMap := valueMap.insert defName (eraseObjExprScopes d.value)
     checkedValueMap := checkedValueMap.insert defName d.checkedValue
-  return (typeMap, valueMap, checkedValueMap)
+  return (typeMap, valueMap, syntaxValueMap, checkedValueMap)
 
 /-- Extend cached theorem availability maps with checked judgment theorems from one delta. -/
 def appendDeltaTheoremAvailability (statementMap : NameMap ObjExpr) (nameSet : NameSet)
@@ -7543,13 +7600,19 @@ def appendDeltaKernelReplayBase (replayCtx : KernelLFCheckContext)
 kernel constants, rule schemas, or replay entries. -/
 def appendDelta (cache : CompiledLFCheckCache) (checkedHLAfter : HLSignature)
     (checkedAfter : CheckedSignature) (delta : CheckedTheoryDelta) : CompiledLFCheckCache :=
-  let (knownLFDefTypes, knownLFDefValues, checkedLFDefValues) :=
-    appendDeltaLFDefMaps cache.knownLFDefTypes cache.knownLFDefValues cache.checkedLFDefValues
-      delta
+  let (knownLFDefTypes, knownLFDefValues, knownLFSyntaxDefValues, checkedLFDefValues) :=
+    appendDeltaLFDefMaps cache.knownLFDefTypes cache.knownLFDefValues
+      cache.knownLFSyntaxDefValues cache.checkedLFDefValues delta
   let newSyntaxConstants :=
     delta.syntaxDefs.map (checkedLFSyntaxDefToKernelConstant checkedLFDefValues)
+  let checkedLFObjectDefValues :=
+    checkedLFDefValues.filter fun n _ => !knownLFSyntaxDefValues.contains n
+  -- Typed LF opaque constants do not replay a body at registration time.  Keep checked
+  -- `syntax_def` families opaque in their kernel-facing types on the incremental path, so a
+  -- large package-shaped family is not unfolded at every admitted-use site.  Object `lf_def`s
+  -- remain transparent here because their values are part of the object-term computation model.
   let newOpaqueConstants :=
-    delta.opaqueConsts.filterMap (checkedLFOpaqueConstToKernelConstant? checkedLFDefValues)
+    delta.opaqueConsts.filterMap (checkedLFOpaqueConstToKernelConstant? checkedLFObjectDefValues)
   let newObjectConstants :=
     delta.objectDefs.map (checkedLFObjectDefToKernelConstant checkedLFDefValues)
   let newRuleSchemas := checkedLFRuleSchemasToKernel checkedLFDefValues delta.ruleSchemas
@@ -7580,6 +7643,7 @@ def appendDelta (cache : CompiledLFCheckCache) (checkedHLAfter : HLSignature)
       cache.checkedSideConditionCertificates ++ delta.sideConditionCertificates
     knownLFDefTypes := knownLFDefTypes
     knownLFDefValues := knownLFDefValues
+    knownLFSyntaxDefValues := knownLFSyntaxDefValues
     checkedLFDefValues := checkedLFDefValues
     availableLFTheoremStatements := availableStatements
     availableLFTheoremNames := availableNames

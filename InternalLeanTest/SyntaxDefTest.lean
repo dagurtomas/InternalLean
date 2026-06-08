@@ -79,6 +79,50 @@ declare_type_theory SyntaxDefCheckedSmoke{u} where
 
 generate_model_interface SyntaxDefCheckedSmoke as SyntaxDefCheckedSmokeModel
 
+/-- Checked syntax definitions stay transparent when LF definitional equality needs unfolding. -/
+declare_type_theory SyntaxDefLazyDefeqSmoke where
+  syntax_sort Obj : Type
+  lf_opaque o : Obj
+  syntax_def Alias : Type := Obj
+  lf_def d : Alias := o
+
+#check_type_theory SyntaxDefLazyDefeqSmoke
+
+/-- Checked syntax-definition heads can be used directly as admitted internal package types. -/
+declare_type_theory SyntaxDefCheckedPackageAdmissionSmoke where
+  syntax_sort Obj : Type
+  syntax_def Pack : Type := Σ x : Obj, Obj
+
+namespace SyntaxDefCheckedPackageAdmissionSmoke
+
+internal_defs where
+  def admittedPack : Pack := sorry
+  def admittedConsumer (p : Pack) : Obj := sorry
+
+#check admittedPack
+#check admittedConsumer
+
+end SyntaxDefCheckedPackageAdmissionSmoke
+
+/-- Replay can use an admitted constant whose type is a checked syntax-definition head. -/
+declare_type_theory SyntaxDefAdmittedAliasReplaySmoke where
+  syntax_sort Obj : Type
+  syntax_def Alias : Type := Obj
+  judgment IsObj (x : Obj)
+  rule any (x : Obj) : IsObj x
+
+namespace SyntaxDefAdmittedAliasReplaySmoke
+
+internal_defs where
+  def a : Alias := sorry
+
+end SyntaxDefAdmittedAliasReplaySmoke
+
+extend_type_theory SyntaxDefAdmittedAliasReplaySmoke where
+  judgment_theorem th : IsObj a := any a
+
+#check_type_theory SyntaxDefAdmittedAliasReplaySmoke
+
 /-- `syntax_sort_role` may tag a derived syntax family, but zones still require primitive sorts. -/
 declare_type_theory SyntaxDefRoleSmoke{u} where
   syntax_sort Obj : Type u

@@ -80,6 +80,43 @@ def nested_sigma_type(families: int) -> str:
     return body
 
 
+def package_type(depth: int) -> str:
+    body = "Obj"
+    for i in range(depth - 1, -1, -1):
+        body = f"Σ x{i} : Obj, {body}"
+    return body
+
+
+def package_admission_source(kind: str, depth: int, admissions: int) -> str:
+    theory_name = f"SyntaxDefPackageAdmissionBench{kind}{depth}x{admissions}"
+    body = package_type(depth)
+    lines = [
+        "import InternalLean.Command",
+        "",
+        "open InternalLean",
+        "set_option maxHeartbeats 0",
+        "",
+        f"declare_type_theory {theory_name} where",
+        "  syntax_sort Obj : Type",
+        f"  syntax_abbrev Big := {body}",
+    ]
+    if kind == "Abbrev":
+        type_name = "Big"
+    elif kind == "CheckedDef":
+        lines.append("  syntax_def BigDef : Type := Big")
+        type_name = "BigDef"
+    elif kind == "AdmittedDef":
+        lines.append("  syntax_def BigDef : Type := sorry")
+        type_name = "BigDef"
+    else:
+        raise ValueError(f"unknown kind: {kind}")
+    lines.extend(["", f"namespace {theory_name}", "", "internal_defs where"])
+    for i in range(admissions):
+        lines.append(f"  def admitted{i:04d} : {type_name} := sorry")
+    lines.extend(["", f"#check admitted{admissions - 1:04d}", "", f"end {theory_name}", ""])
+    return "\n".join(lines)
+
+
 def multi_model_source(kind: str, families: int, fields: int) -> str:
     theory_name = f"SyntaxDefMultiModelBench{kind}{families}x{fields}"
     lines = [
@@ -200,6 +237,12 @@ def main() -> int:
     parser.add_argument("--check-sizes", default="50,150,300,600")
     parser.add_argument("--model-sizes", default="20,80,200")
     parser.add_argument("--multi", default="3x200,6x200", help="families x fields list")
+    parser.add_argument(
+        "--package-depths",
+        default="",
+        help="optional nested package depths for Abbrev/CheckedDef/AdmittedDef admission cases",
+    )
+    parser.add_argument("--package-admissions", type=int, default=5)
     parser.add_argument("--runs", type=int, default=2)
     parser.add_argument("--no-warmup", action="store_true")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
@@ -235,6 +278,17 @@ def main() -> int:
                 out_dir,
                 case,
                 multi_model_source(kind, families, fields),
+                args.runs,
+                warmup,
+            )
+
+    for depth in parse_ints(args.package_depths):
+        for kind in ["Abbrev", "CheckedDef", "AdmittedDef"]:
+            case = f"package_{kind}_{depth}x{args.package_admissions}"
+            results["cases"][case] = benchmark_case(
+                out_dir,
+                case,
+                package_admission_source(kind, depth, args.package_admissions),
                 args.runs,
                 warmup,
             )
