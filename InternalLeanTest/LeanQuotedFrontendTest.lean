@@ -59,6 +59,8 @@ internal_lean def dAlias : Obj := LFQuote.d
 internal_lean def idObj : Obj → Obj := fun x => x
 internal_lean def applyLocal (g : Obj → Obj) (x : Obj) : Obj := g x
 internal_lean def o_ok : IsObj o := LFQuote.mkObj o
+internal_lean theorem o_ok_theorem : IsObj o := LFQuote.mkObj o
+internal_lean theorem local_ok_theorem (x : Obj) (h : IsObj x) : IsObj x := h
 internal_raw def rawObj : Obj := o
 internal_raw theorem rawObjOk : IsObj o := mkObj o
 internal_raw def rawObjOkBy : IsObj o := by
@@ -104,6 +106,8 @@ internal_lean def admittedBinderBy (x : Obj) : Obj := by
 #check idObj
 #check applyLocal
 #check o_ok
+#check o_ok_theorem
+#check local_ok_theorem
 #check rawObj
 #check rawObjOk
 #check rawObjOkBy

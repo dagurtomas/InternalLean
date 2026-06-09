@@ -245,6 +245,33 @@ elab_rules : command
           d.binders)
       logInfo m!"{String.intercalate "\n" lines.toList}"
 
+/-- Register a Lean-quoted theorem-shaped internal declaration from reflected LF expressions. -/
+def elabLeanQuotedInternalTheoremCheckedExpr
+    (doc? : Option (TSyntax ``Parser.Command.docComment)) (declNameStx : Syntax)
+    (declName : Name) (params : Array HLBinding) (typeExpr valueExpr : ObjExpr) :
+    CommandElabM Unit := do
+  let target ← resolveInternalDefTarget declName
+  ensureInternalDeclarationNamesAvailable target
+  let sourceDoc? ← optDocCommentString? doc?
+  let some sig ← liftCoreM <| getTheory? target.theoryName
+    | throwError "unknown type theory '{target.theoryName}'"
+  let flatSig ← liftCoreM <| flattenSignature sig
+  let valueExpr ←
+    match elaborateInternalDirectTermPlaceholders target flatSig params typeExpr valueExpr with
+    | .ok valueExpr => pure valueExpr
+    | .error err => throwError err
+  let lfTheorem : LFJudgmentTheoremDecl := {
+    name := target.localName
+    binders := params
+    judgmentExpr := typeExpr
+    proof := valueExpr }
+  liftCoreM <| registerLFJudgmentTheorem target.theoryName lfTheorem
+  if let some doc := sourceDoc? then
+    liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
+  addInternalDeclarationAnchor target (mkInternalDefFunctionType params typeExpr) false sourceDoc?
+    (← getRef) declNameStx
+  addInternalDeclarationQuoteStub target params
+
 syntax (name := internalLeanQuotedDef)
   docComment ? "internal_lean " "def " ident " : " ttExpr " := " term : command
 syntax (name := internalLeanQuotedDefBinder)
@@ -257,6 +284,20 @@ syntax (name := internalLeanQuotedDefBySorry)
   docComment ? "internal_lean " "def " ident " : " ttExpr " := " "by" ppLine "sorry" : command
 syntax (name := internalLeanQuotedDefBinderBySorry)
   docComment ? "internal_lean " "def " ident ttBinder+ " : " ttExpr " := " "by" ppLine
+    "sorry" : command
+syntax (name := internalLeanQuotedTheorem)
+  docComment ? "internal_lean " "theorem " ident " : " ttExpr " := " term : command
+syntax (name := internalLeanQuotedTheoremBinder)
+  docComment ? "internal_lean " "theorem " ident ttBinder+ " : " ttExpr " := " term : command
+syntax (name := internalLeanQuotedTheoremSorry)
+  docComment ? "internal_lean " "theorem " ident " : " ttExpr " := " "sorry" : command
+syntax (name := internalLeanQuotedTheoremBinderSorry)
+  docComment ? "internal_lean " "theorem " ident ttBinder+ " : " ttExpr " := " "sorry" : command
+syntax (name := internalLeanQuotedTheoremBySorry)
+  docComment ? "internal_lean " "theorem " ident " : " ttExpr " := " "by" ppLine
+    "sorry" : command
+syntax (name := internalLeanQuotedTheoremBinderBySorry)
+  docComment ? "internal_lean " "theorem " ident ttBinder+ " : " ttExpr " := " "by" ppLine
     "sorry" : command
 
 elab_rules (kind := internalLeanQuotedDefSorry) : command
@@ -278,6 +319,49 @@ elab_rules (kind := internalLeanQuotedDefBinderBySorry) : command
       $typeStx:ttExpr := by
       sorry) =>
       elabInternalDefSorryWithBinders doc? declName declName.getId #[] binders typeStx
+
+elab_rules (kind := internalLeanQuotedTheoremSorry) : command
+  | `($[$doc?:docComment]? internal_lean theorem $declName:ident : $typeStx:ttExpr := sorry) =>
+      elabInternalTheoremSorryWithBinders doc? declName declName.getId #[] #[] typeStx
+
+elab_rules (kind := internalLeanQuotedTheoremBinderSorry) : command
+  | `($[$doc?:docComment]? internal_lean theorem $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := sorry) =>
+      elabInternalTheoremSorryWithBinders doc? declName declName.getId #[] binders typeStx
+
+elab_rules (kind := internalLeanQuotedTheoremBySorry) : command
+  | `($[$doc?:docComment]? internal_lean theorem $declName:ident : $typeStx:ttExpr := by
+      sorry) =>
+      elabInternalTheoremSorryWithBinders doc? declName declName.getId #[] #[] typeStx
+
+elab_rules (kind := internalLeanQuotedTheoremBinderBySorry) : command
+  | `($[$doc?:docComment]? internal_lean theorem $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := by
+      sorry) =>
+      elabInternalTheoremSorryWithBinders doc? declName declName.getId #[] binders typeStx
+
+elab_rules (kind := internalLeanQuotedTheorem) : command
+  | `($[$doc?:docComment]? internal_lean theorem $declName:ident : $typeStx:ttExpr :=
+      $body:term) => do
+      let target ← resolveInternalDefTarget declName.getId
+      let typeExpr ← elabObjExpr typeStx
+      saveLeanQuotedLFBodyInfo target #[] typeExpr body
+      let valueExpr ← elabLeanQuotedLFBody target #[] typeExpr body
+      elabLeanQuotedInternalTheoremCheckedExpr doc? declName declName.getId #[] typeExpr
+        valueExpr
+      addInternalDefAnnotationNavigationInfo declName.getId #[] typeStx
+
+elab_rules (kind := internalLeanQuotedTheoremBinder) : command
+  | `($[$doc?:docComment]? internal_lean theorem $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := $body:term) => do
+      let target ← resolveInternalDefTarget declName.getId
+      let params ← binders.mapM elabHLBinding
+      let typeExpr ← elabObjExpr typeStx
+      saveLeanQuotedLFBodyInfo target params typeExpr body
+      let valueExpr ← elabLeanQuotedLFBody target params typeExpr body
+      elabLeanQuotedInternalTheoremCheckedExpr doc? declName declName.getId params typeExpr
+        valueExpr
+      addInternalDefAnnotationNavigationInfo declName.getId binders typeStx
 
 elab_rules (kind := internalLeanQuotedDef) : command
   | `($[$doc?:docComment]? internal_lean def $declName:ident : $typeStx:ttExpr :=
