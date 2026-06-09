@@ -738,6 +738,11 @@ def addLFMirrorPendingDeclBestEffort (theoryName : Name) (levelParams : List Nam
           else
             addLFMirrorPendingDecl theoryName levelParams levelArgs decl
       | none => addLFMirrorPendingDecl theoryName levelParams levelArgs decl
+  | .lfObjectDef d =>
+      if lfMirrorObjExprNodeCount d.value > lfMirrorBestEffortSyntaxDefNodeLimit then
+        return
+      else
+        addLFMirrorPendingDecl theoryName levelParams levelArgs decl
   | _ => addLFMirrorPendingDecl theoryName levelParams levelArgs decl
 
 /-- Add every currently unblocked mirror declaration, leaving blocked declarations for later. -/
