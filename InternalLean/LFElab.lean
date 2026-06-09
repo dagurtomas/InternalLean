@@ -5436,14 +5436,21 @@ def lfMirrorSignatureForObjectDefPrefix (ctx : IntraBlockLFCheckContext)
 def checkLFObjectDefInContextWithMirror (ctx : IntraBlockLFCheckContext) (d : LFObjectDefDecl) :
     CoreM (CheckedLFObjectDef × IntraBlockLFCheckContext) := do
   let mirrorSig := lfMirrorSignatureForObjectDefPrefix ctx d
-  profileLFCheckPhase m!"{d.name}: mirror body check" do
-    ensureLFMirrorForSignatureBestEffort mirrorSig
-    addLFMirrorPendingDecl mirrorSig.name (lfMirrorLevelParamNamesForSignature mirrorSig)
-      (lfMirrorLevelArgsForSignature mirrorSig) (.lfObjectDef d)
-  if ← getBoolOption `internalLean.mirrorBackend.compareTheoryBodiesWithLF then
-    checkLFObjectDefInContext ctx d
-  else
-    checkedLFObjectDefAfterExternalBodyCheck ctx d
+  let compareWithLF ← getBoolOption `internalLean.mirrorBackend.compareTheoryBodiesWithLF
+  try
+    profileLFCheckPhase m!"{d.name}: mirror body check" do
+      ensureLFMirrorForSignatureBestEffort mirrorSig
+      addLFMirrorPendingDecl mirrorSig.name (lfMirrorLevelParamNamesForSignature mirrorSig)
+        (lfMirrorLevelArgsForSignature mirrorSig) (.lfObjectDef d)
+    if compareWithLF then
+      checkLFObjectDefInContext ctx d
+    else
+      checkedLFObjectDefAfterExternalBodyCheck ctx d
+  catch ex =>
+    if compareWithLF then
+      throw ex
+    else
+      checkLFObjectDefInContext ctx d
 
 /-- Check one LF object definition with the selected theory-body backend. -/
 def checkLFObjectDefInContextSelected (ctx : IntraBlockLFCheckContext) (d : LFObjectDefDecl) :
@@ -5749,13 +5756,21 @@ def checkOneSyntaxDefMetadataInSignatureSelected (mirrorSig : HLSignature)
   if (← getBoolOption `internalLean.mirrorBackend.checkTheoryBodies) && d.value?.isSome then
     checkOneSyntaxDefParameterMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
       syntaxSortArities globalHeads d
-    profileLFCheckPhase m!"{d.name}: mirror syntax_def body check" do
-      ensureLFMirrorForSignatureBestEffort mirrorSig
-      addLFMirrorPendingDecl mirrorSig.name (lfMirrorLevelParamNamesForSignature mirrorSig)
-        (lfMirrorLevelArgsForSignature mirrorSig) (.syntaxDef d)
-    if ← getBoolOption `internalLean.mirrorBackend.compareTheoryBodiesWithLF then
-      checkOneSyntaxDefMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
-        syntaxSortArities globalHeads d
+    let compareWithLF ← getBoolOption `internalLean.mirrorBackend.compareTheoryBodiesWithLF
+    try
+      profileLFCheckPhase m!"{d.name}: mirror syntax_def body check" do
+        ensureLFMirrorForSignatureBestEffort mirrorSig
+        addLFMirrorPendingDecl mirrorSig.name (lfMirrorLevelParamNamesForSignature mirrorSig)
+          (lfMirrorLevelArgsForSignature mirrorSig) (.syntaxDef d)
+      if compareWithLF then
+        checkOneSyntaxDefMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
+          syntaxSortArities globalHeads d
+    catch ex =>
+      if compareWithLF then
+        throw ex
+      else
+        checkOneSyntaxDefMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
+          syntaxSortArities globalHeads d
   else
     checkOneSyntaxDefMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
       syntaxSortArities globalHeads d
