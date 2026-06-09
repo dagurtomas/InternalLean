@@ -252,6 +252,11 @@ def addLFMirrorAxiomIfMissing (declName : Name) (type : Expr) : CommandElabM Uni
 /-- Add one experimental Lean mirror definition if it is not already present. -/
 def addLFMirrorDefinitionIfMissing (declName : Name) (type value : Expr) : CommandElabM Unit := do
   unless (← getEnv).contains declName do
+    liftTermElabM do
+      let actual ← inferType value
+      unless ← isDefEq actual type do
+        throwError "cannot add Lean mirror definition '{declName}': translated value has \
+          type\n  {actual}\nexpected\n  {type}"
     liftCoreM do
       let defVal : DefinitionVal := {
         name := declName
