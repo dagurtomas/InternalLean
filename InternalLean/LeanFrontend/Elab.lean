@@ -97,6 +97,29 @@ def elabLeanQuotedLFBody (target : InternalDefTarget) (params : Array HLBinding)
         reflectLFQuoteExpr target.theoryName locals value
     withLocals 0 #[]
 
+/-- Save Lean infoview and hover metadata for a Lean-quoted LF declaration body. -/
+def saveLeanQuotedLFBodyInfo (target : InternalDefTarget) (params : Array HLBinding)
+    (typeExpr : ObjExpr) (bodyStx : Syntax) : CommandElabM Unit := do
+  let goal : InternalObjectGoal := { ctx := params, target := typeExpr }
+  let some sig ← liftCoreM <| getTheory? target.theoryName
+    | return ()
+  let flatSig ← liftCoreM <| flattenSignature sig
+  liftTermElabM do
+    let goalsBefore ← mkInternalObjectGoalMVars target #[goal]
+    let mctxBefore ← getMCtx
+    let mctxAfter ← getMCtx
+    pushInfoLeaf <| .ofTacticInfo {
+      elaborator := `InternalLean.leanQuotedLFBodyInfo
+      stx := bodyStx
+      mctxBefore := mctxBefore
+      goalsBefore := goalsBefore
+      mctxAfter := mctxAfter
+      goalsAfter := [] }
+  saveInternalObjectHoverInfo target flatSig {
+    stx := bodyStx
+    goalsBefore := #[goal]
+    goalsAfter := #[] }
+
 /-- Render one generated quote-stub summary line. -/
 def lfQuoteStubSummaryLine (theoryName : Name) (role : String) (sourceName : Name)
     (params : Array HLBinding) : String :=
@@ -173,6 +196,7 @@ elab_rules (kind := internalLeanQuotedDef) : command
       $body:term) => do
       let target ← resolveInternalDefTarget declName.getId
       let typeExpr ← elabObjExpr typeStx
+      saveLeanQuotedLFBodyInfo target #[] typeExpr body
       let valueExpr ← elabLeanQuotedLFBody target #[] typeExpr body
       elabInternalDefCheckedExpr doc? declName declName.getId #[] typeExpr valueExpr
       addInternalDefAnnotationNavigationInfo declName.getId #[] typeStx
@@ -183,6 +207,7 @@ elab_rules (kind := internalLeanQuotedDefBinder) : command
       let target ← resolveInternalDefTarget declName.getId
       let params ← binders.mapM elabHLBinding
       let typeExpr ← elabObjExpr typeStx
+      saveLeanQuotedLFBodyInfo target params typeExpr body
       let valueExpr ← elabLeanQuotedLFBody target params typeExpr body
       elabInternalDefCheckedWithBindersExpr doc? declName declName.getId #[] params typeExpr
         valueExpr
