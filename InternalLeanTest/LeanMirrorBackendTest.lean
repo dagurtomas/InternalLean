@@ -65,5 +65,102 @@ declare_type_theory LeanMirrorDependentSmoke where
   lf_opaque witness (x : Obj) : Fiber x
 
 #check_lf_mirror LeanMirrorDependentSmoke : Good o := o_good
-#check_lf_mirror LeanMirrorDependentSmoke : Good o := keep_good o o_good
+#compare_lf_mirror LeanMirrorDependentSmoke : Good o := keep_good o o_good
 #check_lf_mirror LeanMirrorDependentSmoke : Fiber o := witness o
+#check (LeanMirrorDependentSmoke.LFMirror.Good :
+  LeanMirrorDependentSmoke.LFMirror.Obj → Type)
+
+/-- Checked definitions are transparent to the mirror; admissions remain opaque. -/
+declare_type_theory LeanMirrorTransparencySmoke where
+  syntax_sort Obj : Type
+  lf_opaque o : Obj
+  syntax_def ObjAlias : Type := Obj
+  syntax_def AdmittedAlias : Type := sorry
+  lf_def objectAlias : Obj := o
+  judgment Good (x : Obj)
+  rule good_o : Good o
+
+#check_lf_mirror LeanMirrorTransparencySmoke : ObjAlias := o
+#check_lf_mirror LeanMirrorTransparencySmoke : Good objectAlias := good_o
+
+/--
+error: Lean mirror checker inferred
+  LeanMirrorTransparencySmoke.LFMirror.Obj
+for translated value, expected
+  LeanMirrorTransparencySmoke.LFMirror.AdmittedAlias
+-/
+#guard_msgs (whitespace := lax) in
+#check_lf_mirror LeanMirrorTransparencySmoke : AdmittedAlias := o
+
+/-- Lean's Sigma eta is accepted by the mirror, so compare mode must report the LF rejection. -/
+declare_type_theory LeanMirrorSigmaEtaPitfall where
+  syntax_sort Obj : Type
+  lf_opaque p : Σ x : Obj, Obj
+  judgment GoodPack (q : Σ x : Obj, Obj)
+  rule good_p : GoodPack p
+
+#check_lf_mirror LeanMirrorSigmaEtaPitfall : GoodPack ⟨fst p, snd p⟩ := good_p
+
+/--
+error: Lean mirror accepted a term in type theory 'LeanMirrorSigmaEtaPitfall', but the
+ordinary LF checker rejected it.
+
+First LF path:
+lf_def '_internalLeanMirrorCompare' in type theory 'LeanMirrorSigmaEtaPitfall' has type
+headed by judgment 'GoodPack', expected an LF type expression
+
+Second LF path:
+judgment_theorem '_internalLeanMirrorCompare' in type theory 'LeanMirrorSigmaEtaPitfall'
+applies rule 'good_p' but its statement is 'GoodPack (⟨fst p, snd p⟩)', expected rule
+conclusion 'GoodPack p'
+-/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.mirrorBackend.compareWithLF true in
+#check_lf_mirror LeanMirrorSigmaEtaPitfall : GoodPack ⟨fst p, snd p⟩ := good_p
+
+/-- Function-to-judgment shapes are mirror-checkable Lean types but not LF theorem
+statements. -/
+declare_type_theory LeanMirrorFunctionEtaPitfall where
+  syntax_sort Obj : Type
+  judgment GoodFun (g : Obj → Obj)
+  rule good (g : Obj → Obj) : GoodFun g
+
+#check_lf_mirror LeanMirrorFunctionEtaPitfall :
+    (g : Obj → Obj) → GoodFun (fun x => g x) :=
+  fun g => good g
+
+/--
+error: Lean mirror accepted a term in type theory 'LeanMirrorFunctionEtaPitfall', but the
+ordinary LF checker rejected it.
+
+First LF path:
+lf_def '_internalLeanMirrorCompare' in type theory 'LeanMirrorFunctionEtaPitfall' has type
+headed by judgment 'GoodFun', expected an LF type expression
+
+Second LF path:
+rule '_internalLeanMirrorCompare' in type theory 'LeanMirrorFunctionEtaPitfall' has statement not
+headed by a judgment identifier: (g : Obj → Obj) → GoodFun (fun x => g x)
+-/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.mirrorBackend.compareWithLF true in
+#check_lf_mirror LeanMirrorFunctionEtaPitfall :
+    (g : Obj → Obj) → GoodFun (fun x => g x) :=
+  fun g => good g
+
+/-- Binder-style declarations mirror-check under local LF parameters, then use ordinary LF
+registration. -/
+declare_type_theory LeanMirrorBinderSmoke where
+  syntax_sort Obj : Type
+  lf_opaque o : Obj
+  judgment Good (x : Obj)
+  rule good_o : Good o
+
+namespace LeanMirrorBinderSmoke
+
+internal_mirror def idObj (x : Obj) : Obj := x
+internal_mirror def theoremStyle (x : Obj) (h : Good x) : Good x := h
+
+#check idObj
+#check theoremStyle
+
+end LeanMirrorBinderSmoke
