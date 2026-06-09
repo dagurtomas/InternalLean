@@ -152,6 +152,33 @@ declare_type_theory LeanMirrorCrossClassDependencySmoke where
 
 #compare_lf_mirror_theory LeanMirrorCrossClassDependencySmoke
 
+/- Theory-body declarations can be checked through the opt-in mirror fast path. -/
+set_option internalLean.mirrorBackend.checkTheoryBodies true
+
+declare_type_theory LeanMirrorTheoryBodyFastSmoke where
+  syntax_sort Obj : Type
+  lf_opaque o : Obj
+  syntax_def ObjAlias : Type := Obj
+  lf_def objectAlias : ObjAlias := o
+
+set_option internalLean.mirrorBackend.checkTheoryBodies false
+
+#compare_lf_mirror_theory LeanMirrorTheoryBodyFastSmoke
+
+/- The theory-body mirror path can also run the ordinary LF checker in compare mode. -/
+set_option internalLean.mirrorBackend.checkTheoryBodies true
+set_option internalLean.mirrorBackend.compareTheoryBodiesWithLF true
+
+declare_type_theory LeanMirrorTheoryBodyCompareSmoke where
+  syntax_sort Obj : Type
+  lf_opaque o : Obj
+  lf_def objectAlias : Obj := o
+
+set_option internalLean.mirrorBackend.checkTheoryBodies false
+set_option internalLean.mirrorBackend.compareTheoryBodiesWithLF false
+
+#compare_lf_mirror_theory LeanMirrorTheoryBodyCompareSmoke
+
 /-- Universe-polymorphic syntax sorts mirror with Lean universe parameters. -/
 declare_type_theory LeanMirrorUniverseSmoke{u, v} where
   syntax_sort Obj : Type u

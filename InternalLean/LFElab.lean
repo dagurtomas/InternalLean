@@ -5,7 +5,7 @@ Authors: Dagur Asgeirsson
 -/
 module
 
-public meta import InternalLean.Registry
+public meta import InternalLean.LeanFrontend.MirrorCore
 
 /-!
 # LF elaboration and checking for user-declared type theories
@@ -5378,6 +5378,81 @@ def checkLFObjectDefInContext (ctx : IntraBlockLFCheckContext) (d : LFObjectDefD
     newObjectDefs := ctx.newObjectDefs.push checkedDef }
   pure (checkedDef, ctx)
 
+/-- Build the checked artifact and updated context after an external checker accepts an LF object
+body. -/
+def checkedLFObjectDefAfterExternalBodyCheck (ctx : IntraBlockLFCheckContext)
+    (d : LFObjectDefDecl) : CoreM (CheckedLFObjectDef × IntraBlockLFCheckContext) := do
+  let sig := ctx.flatSig
+  let globalHeads := ctx.globalHeads
+  let resultTypeExpr := eraseObjExprScopes (lfFunctionTypeResult d.typeExpr)
+  let typeHead? := checkedLFHead? globalHeads {} resultTypeExpr
+  match typeHead? with
+  | some typeHead =>
+      if typeHead.kind != .syntaxSort && typeHead.kind != .syntaxDef then
+        throwError "lf_def '{d.name}' in type theory '{sig.name}' has result type headed by \
+          {typeHead.kind.label} '{typeHead.name}', expected a syntax-family-headed or structural \
+            record/Sigma type"
+  | none =>
+      unless lfObjectDefResultIsStructuralRecord resultTypeExpr do
+        throwError "lf_def '{d.name}' in type theory '{sig.name}' has type not ending in a known \
+          LF identifier or structural record/Sigma type: {d.typeExpr}"
+  let checkedType ← profileLFCheckPhase m!"{d.name}: resolve type" do
+    resolveLFExpr sig globalHeads {} "lf_def" d.name "type" d.typeExpr
+  let checkedValue ← profileLFCheckPhase m!"{d.name}: resolve value" do
+    resolveLFExpr sig globalHeads {} "lf_def" d.name "value" d.value
+  let valueHead? := checkedLFHead? globalHeads {} d.value
+  if let some valueHead := valueHead? then
+    if valueHead.kind == .lfDefinition then
+      let valueName := valueHead.name.eraseMacroScopes
+      unless ctx.knownLFDefTypes.contains valueName do
+        throwError "lf_def '{d.name}' in type theory '{sig.name}' references LF definition \
+          '{valueName}' before it is available"
+  let checkedDef : CheckedLFObjectDef := {
+    name := d.name.eraseMacroScopes
+    typeExpr := d.typeExpr
+    checkedTypeExpr := checkedType
+    typeHead? := typeHead?
+    value := d.value
+    checkedValue := checkedValue
+    valueHead? := valueHead? }
+  let ctx := { ctx with
+    knownLFDefTypes :=
+      ctx.knownLFDefTypes.insert d.name.eraseMacroScopes (eraseObjExprScopes d.typeExpr)
+    knownLFDefValues :=
+      ctx.knownLFDefValues.insert d.name.eraseMacroScopes (eraseObjExprScopes d.value)
+    newObjectDefs := ctx.newObjectDefs.push checkedDef }
+  pure (checkedDef, ctx)
+
+/-- Prefix of a streaming LF-object-definition block that should be visible to the mirror. -/
+def lfMirrorSignatureForObjectDefPrefix (ctx : IntraBlockLFCheckContext)
+    (d : LFObjectDefDecl) : HLSignature :=
+  let current := d.name.eraseMacroScopes
+  let objectDefs := ctx.flatSig.lfObjectDefs.filter fun prior =>
+    let priorName := prior.name.eraseMacroScopes
+    priorName == current || ctx.knownLFDefTypes.contains priorName
+  { ctx.flatSig with lfObjectDefs := objectDefs, lfJudgmentTheorems := #[], rules := #[] }
+
+/-- Check one LF object definition using the opt-in Lean mirror theory-body checker. -/
+def checkLFObjectDefInContextWithMirror (ctx : IntraBlockLFCheckContext) (d : LFObjectDefDecl) :
+    CoreM (CheckedLFObjectDef × IntraBlockLFCheckContext) := do
+  let mirrorSig := lfMirrorSignatureForObjectDefPrefix ctx d
+  profileLFCheckPhase m!"{d.name}: mirror body check" do
+    ensureLFMirrorForSignatureBestEffort mirrorSig
+    addLFMirrorPendingDecl mirrorSig.name (lfMirrorLevelParamNamesForSignature mirrorSig)
+      (lfMirrorLevelArgsForSignature mirrorSig) (.lfObjectDef d)
+  if ← getBoolOption `internalLean.mirrorBackend.compareTheoryBodiesWithLF then
+    checkLFObjectDefInContext ctx d
+  else
+    checkedLFObjectDefAfterExternalBodyCheck ctx d
+
+/-- Check one LF object definition with the selected theory-body backend. -/
+def checkLFObjectDefInContextSelected (ctx : IntraBlockLFCheckContext) (d : LFObjectDefDecl) :
+    CoreM (CheckedLFObjectDef × IntraBlockLFCheckContext) := do
+  if ← getBoolOption `internalLean.mirrorBackend.checkTheoryBodies then
+    checkLFObjectDefInContextWithMirror ctx d
+  else
+    checkLFObjectDefInContext ctx d
+
 /-- Check one LF judgment theorem, updating the intra-block availability context. -/
 def checkLFJudgmentTheoremInContext (ctx : IntraBlockLFCheckContext)
     (t : LFJudgmentTheoremDecl) :
@@ -5526,7 +5601,7 @@ def checkLFObjectArtifactsInSignatureStreaming (sig : HLSignature)
   let checkedBase : CheckedSignature := { name := sig.name }
   let mut ctx := mkIntraBlockLFCheckContext sig checkedBase rules
   for d in sig.lfObjectDefs do
-    let (_, ctx') ← checkLFObjectDefInContext ctx d
+    let (_, ctx') ← checkLFObjectDefInContextSelected ctx d
     ctx := ctx'
   for t in sig.lfJudgmentTheorems do
     let (_, ctx') ← checkLFJudgmentTheoremInContext ctx t
@@ -5651,6 +5726,39 @@ def checkOneSyntaxDefMetadataInSignature (sig : HLSignature) (lfGlobals : NameSe
     CoreM Unit := do
   checkOneSyntaxDefMetadataInSignatureWithLookup (mkLFCheckLookupContext sig) sig lfGlobals
     opaqueArities syntaxSortArities globalHeads d
+
+/-- Check the parameter telescope of one syntax-definition declaration. -/
+def checkOneSyntaxDefParameterMetadataInSignatureWithLookup (lookup : LFCheckLookupContext)
+    (sig : HLSignature) (lfGlobals : NameSet) (opaqueArities : NameMap (Option Nat))
+    (syntaxSortArities : NameMap Nat)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (d : SyntaxDefDecl) :
+    CoreM Unit := do
+  checkNoDuplicateMetadataBinders sig "syntax_def" d.name d.params
+  discard <| checkKnownNamesInMetadataBindings sig lfGlobals opaqueArities "syntax_def" d.name
+    d.params
+  checkSyntaxSortApplicationsInBindings sig syntaxSortArities "syntax_def" d.name d.params
+  checkLFSyntaxSortArgumentsInBindingsWithLookup lookup sig "syntax_def" d.name d.params
+  checkLFBinderTypesInBindingsWithLookup lookup sig globalHeads "syntax_def" d.name d.params
+
+/-- Check one syntax-definition declaration using the selected theory-body backend. -/
+def checkOneSyntaxDefMetadataInSignatureSelected (mirrorSig : HLSignature)
+    (lookup : LFCheckLookupContext) (sig : HLSignature) (lfGlobals : NameSet)
+    (opaqueArities : NameMap (Option Nat)) (syntaxSortArities : NameMap Nat)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (d : SyntaxDefDecl) :
+    CoreM Unit := do
+  if (← getBoolOption `internalLean.mirrorBackend.checkTheoryBodies) && d.value?.isSome then
+    checkOneSyntaxDefParameterMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
+      syntaxSortArities globalHeads d
+    profileLFCheckPhase m!"{d.name}: mirror syntax_def body check" do
+      ensureLFMirrorForSignatureBestEffort mirrorSig
+      addLFMirrorPendingDecl mirrorSig.name (lfMirrorLevelParamNamesForSignature mirrorSig)
+        (lfMirrorLevelArgsForSignature mirrorSig) (.syntaxDef d)
+    if ← getBoolOption `internalLean.mirrorBackend.compareTheoryBodiesWithLF then
+      checkOneSyntaxDefMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
+        syntaxSortArities globalHeads d
+  else
+    checkOneSyntaxDefMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
+      syntaxSortArities globalHeads d
 
 /-- Check one judgment-abbreviation declaration's metadata. -/
 def checkOneJudgmentAbbrevMetadataInSignature (sig : HLSignature) (lfGlobals : NameSet)
@@ -5891,7 +5999,13 @@ def checkRuleMetadataInSignature (sig : HLSignature) : CoreM (Array CheckedLFRul
   for _h : i in [:sig.syntaxDefs.size] do
     let d := sig.syntaxDefs[i]!
     checkNoUnavailableSyntaxDefRefsFrom sig d syntaxDefNames i
-    checkOneSyntaxDefMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
+    let mirrorSig := {
+      sig with
+      syntaxDefs := sig.syntaxDefs.extract 0 (i + 1)
+      lfObjectDefs := #[]
+      lfJudgmentTheorems := #[]
+      rules := #[] }
+    checkOneSyntaxDefMetadataInSignatureSelected mirrorSig lookup sig lfGlobals opaqueArities
       syntaxSortArities globalHeads d
   for abbr in sig.judgmentAbbrevs do
     checkOneJudgmentAbbrevMetadataInSignature sig lfGlobals opaqueArities syntaxSortArities
@@ -7993,8 +8107,17 @@ def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : Ch
     checkNoUnavailableSyntaxDefRefsFrom flatForCheck d blockSyntaxDefNames i
     checkLFLocalBinderHygieneInSyntaxDefDecl flatForCheck d
     checkLFUniverseLevelInSyntaxDefDecl flatForCheck d
-    checkOneSyntaxDefMetadataInSignatureWithLookup lookup flatForCheck lfGlobals opaqueArities
-      syntaxSortArities globalHeads d
+    let mirrorSyntaxDefs :=
+      (checkedBase.lfSyntaxDefs.map checkedLFSyntaxDefToHLDecl) ++
+        (checkedSyntaxDefs.map checkedLFSyntaxDefToHLDecl)
+    let mirrorSig := {
+      flatForCheck with
+      syntaxDefs := mirrorSyntaxDefs.push d
+      lfObjectDefs := checkedBase.lfObjectDefs.map checkedLFObjectDefToHLDecl
+      lfJudgmentTheorems := checkedBase.lfJudgmentTheorems.map checkedLFJudgmentTheoremToHLDecl
+      rules := checkedBase.lfRules.map checkedLFRuleToHLDecl }
+    checkOneSyntaxDefMetadataInSignatureSelected mirrorSig lookup flatForCheck lfGlobals
+      opaqueArities syntaxSortArities globalHeads d
     checkedSyntaxDefs :=
       checkedSyntaxDefs.push (← checkedLFSyntaxDefDeclArtifact flatForCheck globalHeads d)
   let mut checkedJudgmentAbbrevs : Array CheckedLFJudgmentAbbrev := #[]
@@ -8080,7 +8203,7 @@ def checkTheoryBlockDeltaStreaming (flatForCheck : HLSignature) (checkedBase : C
     for d in block.lfObjectDefs do
       checkLFLocalBinderHygieneInLFObjectDefDecl flatForCheck d
       checkLFUniverseLevelInLFObjectDefDecl flatForCheck d
-      let (_, ctx') ← checkLFObjectDefInContext ctx d
+      let (_, ctx') ← checkLFObjectDefInContextSelected ctx d
       ctx := ctx'
     pure ctx
   let ctx ← profileLFCheckPhase m!"{flatForCheck.name}: judgment theorems in block" do

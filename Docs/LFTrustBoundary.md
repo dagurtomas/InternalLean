@@ -187,6 +187,19 @@ in the mirror, and mirror-checks bodies for `syntax_abbrev`, `judgment_abbrev`, 
 `syntax_def`, and `lf_def`. Admitted `syntax_def` declarations and untyped opaques remain opaque
 trusted leaves; they are counted but not body-checked by the mirror.
 
+An opt-in fast path can use the mirror while checking theory-block bodies:
+
+```lean
+set_option internalLean.mirrorBackend.checkTheoryBodies true
+set_option internalLean.mirrorBackend.compareTheoryBodiesWithLF true -- optional parity check
+```
+
+With `checkTheoryBodies`, checked `syntax_def` and `lf_def` bodies in `declare_type_theory` and
+`extend_type_theory` are accepted by the mirror backend and then registered in the ordinary checked
+LF artifacts. With `compareTheoryBodiesWithLF`, the ordinary LF body checker also runs after mirror
+acceptance; this is useful while validating coverage, but it does not provide the fast path's build
+speedup.
+
 ## Rewriting and transport metadata
 
 Internal `rw` and non-definitional `simp` can use metadata such as:
