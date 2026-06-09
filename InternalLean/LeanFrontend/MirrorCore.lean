@@ -708,6 +708,35 @@ partial def addLFMirrorPendingDecls (theoryName : Name) (levelParams : List Name
       '{theoryName}'. Blocked declaration(s):\n{MessageData.joinSep details Format.line}"
   addLFMirrorPendingDecls theoryName levelParams levelArgs rest
 
+/-- Node count for a source LF expression, used by the best-effort mirror environment. -/
+partial def lfMirrorObjExprNodeCount : ObjExpr → Nat
+  | .ident _ | .sort | .univ _ => 1
+  | .app f a | .pair f a | .jeq f a =>
+      1 + lfMirrorObjExprNodeCount f + lfMirrorObjExprNodeCount a
+  | .arrow _ A B | .funArrow _ A B | .sigma _ A B =>
+      1 + lfMirrorObjExprNodeCount A + lfMirrorObjExprNodeCount B
+  | .fst e | .snd e => 1 + lfMirrorObjExprNodeCount e
+  | .lam _ body => 1 + lfMirrorObjExprNodeCount body
+
+/-- Checked `syntax_def` bodies above this size are opaque in best-effort mirror prefixes. -/
+def lfMirrorBestEffortSyntaxDefNodeLimit : Nat := 120
+
+/-- Add one mirror declaration in best-effort mode. -/
+def addLFMirrorPendingDeclBestEffort (theoryName : Name) (levelParams : List Name)
+    (levelArgs : List Level) (decl : LFMirrorPendingDecl) : CoreM Unit := do
+  match decl with
+  | .syntaxDef d =>
+      match d.value? with
+      | some value =>
+          if lfMirrorObjExprNodeCount value > lfMirrorBestEffortSyntaxDefNodeLimit then
+            let type ← MetaM.run' <| lfMirrorForallTypeWithLevels theoryName levelArgs d.params
+              (fun _ => pure (lfMirrorLeanSortOfLevel d.resultLevel))
+            addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+          else
+            addLFMirrorPendingDecl theoryName levelParams levelArgs decl
+      | none => addLFMirrorPendingDecl theoryName levelParams levelArgs decl
+  | _ => addLFMirrorPendingDecl theoryName levelParams levelArgs decl
+
 /-- Add every currently unblocked mirror declaration, leaving blocked declarations for later. -/
 partial def addLFMirrorPendingDeclsBestEffort (theoryName : Name) (levelParams : List Name)
     (levelArgs : List Level) (decls : Array LFMirrorPendingDecl) : CoreM Unit := do
@@ -716,7 +745,7 @@ partial def addLFMirrorPendingDeclsBestEffort (theoryName : Name) (levelParams :
   let mut rest : Array LFMirrorPendingDecl := #[]
   for decl in decls do
     try
-      addLFMirrorPendingDecl theoryName levelParams levelArgs decl
+      addLFMirrorPendingDeclBestEffort theoryName levelParams levelArgs decl
     catch _ =>
       rest := rest.push decl
   if rest.isEmpty || rest.size == decls.size then
