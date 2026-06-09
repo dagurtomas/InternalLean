@@ -320,61 +320,148 @@ def addLFMirrorDefinitionIfMissing (declName : Name) (levelParams : List Name)
         safety := DefinitionSafety.safe }
       addDecl (Declaration.defnDecl defVal)
 
+/-- One mirror declaration waiting for its dependencies to be available in Lean. -/
+inductive LFMirrorPendingDecl where
+  | syntaxSort : SyntaxSortDecl → LFMirrorPendingDecl
+  | syntaxAbbrev : SyntaxAbbrevDecl → LFMirrorPendingDecl
+  | syntaxDef : SyntaxDefDecl → LFMirrorPendingDecl
+  | judgment : JudgmentDecl → LFMirrorPendingDecl
+  | judgmentAbbrev : JudgmentAbbrevDecl → LFMirrorPendingDecl
+  | lfOpaqueConst : LFOpaqueConstDecl → LFMirrorPendingDecl
+  | lfObjectDef : LFObjectDefDecl → LFMirrorPendingDecl
+  | rule : RuleDecl → LFMirrorPendingDecl
+  | lfJudgmentTheorem : LFJudgmentTheoremDecl → LFMirrorPendingDecl
+
+namespace LFMirrorPendingDecl
+
+/-- User-facing kind label for a pending mirror declaration. -/
+def kind : LFMirrorPendingDecl → String
+  | .syntaxSort _ => "syntax_sort"
+  | .syntaxAbbrev _ => "syntax_abbrev"
+  | .syntaxDef _ => "syntax_def"
+  | .judgment _ => "judgment"
+  | .judgmentAbbrev _ => "judgment_abbrev"
+  | .lfOpaqueConst _ => "lf_opaque"
+  | .lfObjectDef _ => "lf_def"
+  | .rule _ => "rule"
+  | .lfJudgmentTheorem _ => "judgment_theorem"
+
+/-- User-facing declaration name for a pending mirror declaration. -/
+def name : LFMirrorPendingDecl → Name
+  | .syntaxSort d => d.name
+  | .syntaxAbbrev d => d.name
+  | .syntaxDef d => d.name
+  | .judgment d => d.name
+  | .judgmentAbbrev d => d.name
+  | .lfOpaqueConst d => d.name
+  | .lfObjectDef d => d.name
+  | .rule d => d.name
+  | .lfJudgmentTheorem d => d.name
+
+end LFMirrorPendingDecl
+
+/-- Add one mirror declaration, assuming any declarations it references already exist. -/
+def addLFMirrorPendingDecl (theoryName : Name) (levelParams : List Name)
+    (decl : LFMirrorPendingDecl) : CommandElabM Unit := do
+  match decl with
+  | .syntaxSort d =>
+      let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
+        (fun _ => pure (lfMirrorLeanSortOfLevel d.resultLevel))
+      addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+  | .syntaxAbbrev d =>
+      let type ← liftTermElabM <| lfMirrorForallType theoryName d.params fun locals => do
+        inferType (← lfMirrorExpr theoryName locals d.value)
+      let value ← liftTermElabM <| lfMirrorLambdaValue theoryName d.params
+        (fun locals => lfMirrorExpr theoryName locals d.value)
+      addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
+  | .syntaxDef d =>
+      let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
+        (fun _ => pure (lfMirrorLeanSortOfLevel d.resultLevel))
+      match d.value? with
+      | some value =>
+          let value ← liftTermElabM <| lfMirrorLambdaValue theoryName d.params
+            (fun locals => lfMirrorExpr theoryName locals value)
+          addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
+      | none =>
+          addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+  | .judgment d =>
+      let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
+        (fun _ => pure (mkSort (Level.succ .zero)))
+      addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+  | .judgmentAbbrev d =>
+      let type ← liftTermElabM <| lfMirrorForallType theoryName d.params fun locals => do
+        inferType (← lfMirrorExpr theoryName locals d.value)
+      let value ← liftTermElabM <| lfMirrorLambdaValue theoryName d.params
+        (fun locals => lfMirrorExpr theoryName locals d.value)
+      addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
+  | .lfOpaqueConst d =>
+      if let some typeExpr := d.typeExpr? then
+        let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
+          (fun locals => lfMirrorExpr theoryName locals typeExpr)
+        addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+  | .lfObjectDef d =>
+      let type ← liftTermElabM <| lfMirrorExpr theoryName {} d.typeExpr
+      let value ← liftTermElabM <| lfMirrorTermWithExpected theoryName {} d.typeExpr d.value
+      addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
+  | .rule d =>
+      let type ← liftTermElabM do
+        let premiseParams := d.premises.map fun p =>
+          ({ name := p.name, typeExpr := p.judgmentExpr, visibility := .explicit } : HLBinding)
+        lfMirrorForallType theoryName (d.params ++ premiseParams)
+          (fun locals => lfMirrorExpr theoryName locals d.conclusionExpr)
+      addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+  | .lfJudgmentTheorem d =>
+      let type ← liftTermElabM <| lfMirrorForallType theoryName d.binders
+        (fun locals => lfMirrorExpr theoryName locals d.judgmentExpr)
+      addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+
+/-- Add mirror declarations in dependency order by retrying declarations blocked on later heads. -/
+partial def addLFMirrorPendingDecls (theoryName : Name) (levelParams : List Name)
+    (decls : Array LFMirrorPendingDecl) : CommandElabM Unit := do
+  if decls.isEmpty then
+    return
+  let mut rest : Array LFMirrorPendingDecl := #[]
+  let mut blocked : Array (LFMirrorPendingDecl × MessageData) := #[]
+  for decl in decls do
+    try
+      addLFMirrorPendingDecl theoryName levelParams decl
+    catch ex =>
+      rest := rest.push decl
+      blocked := blocked.push (decl, exceptionMessageData ex)
+  if rest.isEmpty then
+    return
+  if rest.size == decls.size then
+    let details := blocked.toList.take 5 |>.map fun (decl, reason) =>
+      m!"  {decl.kind} '{decl.name}': {reason}"
+    throwError m!"could not construct Lean mirror declarations for type theory \
+      '{theoryName}'. Blocked declaration(s):\n{MessageData.joinSep details Format.line}"
+  addLFMirrorPendingDecls theoryName levelParams rest
+
 /-- Ensure that experimental Lean mirror declarations exist for the currently checked signature. -/
 def ensureLFMirrorForTheory (theoryName : Name) : CommandElabM Unit := do
   let some checkedHL ← liftCoreM <| getCheckedHLSignature? theoryName
     | throwError "no checked high-level signature stored for type theory '{theoryName}'"
   let levelParams := lfMirrorLevelParamNamesForSignature checkedHL
+  let mut pending : Array LFMirrorPendingDecl := #[]
   for d in checkedHL.syntaxSorts do
-    let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
-      (fun _ => pure (lfMirrorLeanSortOfLevel d.resultLevel))
-    addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+    pending := pending.push (.syntaxSort d)
   for d in checkedHL.syntaxAbbrevs do
-    let type ← liftTermElabM <| lfMirrorForallType theoryName d.params fun locals => do
-      inferType (← lfMirrorExpr theoryName locals d.value)
-    let value ← liftTermElabM <| lfMirrorLambdaValue theoryName d.params
-      (fun locals => lfMirrorExpr theoryName locals d.value)
-    addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
+    pending := pending.push (.syntaxAbbrev d)
   for d in checkedHL.syntaxDefs do
-    let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
-      (fun _ => pure (lfMirrorLeanSortOfLevel d.resultLevel))
-    match d.value? with
-    | some value =>
-        let value ← liftTermElabM <| lfMirrorLambdaValue theoryName d.params
-          (fun locals => lfMirrorExpr theoryName locals value)
-        addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
-    | none =>
-        addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+    pending := pending.push (.syntaxDef d)
   for d in checkedHL.judgments do
-    let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
-      (fun _ => pure (mkSort (Level.succ .zero)))
-    addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+    pending := pending.push (.judgment d)
   for d in checkedHL.judgmentAbbrevs do
-    let type ← liftTermElabM <| lfMirrorForallType theoryName d.params fun locals => do
-      inferType (← lfMirrorExpr theoryName locals d.value)
-    let value ← liftTermElabM <| lfMirrorLambdaValue theoryName d.params
-      (fun locals => lfMirrorExpr theoryName locals d.value)
-    addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
+    pending := pending.push (.judgmentAbbrev d)
   for d in checkedHL.lfOpaqueConsts do
-    if let some typeExpr := d.typeExpr? then
-      let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
-        (fun locals => lfMirrorExpr theoryName locals typeExpr)
-      addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+    pending := pending.push (.lfOpaqueConst d)
   for d in checkedHL.lfObjectDefs do
-    let type ← liftTermElabM <| lfMirrorExpr theoryName {} d.typeExpr
-    let value ← liftTermElabM <| lfMirrorTermWithExpected theoryName {} d.typeExpr d.value
-    addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
+    pending := pending.push (.lfObjectDef d)
   for d in checkedHL.rules do
-    let type ← liftTermElabM do
-      let premiseParams := d.premises.map fun p =>
-        ({ name := p.name, typeExpr := p.judgmentExpr, visibility := .explicit } : HLBinding)
-      lfMirrorForallType theoryName (d.params ++ premiseParams)
-        (fun locals => lfMirrorExpr theoryName locals d.conclusionExpr)
-    addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+    pending := pending.push (.rule d)
   for d in checkedHL.lfJudgmentTheorems do
-    let type ← liftTermElabM <| lfMirrorForallType theoryName d.binders
-      (fun locals => lfMirrorExpr theoryName locals d.judgmentExpr)
-    addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+    pending := pending.push (.lfJudgmentTheorem d)
+  addLFMirrorPendingDecls theoryName levelParams pending
 
 /-- Check one staged LF object definition with the ordinary LF checker without registering it. -/
 def checkLFObjectDefForMirrorCompare (cache : CompiledLFCheckCache) (d : LFObjectDefDecl) :

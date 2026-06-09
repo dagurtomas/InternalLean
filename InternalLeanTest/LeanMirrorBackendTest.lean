@@ -139,6 +139,19 @@ declare_type_theory LeanMirrorAbbrevSmoke where
   LeanMirrorAbbrevSmoke.LFMirror.Obj → Type)
 #compare_lf_mirror_theory LeanMirrorAbbrevSmoke
 
+/-- Mirror declaration construction respects dependencies across declaration classes. -/
+declare_type_theory LeanMirrorCrossClassDependencySmoke where
+  syntax_sort Obj : Type
+  syntax_sort Family (x : Obj) : Type
+  lf_opaque o : Obj
+  lf_opaque f (x : Obj) : Obj
+  syntax_abbrev FamilyAtFO := Family (f o)
+  syntax_def FamilyAtFOChecked : Type := Family (f o)
+  lf_opaque witness : FamilyAtFO
+  lf_def witnessAlias : FamilyAtFOChecked := witness
+
+#compare_lf_mirror_theory LeanMirrorCrossClassDependencySmoke
+
 /-- Universe-polymorphic syntax sorts mirror with Lean universe parameters. -/
 declare_type_theory LeanMirrorUniverseSmoke{u, v} where
   syntax_sort Obj : Type u
