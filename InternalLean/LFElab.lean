@@ -5747,13 +5747,32 @@ def checkOneSyntaxDefParameterMetadataInSignatureWithLookup (lookup : LFCheckLoo
   checkLFSyntaxSortArgumentsInBindingsWithLookup lookup sig "syntax_def" d.name d.params
   checkLFBinderTypesInBindingsWithLookup lookup sig globalHeads "syntax_def" d.name d.params
 
+/-- Node count for a source LF expression, used to avoid sending huge type-valued
+`syntax_def` bodies to the mirror fast path before coverage is mature. -/
+partial def lfTheoryBodyMirrorExprNodeCount : ObjExpr → Nat
+  | .ident _ | .sort | .univ _ => 1
+  | .app f a | .pair f a | .jeq f a =>
+      1 + lfTheoryBodyMirrorExprNodeCount f + lfTheoryBodyMirrorExprNodeCount a
+  | .arrow _ A B | .funArrow _ A B | .sigma _ A B =>
+      1 + lfTheoryBodyMirrorExprNodeCount A + lfTheoryBodyMirrorExprNodeCount B
+  | .fst e | .snd e => 1 + lfTheoryBodyMirrorExprNodeCount e
+  | .lam _ body => 1 + lfTheoryBodyMirrorExprNodeCount body
+
+/-- Checked `syntax_def` bodies above this size currently use the ordinary LF checker. -/
+def lfTheoryBodyMirrorSyntaxDefNodeLimit : Nat := 120
+
 /-- Check one syntax-definition declaration using the selected theory-body backend. -/
 def checkOneSyntaxDefMetadataInSignatureSelected (mirrorSig : HLSignature)
     (lookup : LFCheckLookupContext) (sig : HLSignature) (lfGlobals : NameSet)
     (opaqueArities : NameMap (Option Nat)) (syntaxSortArities : NameMap Nat)
     (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (d : SyntaxDefDecl) :
     CoreM Unit := do
-  if (← getBoolOption `internalLean.mirrorBackend.checkTheoryBodies) && d.value?.isSome then
+  let useMirror :=
+    (← getBoolOption `internalLean.mirrorBackend.checkTheoryBodies) &&
+      match d.value? with
+      | some value => lfTheoryBodyMirrorExprNodeCount value <= lfTheoryBodyMirrorSyntaxDefNodeLimit
+      | none => false
+  if useMirror then
     checkOneSyntaxDefParameterMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
       syntaxSortArities globalHeads d
     let compareWithLF ← getBoolOption `internalLean.mirrorBackend.compareTheoryBodiesWithLF
