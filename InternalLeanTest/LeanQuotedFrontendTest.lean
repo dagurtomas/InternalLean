@@ -102,6 +102,12 @@ internal_lean theorem byApplyTheorem : IsObj o := by
 internal_lean theorem byExactLocal (x : Obj) (h : IsObj x) : IsObj x := by exact h
 internal_lean theorem byAssumptionLocal (x : Obj) (h : IsObj x) : IsObj x := by
   assumption
+set_option internalLean.preferLeanQuotedFrontend true in
+internal def canonicalQuotedObj : Obj := LFQuote.o
+set_option internalLean.preferLeanQuotedFrontend true in
+internal def canonicalQuotedBinder (x : Obj) : Obj := x
+set_option internalLean.preferLeanQuotedFrontend true in
+internal theorem canonicalQuotedTheorem : IsObj o := LFQuote.mkObj o
 internal_raw def rawObj : Obj := o
 internal_raw theorem rawObjOk : IsObj o := mkObj o
 internal_raw def rawObjOkBy : IsObj o := by
@@ -160,6 +166,9 @@ internal_lean def admittedBinderBy (x : Obj) : Obj := by
 #check byApplyTheorem
 #check byExactLocal
 #check byAssumptionLocal
+#check canonicalQuotedObj
+#check canonicalQuotedBinder
+#check canonicalQuotedTheorem
 #check rawObj
 #check rawObjOk
 #check rawObjOkBy

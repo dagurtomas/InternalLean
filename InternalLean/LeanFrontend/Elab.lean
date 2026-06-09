@@ -22,6 +22,12 @@ open Lean Elab Command Term Meta
 
 namespace InternalLean
 
+register_option internalLean.preferLeanQuotedFrontend : Bool := {
+  defValue := false
+  descr := "try the experimental Lean-quoted frontend for canonical `internal def` and theorem \
+    term bodies before falling back to the raw InternalLean frontend"
+}
+
 /-- Local Lean free variables introduced for an experimental quoted-LF elaboration. -/
 abbrev LFQuoteLocalMap := Array (FVarId × Name)
 
@@ -570,6 +576,67 @@ def elabLeanQuotedInternalTheoremCheckedExpr
     (← getRef) declNameStx
   addInternalDeclarationQuoteStub target params
 
+/-- Parse the exact source range of a raw `ttExpr` body as an ordinary Lean term. -/
+def parseLeanQuotedTermFromSource (stx : Syntax) : CommandElabM (TSyntax `term) := do
+  let some startPos := stx.getPos? (canonicalOnly := true)
+    | throwError "cannot recover source range for Lean-quoted internal body"
+  let some stopPos := stx.getTailPos? (canonicalOnly := true)
+    | throwError "cannot recover source range for Lean-quoted internal body"
+  let source := String.Pos.Raw.extract (← getFileMap).source startPos stopPos
+  match Lean.Parser.runParserCategory (← getEnv) `term source with
+  | .ok stx => pure ⟨stx⟩
+  | .error err => throwError "could not parse internal body as a Lean term: {err}"
+
+/-- Whether canonical internal declarations should try the quoted frontend first. -/
+def preferLeanQuotedFrontend : CommandElabM Bool :=
+  getBoolOption `internalLean.preferLeanQuotedFrontend
+
+/-- Try the experimental quoted frontend for a canonical checked `internal def` term body. -/
+def elabCanonicalLeanQuotedDefChecked (doc? : Option (TSyntax ``Parser.Command.docComment))
+    (declNameStx : Syntax) (declName : Name) (params : Array HLBinding)
+    (typeStx : TSyntax `ttExpr) (bodyStx : Syntax) : CommandElabM Unit := do
+  unless ← preferLeanQuotedFrontend do
+    throwUnsupportedSyntax
+  let target ← resolveInternalDefTarget declName
+  let typeExpr ← elabObjExpr typeStx
+  let bodyTerm ←
+    try
+      parseLeanQuotedTermFromSource bodyStx
+    catch _ =>
+      throwUnsupportedSyntax
+  let valueExpr ←
+    try
+      elabLeanQuotedLFBody target params typeExpr bodyTerm
+    catch _ =>
+      throwUnsupportedSyntax
+  saveLeanQuotedLFBodyInfo target params typeExpr bodyStx
+  if params.isEmpty then
+    elabInternalDefCheckedExpr doc? declNameStx declName #[] typeExpr valueExpr
+  else
+    elabInternalDefCheckedWithBindersExpr doc? declNameStx declName #[] params typeExpr
+      valueExpr
+
+/-- Try the experimental quoted frontend for a canonical checked `internal theorem` term body. -/
+def elabCanonicalLeanQuotedTheoremChecked (doc? : Option (TSyntax ``Parser.Command.docComment))
+    (declNameStx : Syntax) (declName : Name) (params : Array HLBinding)
+    (typeStx : TSyntax `ttExpr) (bodyStx : Syntax) : CommandElabM Unit := do
+  unless ← preferLeanQuotedFrontend do
+    throwUnsupportedSyntax
+  let target ← resolveInternalDefTarget declName
+  let typeExpr ← elabObjExpr typeStx
+  let bodyTerm ←
+    try
+      parseLeanQuotedTermFromSource bodyStx
+    catch _ =>
+      throwUnsupportedSyntax
+  let valueExpr ←
+    try
+      elabLeanQuotedLFBody target params typeExpr bodyTerm
+    catch _ =>
+      throwUnsupportedSyntax
+  saveLeanQuotedLFBodyInfo target params typeExpr bodyStx
+  elabLeanQuotedInternalTheoremCheckedExpr doc? declNameStx declName params typeExpr valueExpr
+
 syntax (name := internalLeanQuotedDef)
   docComment ? "internal_lean " "def " ident " : " ttExpr " := " term : command
 syntax (name := internalLeanQuotedDefBinder)
@@ -597,6 +664,35 @@ syntax (name := internalLeanQuotedTheoremBySorry)
 syntax (name := internalLeanQuotedTheoremBinderBySorry)
   docComment ? "internal_lean " "theorem " ident ttBinder+ " : " ttExpr " := " "by" ppLine
     "sorry" : command
+
+elab_rules (kind := internalDef) : command
+  | `($[$doc?:docComment]? internal def $declName:ident : $typeStx:ttExpr :=
+      $bodyStx:ttExpr) => do
+      elabCanonicalLeanQuotedDefChecked doc? declName declName.getId #[] typeStx bodyStx.raw
+      addInternalDefAnnotationNavigationInfo declName.getId #[] typeStx
+
+elab_rules (kind := internalDefBinderUnsupported) : command
+  | `($[$doc?:docComment]? internal def $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := $bodyStx:ttExpr) => do
+      let params ← binders.mapM elabHLBinding
+      elabCanonicalLeanQuotedDefChecked doc? declName declName.getId params typeStx
+        bodyStx.raw
+      addInternalDefAnnotationNavigationInfo declName.getId binders typeStx
+
+elab_rules (kind := internalTheorem) : command
+  | `($[$doc?:docComment]? internal theorem $declName:ident : $typeStx:ttExpr :=
+      $bodyStx:ttExpr) => do
+      elabCanonicalLeanQuotedTheoremChecked doc? declName declName.getId #[] typeStx
+        bodyStx.raw
+      addInternalDefAnnotationNavigationInfo declName.getId #[] typeStx
+
+elab_rules (kind := internalTheoremBinder) : command
+  | `($[$doc?:docComment]? internal theorem $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := $bodyStx:ttExpr) => do
+      let params ← binders.mapM elabHLBinding
+      elabCanonicalLeanQuotedTheoremChecked doc? declName declName.getId params typeStx
+        bodyStx.raw
+      addInternalDefAnnotationNavigationInfo declName.getId binders typeStx
 
 elab_rules (kind := internalLeanQuotedDefSorry) : command
   | `($[$doc?:docComment]? internal_lean def $declName:ident : $typeStx:ttExpr := sorry) =>

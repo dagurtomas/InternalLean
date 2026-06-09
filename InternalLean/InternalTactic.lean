@@ -406,9 +406,18 @@ structure InternalApplyCandidate where
   sideConditions : Array InternalTacticSideCondition := #[]
   deriving Inhabited, Repr
 
-/-- Drop a theory namespace prefix from a tactic identifier when it names an object declaration. -/
+/-- Drop frontend namespace prefixes from a tactic/body identifier when it names an object
+source declaration. -/
 def internalTacticObjectName (target : InternalDefTarget) (n : Name) : Name :=
-  if n.getPrefix.eraseMacroScopes == target.theoryName.eraseMacroScopes then
+  let n := n.eraseMacroScopes
+  let theoryName := target.theoryName.eraseMacroScopes
+  let quoteNs := lfQuoteNamespace theoryName
+  if n.getPrefix == theoryName then
+    nameLastComponent n
+  else if quoteNs.isPrefixOf n then
+    let localName := n.replacePrefix quoteNs .anonymous
+    if localName.isAnonymous then n else localName
+  else if n.getPrefix == `LFQuote then
     nameLastComponent n
   else
     n
