@@ -5457,7 +5457,7 @@ def checkLFObjectDefInContextSelected (ctx : IntraBlockLFCheckContext) (d : LFOb
     CoreM (CheckedLFObjectDef × IntraBlockLFCheckContext) := do
   let useMirror :=
     (← getBoolOption `internalLean.mirrorBackend.checkTheoryBodies) &&
-      lfMirrorObjExprNodeCount d.value <= lfMirrorBestEffortSyntaxDefNodeLimit
+      lfMirrorObjExprNodeCount d.value <= lfMirrorBestEffortObjectDefNodeLimit
   if useMirror then
     checkLFObjectDefInContextWithMirror ctx d
   else

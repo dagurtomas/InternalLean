@@ -718,8 +718,11 @@ partial def lfMirrorObjExprNodeCount : ObjExpr → Nat
   | .fst e | .snd e => 1 + lfMirrorObjExprNodeCount e
   | .lam _ body => 1 + lfMirrorObjExprNodeCount body
 
-/-- Checked `syntax_def` bodies above this size are opaque in best-effort mirror prefixes. -/
-def lfMirrorBestEffortSyntaxDefNodeLimit : Nat := 120
+/-- Checked `syntax_def` bodies are currently left to the ordinary LF checker in fast-path mode. -/
+def lfMirrorBestEffortSyntaxDefNodeLimit : Nat := 0
+
+/-- `lf_def` bodies above this size are left to the ordinary LF checker in fast-path mode. -/
+def lfMirrorBestEffortObjectDefNodeLimit : Nat := 120
 
 /-- Add one mirror declaration in best-effort mode. -/
 def addLFMirrorPendingDeclBestEffort (theoryName : Name) (levelParams : List Name)
@@ -739,7 +742,7 @@ def addLFMirrorPendingDeclBestEffort (theoryName : Name) (levelParams : List Nam
             addLFMirrorPendingDecl theoryName levelParams levelArgs decl
       | none => addLFMirrorPendingDecl theoryName levelParams levelArgs decl
   | .lfObjectDef d =>
-      if lfMirrorObjExprNodeCount d.value > lfMirrorBestEffortSyntaxDefNodeLimit then
+      if lfMirrorObjExprNodeCount d.value > lfMirrorBestEffortObjectDefNodeLimit then
         return
       else
         addLFMirrorPendingDecl theoryName levelParams levelArgs decl
