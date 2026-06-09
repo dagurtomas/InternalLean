@@ -142,6 +142,11 @@ syntax (name := internalLeanQuotedDefSorry)
   docComment ? "internal_lean " "def " ident " : " ttExpr " := " "sorry" : command
 syntax (name := internalLeanQuotedDefBinderSorry)
   docComment ? "internal_lean " "def " ident ttBinder+ " : " ttExpr " := " "sorry" : command
+syntax (name := internalLeanQuotedDefBySorry)
+  docComment ? "internal_lean " "def " ident " : " ttExpr " := " "by" ppLine "sorry" : command
+syntax (name := internalLeanQuotedDefBinderBySorry)
+  docComment ? "internal_lean " "def " ident ttBinder+ " : " ttExpr " := " "by" ppLine
+    "sorry" : command
 
 elab_rules (kind := internalLeanQuotedDefSorry) : command
   | `($[$doc?:docComment]? internal_lean def $declName:ident : $typeStx:ttExpr := sorry) =>
@@ -150,6 +155,17 @@ elab_rules (kind := internalLeanQuotedDefSorry) : command
 elab_rules (kind := internalLeanQuotedDefBinderSorry) : command
   | `($[$doc?:docComment]? internal_lean def $declName:ident $binders:ttBinder* :
       $typeStx:ttExpr := sorry) =>
+      elabInternalDefSorryWithBinders doc? declName declName.getId #[] binders typeStx
+
+elab_rules (kind := internalLeanQuotedDefBySorry) : command
+  | `($[$doc?:docComment]? internal_lean def $declName:ident : $typeStx:ttExpr := by
+      sorry) =>
+      elabInternalDefSorry doc? declName declName.getId #[] typeStx
+
+elab_rules (kind := internalLeanQuotedDefBinderBySorry) : command
+  | `($[$doc?:docComment]? internal_lean def $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := by
+      sorry) =>
       elabInternalDefSorryWithBinders doc? declName declName.getId #[] binders typeStx
 
 elab_rules (kind := internalLeanQuotedDef) : command

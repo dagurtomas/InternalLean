@@ -51,6 +51,39 @@ internal_lean def dAlias : Obj := LFQuote.d
 internal_lean def idObj : Obj → Obj := fun x => x
 internal_lean def applyLocal (g : Obj → Obj) (x : Obj) : Obj := g x
 internal_lean def o_ok : IsObj o := LFQuote.mkObj o
+/--
+warning: internal declaration 'LeanQuotedFrontendSmoke.admittedObj' was admitted by `sorry`; the
+annotation was checked in theory 'LeanQuotedFrontendSmoke', but the body was not checked. Use
+`#lint_type_theory_sorries LeanQuotedFrontendSmoke` to list current admissions.
+-/
+#guard_msgs (whitespace := lax) in
+internal_lean def admittedObj : Obj := sorry
+
+/--
+warning: internal declaration 'LeanQuotedFrontendSmoke.admittedObjBy' was admitted by `sorry`; the
+annotation was checked in theory 'LeanQuotedFrontendSmoke', but the body was not checked. Use
+`#lint_type_theory_sorries LeanQuotedFrontendSmoke` to list current admissions.
+-/
+#guard_msgs (whitespace := lax) in
+internal_lean def admittedObjBy : Obj := by
+  sorry
+
+/--
+warning: internal declaration 'LeanQuotedFrontendSmoke.admittedBinder' was admitted by `sorry`; the
+annotation was checked in theory 'LeanQuotedFrontendSmoke', but the body was not checked. Use
+`#lint_type_theory_sorries LeanQuotedFrontendSmoke` to list current admissions.
+-/
+#guard_msgs (whitespace := lax) in
+internal_lean def admittedBinder (x : Obj) : Obj := sorry
+
+/--
+warning: internal declaration 'LeanQuotedFrontendSmoke.admittedBinderBy' was admitted by `sorry`;
+the annotation was checked in theory 'LeanQuotedFrontendSmoke', but the body was not checked. Use
+`#lint_type_theory_sorries LeanQuotedFrontendSmoke` to list current admissions.
+-/
+#guard_msgs (whitespace := lax) in
+internal_lean def admittedBinderBy (x : Obj) : Obj := by
+  sorry
 
 #check d
 #check e
@@ -59,6 +92,20 @@ internal_lean def o_ok : IsObj o := LFQuote.mkObj o
 #check idObj
 #check applyLocal
 #check o_ok
+#check admittedObj
+#check admittedObjBy
+#check admittedBinder
+#check admittedBinderBy
+
+/--
+warning: type theory 'LeanQuotedFrontendSmoke' has 4 admitted internal declaration(s):
+admitted internal def LeanQuotedFrontendSmoke.admittedObj : Obj [missing doc]
+admitted internal def LeanQuotedFrontendSmoke.admittedObjBy : Obj [missing doc]
+admitted internal def LeanQuotedFrontendSmoke.admittedBinder (x : Obj) : Obj [missing doc]
+admitted internal def LeanQuotedFrontendSmoke.admittedBinderBy (x : Obj) : Obj [missing doc]
+-/
+#guard_msgs (whitespace := lax) in
+#lint_type_theory_sorries LeanQuotedFrontendSmoke
 
 end LeanQuotedFrontendSmoke
 
