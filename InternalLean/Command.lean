@@ -8,6 +8,7 @@ module
 public import InternalLean.Basic
 public import InternalLean.Registry
 public meta import InternalLean.ModelTransport
+public meta import InternalLean.LeanFrontend.Elab
 
 /-!
 # Public command import for user-declared type theories

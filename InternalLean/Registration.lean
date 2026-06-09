@@ -234,6 +234,95 @@ def addInternalSourceDeclTermInfo? (theoryName sourceName : Name) (stx : Syntax)
     isBinder := isBinder
     isDisplayableTerm := false }
 
+/-- Translate an LF object type expression to the Lean type used by experimental quote stubs.
+
+Structural/function arrows become Lean functions so Lean elaboration can handle higher-order
+quoted arguments and lambdas. Other LF object types are represented by the opaque quote marker
+`LFQuoteTerm`; LF well-formedness and conversion remain checked by InternalLean after reflection. -/
+partial def lfQuoteLeanTypeOfObjType : ObjExpr → Expr
+  | .arrow binder? A B | .funArrow binder? A B =>
+      let binderName := (binder?.getD `_arg).eraseMacroScopes
+      mkForall binderName .default (lfQuoteLeanTypeOfObjType A) (lfQuoteLeanTypeOfObjType B)
+  | _ => mkConst ``LFQuoteTerm
+
+/-- Lean binder info corresponding to an LF source-binder visibility for quote stubs. -/
+def lfQuoteBinderInfoOfVisibility : BinderVisibility → BinderInfo
+  | .explicit => .default
+  | .implicit => .implicit
+
+/-- Lean type of one generated quote-stub parameter. -/
+def lfQuoteLeanTypeOfBinding (b : HLBinding) : Expr :=
+  lfQuoteLeanTypeOfObjType b.typeExpr
+
+/-- Lean function type for a generated quoted-LF frontend stub. -/
+def lfQuoteStubType (params : Array HLBinding) : Expr :=
+  params.foldr (init := mkConst ``LFQuoteTerm) fun p acc =>
+    mkForall p.name.eraseMacroScopes (lfQuoteBinderInfoOfVisibility p.visibility)
+      (lfQuoteLeanTypeOfBinding p) acc
+
+/-- Dummy Lean value for a generated quoted-LF frontend stub. -/
+def lfQuoteStubValue (params : Array HLBinding) : Expr :=
+  params.foldr (init := mkConst ``LFQuoteTerm.mk) fun p acc =>
+    mkLambda p.name.eraseMacroScopes (lfQuoteBinderInfoOfVisibility p.visibility)
+      (lfQuoteLeanTypeOfBinding p) acc
+
+/-- Dummy quote-stub parameters for an untyped LF opaque arity. -/
+def lfQuoteArityParams (arity : Nat) : Array HLBinding := Id.run do
+  let mut out := #[]
+  for i in [0:arity] do
+    out := out.push {
+      name := Name.mkSimple s!"arg{i + 1}"
+      typeExpr := .sort
+      visibility := .explicit }
+  return out
+
+/-- Parameter telescope exposed by a generated quote stub for one LF opaque constant. -/
+def lfQuoteParamsOfLFOpaqueConst (d : LFOpaqueConstDecl) : Array HLBinding :=
+  if d.params.isEmpty then lfQuoteArityParams (d.arity?.getD 0) else d.params
+
+/-- Parameter telescope exposed by a generated quote stub for one rule. -/
+def lfQuoteParamsOfRule (r : RuleDecl) : Array HLBinding :=
+  r.params ++ r.premises.map fun p =>
+    ({ name := p.name, typeExpr := p.judgmentExpr, visibility := .explicit } : HLBinding)
+
+/-- Add one Lean-visible generated quote stub for an LF source declaration. -/
+def addLFQuoteStubDeclaration (theoryName sourceName : Name) (params : Array HLBinding) :
+    CommandElabM Unit := do
+  let declName := lfQuoteDeclName theoryName sourceName
+  if (← getEnv).contains declName then
+    throwError "cannot create quoted-LF frontend stub '{declName}' for declaration \
+      '{sourceName}' in type theory '{theoryName}': a Lean declaration with that name already \
+        exists"
+  liftCoreM do
+    let type := lfQuoteStubType params
+    let value := lfQuoteStubValue params
+    let defVal ← mkDefinitionValInferringUnsafe declName [] type value ReducibilityHints.abbrev
+    addAndCompile (Declaration.defnDecl defVal)
+  addDocStringCore declName
+    s!"Experimental quoted-LF frontend stub for `{theoryName}.{sourceName}`."
+
+/-- Add generated quote stubs for all term/proof heads introduced by one theory block. -/
+def addLFQuoteStubsForTheoryBlock (theoryName : Name) (block : HLTheoryBlock) :
+    CommandElabM Unit := do
+  for d in block.syntaxSorts do
+    addLFQuoteStubDeclaration theoryName d.name d.params
+  for d in block.syntaxAbbrevs do
+    addLFQuoteStubDeclaration theoryName d.name d.params
+  for d in block.syntaxDefs do
+    addLFQuoteStubDeclaration theoryName d.name d.params
+  for d in block.judgmentAbbrevs do
+    addLFQuoteStubDeclaration theoryName d.name d.params
+  for d in block.judgments do
+    addLFQuoteStubDeclaration theoryName d.name d.params
+  for d in block.rules do
+    addLFQuoteStubDeclaration theoryName d.name (lfQuoteParamsOfRule d)
+  for d in block.lfOpaqueConsts do
+    addLFQuoteStubDeclaration theoryName d.name (lfQuoteParamsOfLFOpaqueConst d)
+  for d in block.lfObjectDefs do
+    addLFQuoteStubDeclaration theoryName d.name #[]
+  for d in block.lfJudgmentTheorems do
+    addLFQuoteStubDeclaration theoryName d.name d.binders
+
 /-- Resolved target information for a top-level `internal def`. -/
 structure InternalDefTarget where
   /-- Owning object theory. -/
@@ -243,6 +332,11 @@ structure InternalDefTarget where
   /-- Lean-visible generated anchor name. -/
   anchorName : Name
   deriving Inhabited, Repr
+
+/-- Add a generated quote stub for a top-level internal declaration. -/
+def addInternalDeclarationQuoteStub (target : InternalDefTarget) (params : Array HLBinding) :
+    CommandElabM Unit := do
+  addLFQuoteStubDeclaration target.theoryName target.localName params
 
 /-- Return true when a parsed identifier is syntactically qualified. -/
 def isQualifiedIdentName (n : Name) : Bool :=
@@ -1539,6 +1633,7 @@ def elabDeclareInternalLean (doc? : Option (TSyntax ``Parser.Command.docComment)
     registerTheory sig
     registerSourceDocs sourceDocs
   addInternalTheoryDeclarationAnchors sig.name decls
+  addLFQuoteStubsForTheoryBlock sig.name block
   addTheoryAnchorDeclaration sig sourceDoc? (← getRef) nm
   addTheoryBlockNavigationInfo sig.name decls
 
@@ -1564,6 +1659,7 @@ def elabExtendInternalLean (doc? : Option (TSyntax ``Parser.Command.docComment))
     registerTheoryBlockExtension nm.getId block
     registerSourceDocs sourceDocs
   addInternalTheoryDeclarationAnchors nm.getId decls
+  addLFQuoteStubsForTheoryBlock nm.getId block
   addTheoryBlockNavigationInfo nm.getId decls
 
 elab_rules : command

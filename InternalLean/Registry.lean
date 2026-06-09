@@ -50,6 +50,24 @@ public inductive InternalTheoryDeclarationAnchor where
   | mk : InternalTheoryDeclarationAnchor
   deriving Inhabited
 
+/-- Lean-visible marker type for experimental quoted LF terms.
+
+Generated declarations in `T.LFQuote` have this type, or a function type ending in this type.
+They are frontend quotation stubs only; they are reflected back to `ObjExpr` and checked by the LF
+checker before any InternalLean declaration is registered. -/
+public inductive LFQuoteTerm where
+  /-- Dummy inhabitant used by generated quote-stub definitions. -/
+  | mk : LFQuoteTerm
+  deriving Inhabited
+
+/-- Namespace containing generated quoted-LF frontend stubs for one type theory. -/
+public meta def lfQuoteNamespace (theoryName : Lean.Name) : Lean.Name :=
+  theoryName ++ `LFQuote
+
+/-- Lean declaration name for a generated quoted-LF frontend stub. -/
+public meta def lfQuoteDeclName (theoryName sourceName : Lean.Name) : Lean.Name :=
+  lfQuoteNamespace theoryName ++ sourceName.eraseMacroScopes
+
 /-- Canonical hidden Lean declaration name for an object-theory source declaration anchor. -/
 public meta def internalTheoryDeclarationAnchorName (theoryName sourceName : Lean.Name) :
     Lean.Name :=

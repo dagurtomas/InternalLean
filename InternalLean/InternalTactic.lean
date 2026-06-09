@@ -3357,6 +3357,7 @@ def elabInternalDefCheckedExpr (doc? : Option (TSyntax ``Parser.Command.docComme
   if let some doc := sourceDoc? then
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
   addInternalDeclarationAnchor target typeExpr false sourceDoc? (← getRef) declNameStx
+  addInternalDeclarationQuoteStub target #[]
 
 /-- Parse and register a non-admitted top-level `internal def`. -/
 def elabInternalDefChecked (doc? : Option (TSyntax ``Parser.Command.docComment))
@@ -3407,6 +3408,7 @@ def elabInternalDefCheckedWithBindersExpr (doc? : Option (TSyntax ``Parser.Comma
   if let some doc := sourceDoc? then
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
   addInternalDeclarationAnchor target fullType false sourceDoc? (← getRef) declNameStx
+  addInternalDeclarationQuoteStub target params
 
 /-- Elaborate a binder-style checked `internal def`. -/
 def elabInternalDefCheckedWithBinders (doc? : Option (TSyntax ``Parser.Command.docComment))
@@ -3448,6 +3450,7 @@ def elabInternalDefSorryWithBinders (doc? : Option (TSyntax ``Parser.Command.doc
   if let some doc := sourceDoc? then
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
   addInternalDeclarationAnchor target typeExpr true sourceDoc? (← getRef) declNameStx
+  addInternalDeclarationQuoteStub target params
   addInternalDefAnnotationNavigationInfo declName binders typeStx
   logWarning m!"internal declaration '{target.anchorName}' was admitted by `sorry`; the \
     annotation was checked in theory '{target.theoryName}', but the body was not checked. Use \
@@ -3491,6 +3494,7 @@ def elabInternalTheoremCheckedWithBinders (doc? : Option (TSyntax ``Parser.Comma
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
   addInternalDeclarationAnchor target (mkInternalDefFunctionType params typeExpr) false sourceDoc?
     (← getRef) declNameStx
+  addInternalDeclarationQuoteStub target params
   addInternalDefExprNavigationInfo declName binders typeStx valueStx
 
 /-- Register an explicit non-model-facing admitted internal theorem. -/
@@ -3511,6 +3515,7 @@ def elabInternalTheoremSorryWithBinders (doc? : Option (TSyntax ``Parser.Command
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
   addInternalDeclarationAnchor target (mkInternalDefFunctionType params typeExpr) true sourceDoc?
     (← getRef) declNameStx
+  addInternalDeclarationQuoteStub target params
   addInternalDefAnnotationNavigationInfo declName binders typeStx
   logWarning m!"internal theorem '{target.anchorName}' was admitted by `sorry`; the statement was \
     checked in theory '{target.theoryName}', but the proof was not checked. Use \
@@ -3631,6 +3636,8 @@ structure InternalDefsCheckedObjectBatchItem where
   target : InternalDefTarget
   /-- Source-level documentation, if present. -/
   sourceDoc? : Option String := none
+  /-- Source binder parameters. -/
+  params : Array HLBinding := #[]
   /-- User-facing anchor type. -/
   anchorTypeExpr : ObjExpr
   /-- LF object definition to register. -/
@@ -3661,6 +3668,7 @@ def elabInternalDefsCheckedObjectBatchItem? (decl : TSyntax `internalDefsDecl) :
       declNameStx := declNameStx
       target := target
       sourceDoc? := sourceDoc?
+      params := params
       anchorTypeExpr := fullType
       lfDef := { name := target.localName, typeExpr := fullType, value := fullValue } })
   match decl with
@@ -3737,6 +3745,7 @@ def tryElabInternalDefsCheckedObjectBatch (decls : Array (TSyntax `internalDefsD
         item.target.localName doc
     addInternalDeclarationAnchor item.target item.anchorTypeExpr false item.sourceDoc?
       item.declStx item.declNameStx
+    addInternalDeclarationQuoteStub item.target item.params
     addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
   return true
 
@@ -3789,6 +3798,8 @@ def tryElabInternalDefsSorryOpaqueBatch (decls : Array (TSyntax `internalDefsDec
     profileInternalLeanCommandPhase "admitted opaque source anchor" do
       addInternalDeclarationAnchor item.target item.typeExpr true item.sourceDoc? item.declStx
         item.declNameStx
+    profileInternalLeanCommandPhase "admitted opaque quote stub" do
+      addInternalDeclarationQuoteStub item.target item.params
     profileInternalLeanCommandPhase "admitted opaque navigation info" do
       addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
     profileInternalLeanCommandPhase "admitted opaque warning" do
