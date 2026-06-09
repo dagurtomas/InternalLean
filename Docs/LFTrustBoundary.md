@@ -172,6 +172,21 @@ check structural function eta for explicit raw `_app` redexes and structural Sig
 `pair`/`fst`/`snd` redexes. Other step classes remain part of the conversion-certificate vocabulary
 and future automation boundary.
 
+## Lean mirror compare diagnostics
+
+The experimental Lean mirror backend can compare checked LF declarations against generated Lean
+mirror declarations without changing the LF trust boundary:
+
+```lean
+#compare_lf_mirror_theory T
+#compare_all_lf_mirror_theories
+```
+
+The theory command represents `syntax_sort`, `judgment`, `lf_opaque`, rules, and theorem constants
+in the mirror, and mirror-checks bodies for `syntax_abbrev`, `judgment_abbrev`, checked
+`syntax_def`, and `lf_def`. Admitted `syntax_def` declarations and untyped opaques remain opaque
+trusted leaves; they are counted but not body-checked by the mirror.
+
 ## Rewriting and transport metadata
 
 Internal `rw` and non-definitional `simp` can use metadata such as:

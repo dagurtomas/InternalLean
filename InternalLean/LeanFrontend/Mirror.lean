@@ -360,6 +360,10 @@ def ensureLFMirrorForTheory (theoryName : Name) : CommandElabM Unit := do
       let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
         (fun locals => lfMirrorExpr theoryName locals typeExpr)
       addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+  for d in checkedHL.lfObjectDefs do
+    let type ← liftTermElabM <| lfMirrorExpr theoryName {} d.typeExpr
+    let value ← liftTermElabM <| lfMirrorTermWithExpected theoryName {} d.typeExpr d.value
+    addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
   for d in checkedHL.rules do
     let type ← liftTermElabM do
       let premiseParams := d.premises.map fun p =>
@@ -367,10 +371,6 @@ def ensureLFMirrorForTheory (theoryName : Name) : CommandElabM Unit := do
       lfMirrorForallType theoryName (d.params ++ premiseParams)
         (fun locals => lfMirrorExpr theoryName locals d.conclusionExpr)
     addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
-  for d in checkedHL.lfObjectDefs do
-    let type ← liftTermElabM <| lfMirrorExpr theoryName {} d.typeExpr
-    let value ← liftTermElabM <| lfMirrorTermWithExpected theoryName {} d.typeExpr d.value
-    addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
   for d in checkedHL.lfJudgmentTheorems do
     let type ← liftTermElabM <| lfMirrorForallType theoryName d.binders
       (fun locals => lfMirrorExpr theoryName locals d.judgmentExpr)
@@ -598,10 +598,98 @@ def checkWithLFMirror (theoryName : Name) (params : Array HLBinding) (typeExpr v
   if compareWithLF || optionCompare then
     liftCoreM <| checkWithLFForMirrorCompare theoryName params typeExpr valueExpr
 
+/-- Count checked syntax-definition bodies in a high-level signature. -/
+def checkedSyntaxDefBodyCount (sig : HLSignature) : Nat :=
+  sig.syntaxDefs.foldl (fun n d => if d.value?.isSome then n + 1 else n) 0
+
+/-- Count typed LF opaque constants in a high-level signature. -/
+def typedLFOpaqueCount (sig : HLSignature) : Nat :=
+  sig.lfOpaqueConsts.foldl (fun n d => if d.typeExpr?.isSome then n + 1 else n) 0
+
+/-- Mirror-check a type-valued abbreviation body under a telescope. -/
+def checkLFMirrorTypeLikeBody (theoryName : Name) (ownerKind : String) (ownerName : Name)
+    (params : Array HLBinding) (value : ObjExpr) : CommandElabM Unit := do
+  try
+    liftTermElabM <| withLFMirrorLocals theoryName params fun locals => do
+      let valueLean ← lfMirrorExpr theoryName locals value
+      discard <| lfMirrorTypeUniverseLevel valueLean
+  catch ex =>
+    let valueText := ObjExpr.toString value
+    let reason := exceptionMessageData ex
+    throwError m!"Lean mirror backend rejected {ownerKind} '{ownerName}' in type theory \
+      '{theoryName}'.\n\nInternal value:\n  {valueText}\n\nReason:\n{reason}"
+
+/-- Mirror-check a checked `syntax_def` body against its declared result universe. -/
+def checkLFMirrorSyntaxDefBody (theoryName : Name) (d : SyntaxDefDecl) (value : ObjExpr) :
+    CommandElabM Unit := do
+  try
+    liftTermElabM <| withLFMirrorLocals theoryName d.params fun locals => do
+      let expected := lfMirrorLeanSortOfLevel d.resultLevel
+      let valueLean ← lfMirrorExpr theoryName locals value
+      let actual ← inferType valueLean
+      unless ← isDefEq actual expected do
+        throwError "translated value has type\n  {actual}\nexpected\n  {expected}"
+  catch ex =>
+    let valueText := ObjExpr.toString value
+    let reason := exceptionMessageData ex
+    throwError m!"Lean mirror backend rejected checked syntax_def '{d.name}' in type theory \
+      '{theoryName}'.\n\nInternal value:\n  {valueText}\n\nReason:\n{reason}"
+
+/-- Mirror-check an `lf_def` body against its declared LF type. -/
+def checkLFMirrorLFObjectDefBody (theoryName : Name) (d : LFObjectDefDecl) :
+    CommandElabM Unit := do
+  try
+    liftTermElabM do
+      discard <| lfMirrorTermWithExpected theoryName {} d.typeExpr d.value
+  catch ex =>
+    throwError "Lean mirror backend rejected lf_def '{d.name}' in type theory \
+      '{theoryName}'.\n\nInternal type:\n  {ObjExpr.toString d.typeExpr}\n\nInternal value:\n  \
+      {ObjExpr.toString d.value}\n\nReason:\n{exceptionMessageData ex}"
+
+/-- Mirror-check body-bearing declarations in an already checked theory and report coverage. -/
+def compareLFMirrorTheory (theoryName : Name) : CommandElabM Unit := do
+  let some checkedHL ← liftCoreM <| getCheckedHLSignature? theoryName
+    | throwError "no checked high-level signature stored for type theory '{theoryName}'"
+  ensureLFMirrorForTheory theoryName
+  for d in checkedHL.syntaxAbbrevs do
+    checkLFMirrorTypeLikeBody theoryName "syntax_abbrev" d.name d.params d.value
+  for d in checkedHL.judgmentAbbrevs do
+    checkLFMirrorTypeLikeBody theoryName "judgment_abbrev" d.name d.params d.value
+  for d in checkedHL.syntaxDefs do
+    if let some value := d.value? then
+      checkLFMirrorSyntaxDefBody theoryName d value
+  for d in checkedHL.lfObjectDefs do
+    checkLFMirrorLFObjectDefBody theoryName d
+  let checkedSyntaxDefs := checkedSyntaxDefBodyCount checkedHL
+  let admittedSyntaxDefs := checkedHL.syntaxDefs.size - checkedSyntaxDefs
+  let typedOpaques := typedLFOpaqueCount checkedHL
+  let untypedOpaques := checkedHL.lfOpaqueConsts.size - typedOpaques
+  logInfo m!"Lean mirror theory compare accepted '{theoryName}'.\n\nRepresented declarations:\n  \
+    syntax_sort: {checkedHL.syntaxSorts.size}\n  judgment: {checkedHL.judgments.size}\n  \
+    typed lf_opaque: {typedOpaques}\n  untyped/admitted lf_opaque: {untypedOpaques}\n  \
+    rule axiom: {checkedHL.rules.size}\n  judgment theorem axiom: \
+      {checkedHL.lfJudgmentTheorems.size}\n\nChecked mirror bodies:\n  syntax_abbrev: \
+      {checkedHL.syntaxAbbrevs.size}\n  judgment_abbrev: {checkedHL.judgmentAbbrevs.size}\n  \
+    checked syntax_def: {checkedSyntaxDefs}\n  admitted syntax_def: {admittedSyntaxDefs}\n  \
+    lf_def: {checkedHL.lfObjectDefs.size}"
+
+/-- Mirror-check every checked high-level theory currently registered in the environment. -/
+def compareAllLFMirrorTheories : CommandElabM Unit := do
+  let sigs ← liftCoreM getCheckedHLSignatures
+  let mut count := 0
+  for (theoryName, _) in sigs.toList do
+    compareLFMirrorTheory theoryName
+    count := count + 1
+  logInfo m!"Lean mirror theory compare accepted {count} checked type theor(ies)."
+
 syntax (name := checkLFMirror)
   "#check_lf_mirror " ident " : " ttExpr " := " ttExpr : command
 syntax (name := compareLFMirror)
   "#compare_lf_mirror " ident " : " ttExpr " := " ttExpr : command
+syntax (name := compareLFMirrorTheoryCmd)
+  "#compare_lf_mirror_theory " ident : command
+syntax (name := compareAllLFMirrorTheoriesCmd)
+  "#compare_all_lf_mirror_theories" : command
 
 elab_rules : command
   | `(#check_lf_mirror $theory:ident : $typeStx:ttExpr := $valueStx:ttExpr) => do
@@ -614,6 +702,10 @@ elab_rules : command
       let valueExpr ← elabObjExpr valueStx
       checkWithLFMirror theory.getId #[] typeExpr valueExpr (compareWithLF := true)
       logInfo m!"Lean mirror and LF checker accepted term in type theory '{theory.getId}'"
+  | `(#compare_lf_mirror_theory $theory:ident) => do
+      compareLFMirrorTheory theory.getId
+  | `(#compare_all_lf_mirror_theories) => do
+      compareAllLFMirrorTheories
 
 syntax (name := internalMirrorDef)
   docComment ? "internal_mirror " "def " ident " : " ttExpr " := " ttExpr : command

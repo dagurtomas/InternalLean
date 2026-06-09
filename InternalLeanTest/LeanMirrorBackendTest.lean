@@ -137,6 +137,7 @@ declare_type_theory LeanMirrorAbbrevSmoke where
   LeanMirrorAbbrevSmoke.LFMirror.Obj → Type)
 #check (LeanMirrorAbbrevSmoke.LFMirror.GoodAlias :
   LeanMirrorAbbrevSmoke.LFMirror.Obj → Type)
+#compare_lf_mirror_theory LeanMirrorAbbrevSmoke
 
 /-- Universe-polymorphic syntax sorts mirror with Lean universe parameters. -/
 declare_type_theory LeanMirrorUniverseSmoke{u, v} where
@@ -187,6 +188,7 @@ declare_type_theory LeanMirrorTransparencySmoke where
 
 #check_lf_mirror LeanMirrorTransparencySmoke : ObjAlias := o
 #check_lf_mirror LeanMirrorTransparencySmoke : Good objectAlias := good_o
+#compare_lf_mirror_theory LeanMirrorTransparencySmoke
 
 /--
 error: Lean mirror backend rejected term in type theory 'LeanMirrorTransparencySmoke'.
