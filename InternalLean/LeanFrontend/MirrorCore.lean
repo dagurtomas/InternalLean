@@ -727,19 +727,14 @@ def addLFMirrorPendingDeclBestEffort (theoryName : Name) (levelParams : List Nam
   match decl with
   | .syntaxAbbrev d =>
       if lfMirrorObjExprNodeCount d.value > lfMirrorBestEffortSyntaxDefNodeLimit then
-        let type ← MetaM.run' <| lfMirrorForallTypeWithLevels theoryName levelArgs d.params
-          (fun locals => do
-            inferType (← lfMirrorExprWithLevels theoryName levelArgs locals d.value))
-        addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+        return
       else
         addLFMirrorPendingDecl theoryName levelParams levelArgs decl
   | .syntaxDef d =>
       match d.value? with
       | some value =>
           if lfMirrorObjExprNodeCount value > lfMirrorBestEffortSyntaxDefNodeLimit then
-            let type ← MetaM.run' <| lfMirrorForallTypeWithLevels theoryName levelArgs d.params
-              (fun _ => pure (lfMirrorLeanSortOfLevel d.resultLevel))
-            addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+            return
           else
             addLFMirrorPendingDecl theoryName levelParams levelArgs decl
       | none => addLFMirrorPendingDecl theoryName levelParams levelArgs decl
