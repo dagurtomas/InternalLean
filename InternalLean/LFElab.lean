@@ -645,12 +645,25 @@ def lfKnownGlobalNames (sig : HLSignature) : NameSet := Id.run do
     known := known.insert t.name.eraseMacroScopes
   return known
 
+/-- Count leading framework function arrows in an LF object type. -/
+partial def lfFunctionTypeArity : ObjExpr → Nat
+  | .arrow _ _ B | .funArrow _ _ B => lfFunctionTypeArity B + 1
+  | _ => 0
+
+/-- Declared application arity for a typed LF opaque when lightweight arity checking is exact.
+
+A typed opaque whose result is itself a structural function can be used either as a function value
+or applied to structural arguments, so exact syntactic arity checking is deferred to the LF type
+checker. -/
+def lfTypedOpaqueExactArity? (o : LFOpaqueConstDecl) (typeExpr : ObjExpr) : Option Nat :=
+  if lfFunctionTypeArity typeExpr == 0 then some o.params.size else none
+
 /-- Opaque LF placeholder arities declared in a signature. -/
 def lfOpaqueArities (sig : HLSignature) : NameMap (Option Nat) := Id.run do
   let mut arities : NameMap (Option Nat) := {}
   for o in sig.lfOpaqueConsts do
     let arity? := match o.typeExpr? with
-      | some _ => some o.params.size
+      | some typeExpr => lfTypedOpaqueExactArity? o typeExpr
       | none => o.arity?
     arities := arities.insert o.name.eraseMacroScopes arity?
   return arities
@@ -665,11 +678,6 @@ def checkLFOpaqueArity (sig : HLSignature) (opaqueArities : NameMap (Option Nat)
         throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' uses lf_opaque '{head}' \
           in {where_} with {args.size} argument(s), expected {arity}"
   | _ => pure ()
-
-/-- Count leading framework function arrows in an LF object-definition type. -/
-partial def lfFunctionTypeArity : ObjExpr → Nat
-  | .arrow _ _ B | .funArrow _ _ B => lfFunctionTypeArity B + 1
-  | _ => 0
 
 /-- Return the result type after peeling leading framework function arrows. -/
 partial def lfFunctionTypeResult : ObjExpr → ObjExpr
@@ -720,7 +728,7 @@ def lfGlobalHeadInfo (sig : HLSignature) : NameMap (CheckedLFHeadKind × Option 
     heads := heads.insert j.name.eraseMacroScopes (.judgment, some j.params.size)
   for o in sig.lfOpaqueConsts do
     let arity? := match o.typeExpr? with
-      | some _ => some o.params.size
+      | some typeExpr => lfTypedOpaqueExactArity? o typeExpr
       | none => o.arity?
     heads := heads.insert o.name.eraseMacroScopes (.opaque, arity?)
   for r in sig.rules do

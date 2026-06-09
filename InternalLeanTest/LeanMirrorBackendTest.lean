@@ -219,10 +219,15 @@ declare_type_theory LeanMirrorSigmaEtaPitfall where
 /-- Structural function eta is part of LF conversion, matching the Lean mirror. -/
 declare_type_theory LeanMirrorFunctionEtaPitfall where
   syntax_sort Obj : Type
+  lf_opaque o : Obj
+  lf_opaque f : Obj → Obj
   judgment GoodFun (g : Obj → Obj)
+  rule good_f : GoodFun f
   rule good (g : Obj → Obj) : GoodFun g
 
-#check_lf_mirror LeanMirrorFunctionEtaPitfall :
+#compare_lf_mirror LeanMirrorFunctionEtaPitfall : Obj := f o
+#compare_lf_mirror LeanMirrorFunctionEtaPitfall : GoodFun (fun x => f x) := good_f
+#compare_lf_mirror LeanMirrorFunctionEtaPitfall :
     (g : Obj → Obj) → GoodFun (fun x => g x) :=
   fun g => good g
 

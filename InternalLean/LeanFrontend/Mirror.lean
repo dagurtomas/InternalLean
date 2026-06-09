@@ -427,6 +427,43 @@ def checkLFJudgmentTheoremForMirrorCompare (cache : CompiledLFCheckCache)
   let checkedTheoremRaw ← checkOneLFJudgmentTheoremArtifactWithCache cache tForCheck
   discard <| validateIncrementalLFTheoremKernelReplayWithCache cache checkedTheoremRaw
 
+/-- Strip lambda binders from a mirror-compare candidate and rename them to LF telescope names. -/
+partial def stripMirrorCompareLambdaBinders? (params : Array HLBinding) :
+    ObjExpr → Option ObjExpr :=
+  let rec go (i : Nat) (value : ObjExpr) : Option ObjExpr :=
+    if h : i < params.size then
+      match value with
+      | .lam xs body =>
+          if hxs : 0 < xs.size then
+            let sourceName := xs[0]!.eraseMacroScopes
+            let targetName := params[i].name.eraseMacroScopes
+            let rest := xs.extract 1 xs.size
+            let body := if rest.isEmpty then body else .lam rest body
+            go (i + 1) (substSingleLFParam sourceName (.ident targetName) body)
+          else
+            none
+      | _ => none
+    else
+      some value
+  go 0
+
+/-- Check a closed function-to-judgment candidate as a binder-style LF theorem, if possible. -/
+def checkLFArrowTheoremForMirrorCompare? (cache : CompiledLFCheckCache) (compareName : Name)
+    (typeExpr valueExpr : ObjExpr) : Option (CoreM Unit) :=
+  let (binders, judgmentExpr) := splitObjectTelescope typeExpr
+  if binders.isEmpty then
+    none
+  else
+    match stripMirrorCompareLambdaBinders? binders valueExpr with
+    | none => none
+    | some proof =>
+        let theoremDecl : LFJudgmentTheoremDecl := {
+          name := compareName
+          binders := binders
+          judgmentExpr := judgmentExpr
+          proof := proof }
+        some (checkLFJudgmentTheoremForMirrorCompare cache theoremDecl)
+
 /-- Detect an LF expression shape that Lean accepts by Sigma eta. -/
 partial def lfMirrorContainsSigmaEtaShape : ObjExpr → Bool
   | .pair (.fst p) (.snd q) => lfExprAlphaEq p q
@@ -495,15 +532,33 @@ def checkWithLFForMirrorCompare (theoryName : Name) (params : Array HLBinding)
       else
         checkObject
     catch secondEx =>
-      let etaNote :=
-        match lfMirrorComparePitfallHint? typeExpr valueExpr with
-        | some hint => m!"\n\nNote:\n{hint}"
-        | none => m!""
-      let msg :=
-        m!"Lean mirror accepted a term in type theory '{theoryName}',\nbut the ordinary LF \
-          checker rejected it.{etaNote}\n\nFirst LF path:\n{exceptionMessageData firstEx}\n\n" ++
-        m!"Second LF path:\n{exceptionMessageData secondEx}"
-      throwError msg
+      match checkLFArrowTheoremForMirrorCompare? cache compareName typeExpr valueExpr with
+      | some checkArrowTheorem =>
+          try
+            checkArrowTheorem
+          catch thirdEx =>
+            let etaNote :=
+              match lfMirrorComparePitfallHint? typeExpr valueExpr with
+              | some hint => m!"\n\nNote:\n{hint}"
+              | none => m!""
+            let msg :=
+              m!"Lean mirror accepted a term in type theory '{theoryName}',\nbut the \
+                ordinary LF checker rejected it.{etaNote}\n\nFirst LF path:\n" ++
+              m!"{exceptionMessageData firstEx}\n\nSecond LF path:\n" ++
+              m!"{exceptionMessageData secondEx}\n\nTelescope LF path:\n" ++
+              m!"{exceptionMessageData thirdEx}"
+            throwError msg
+      | none =>
+          let etaNote :=
+            match lfMirrorComparePitfallHint? typeExpr valueExpr with
+            | some hint => m!"\n\nNote:\n{hint}"
+            | none => m!""
+          let msg :=
+            m!"Lean mirror accepted a term in type theory '{theoryName}',\nbut the \
+              ordinary LF checker rejected it.{etaNote}\n\nFirst LF path:\n" ++
+            m!"{exceptionMessageData firstEx}\n\nSecond LF path:\n" ++
+            m!"{exceptionMessageData secondEx}"
+          throwError msg
 
 /-- Check one LF value against an LF type using only the experimental Lean mirror backend. -/
 def checkWithLFMirrorOnly (theoryName : Name) (params : Array HLBinding)
@@ -571,7 +626,7 @@ elab_rules (kind := internalMirrorDef) : command
       let target ← resolveInternalDefTarget declName.getId
       let typeExpr ← elabObjExpr typeStx
       let valueExpr ← elabObjExpr valueStx
-      checkWithLFMirror target.theoryName #[] typeExpr valueExpr
+      checkWithLFMirror target.theoryName #[] typeExpr valueExpr (compareWithLF := true)
       elabInternalDefCheckedExpr doc? declName declName.getId #[] typeExpr valueExpr
       addInternalDefExprNavigationInfo declName.getId #[] typeStx valueStx
 
@@ -582,7 +637,7 @@ elab_rules (kind := internalMirrorDefBinder) : command
       let params ← binders.mapM elabHLBinding
       let typeExpr ← elabObjExpr typeStx
       let valueExpr ← elabObjExpr valueStx
-      checkWithLFMirror target.theoryName params typeExpr valueExpr
+      checkWithLFMirror target.theoryName params typeExpr valueExpr (compareWithLF := true)
       elabInternalDefCheckedWithBindersExpr doc? declName declName.getId #[] params typeExpr
         valueExpr
       addInternalDefExprNavigationInfo declName.getId binders typeStx valueStx
