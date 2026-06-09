@@ -68,6 +68,14 @@ public meta def lfQuoteNamespace (theoryName : Lean.Name) : Lean.Name :=
 public meta def lfQuoteDeclName (theoryName sourceName : Lean.Name) : Lean.Name :=
   lfQuoteNamespace theoryName ++ sourceName.eraseMacroScopes
 
+/-- Namespace containing experimental Lean mirror checker declarations for one type theory. -/
+public meta def lfMirrorNamespace (theoryName : Lean.Name) : Lean.Name :=
+  theoryName ++ `LFMirror
+
+/-- Lean declaration name for an experimental mirror checker constant. -/
+public meta def lfMirrorDeclName (theoryName sourceName : Lean.Name) : Lean.Name :=
+  lfMirrorNamespace theoryName ++ sourceName.eraseMacroScopes
+
 /-- Canonical hidden Lean declaration name for an object-theory source declaration anchor. -/
 public meta def internalTheoryDeclarationAnchorName (theoryName sourceName : Lean.Name) :
     Lean.Name :=

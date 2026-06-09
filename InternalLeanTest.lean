@@ -17,6 +17,7 @@ import InternalLeanTest.InternalTacticTest
 import InternalLeanTest.IntroUXTest
 import InternalLeanTest.JudgmentAbbrevTest
 import InternalLeanTest.LeanQuotedFrontendTest
+import InternalLeanTest.LeanMirrorBackendTest
 import InternalLeanTest.LFModelStressTest
 import InternalLeanTest.LogicalFrameworkMetadataExamplesTest
 import InternalLeanTest.ModelStructureDependencyOrderTest
