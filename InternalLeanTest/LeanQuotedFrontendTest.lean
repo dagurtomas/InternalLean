@@ -47,16 +47,17 @@ info: reflected LF term in type theory 'LeanQuotedFrontendSmoke':
   id o
 -/
 #guard_msgs (whitespace := lax) in
-#reflect_lf_quote LeanQuotedFrontendSmoke :
-  LeanQuotedFrontendSmoke.LFQuote.id LeanQuotedFrontendSmoke.LFQuote.o
+#reflect_lf_quote LeanQuotedFrontendSmoke : id LeanQuotedFrontendSmoke.LFQuote.o
 
 namespace LeanQuotedFrontendSmoke
 
 internal_lean def d : Obj := o
 internal_lean def e : Obj := LFQuote.id o
+internal_lean def eUnqualified : Obj := id o
 internal_lean def f (x : Obj) : Obj := LFQuote.id x
 internal_lean def dAlias : Obj := LFQuote.d
 internal_lean def idObj : Obj → Obj := fun x => x
+internal_lean def idObjUnqualified : Obj → Obj := fun x => id x
 internal_lean def applyLocal (g : Obj → Obj) (x : Obj) : Obj := g x
 internal_lean def o_ok : IsObj o := LFQuote.mkObj o
 internal_lean theorem o_ok_theorem : IsObj o := LFQuote.mkObj o
@@ -101,9 +102,11 @@ internal_lean def admittedBinderBy (x : Obj) : Obj := by
 
 #check d
 #check e
+#check eUnqualified
 #check f
 #check dAlias
 #check idObj
+#check idObjUnqualified
 #check applyLocal
 #check o_ok
 #check o_ok_theorem

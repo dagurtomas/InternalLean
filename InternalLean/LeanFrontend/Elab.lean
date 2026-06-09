@@ -92,6 +92,24 @@ def lfQuoteArgsForSourceArity (constName : Name) (arity : Nat) (args : Array Exp
   else
     args
 
+/-- Return whether a Lean name is a simple source identifier. -/
+def isSimpleLFQuoteSourceName : Name → Bool
+  | .str .anonymous _ => true
+  | _ => false
+
+/-- Qualify simple LF head identifiers so Lean resolution prefers the current theory. -/
+partial def qualifyLFQuoteSourceIdents (theoryName : Name) (sig : HLSignature)
+    (protectedNames : NameSet) : Syntax → Syntax
+  | stx@(.ident ..) =>
+      let n := stx.getId.eraseMacroScopes
+      if isSimpleLFQuoteSourceName n && !protectedNames.contains n && sig.containsName n then
+        mkIdentFrom stx (lfQuoteDeclName theoryName n)
+      else
+        stx
+  | .node info kind args =>
+      .node info kind (args.map (qualifyLFQuoteSourceIdents theoryName sig protectedNames))
+  | stx => stx
+
 /-- Reflect one Lean expression elaborated against quoted-LF stubs back to an `ObjExpr`. -/
 partial def reflectLFQuoteExpr (theoryName : Name) (locals : LFQuoteLocalMap) :
     Expr → MetaM ObjExpr
@@ -147,7 +165,13 @@ def elabLeanQuotedLFBody (target : InternalDefTarget) (params : Array HLBinding)
     (typeExpr : ObjExpr) (body : TSyntax `term) : CommandElabM ObjExpr := do
   let quoteNs := mkIdent (lfQuoteNamespace target.theoryName)
   let quoteOpenDecl ← `(Lean.Parser.Command.openDecl| $quoteNs:ident)
-  let body ← `(term| open $quoteOpenDecl in $body)
+  let protectedNames := params.foldl (init := {}) fun names p =>
+    names.insert p.name.eraseMacroScopes
+  let body :=
+    match ← liftCoreM <| getCheckedHLSignature? target.theoryName with
+    | some sig => qualifyLFQuoteSourceIdents target.theoryName sig protectedNames body
+    | none => body.raw
+  let body ← `(term| open $quoteOpenDecl in $(⟨body⟩):term)
   liftTermElabM do
     let expectedType := lfQuoteLeanTypeOfObjType typeExpr
     let rec withLocals (i : Nat) (locals : LFQuoteLocalMap) : TermElabM ObjExpr := do
@@ -191,7 +215,11 @@ def elabAndReflectLFQuoteTerm (theoryName : Name) (body : TSyntax `term) :
     CommandElabM ObjExpr := do
   let quoteNs := mkIdent (lfQuoteNamespace theoryName)
   let quoteOpenDecl ← `(Lean.Parser.Command.openDecl| $quoteNs:ident)
-  let body ← `(term| open $quoteOpenDecl in $body)
+  let body :=
+    match ← liftCoreM <| getCheckedHLSignature? theoryName with
+    | some sig => qualifyLFQuoteSourceIdents theoryName sig {} body
+    | none => body.raw
+  let body ← `(term| open $quoteOpenDecl in $(⟨body⟩):term)
   liftTermElabM do
     let value ← Term.elabTerm body (some (mkConst ``LFQuoteTerm))
     Term.synthesizeSyntheticMVarsNoPostponing
