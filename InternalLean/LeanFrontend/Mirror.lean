@@ -457,16 +457,32 @@ def checkWithLFForMirrorCompare (theoryName : Name) (params : Array HLBinding)
 /-- Check one LF value against an LF type using only the experimental Lean mirror backend. -/
 def checkWithLFMirrorOnly (theoryName : Name) (params : Array HLBinding)
     (typeExpr valueExpr : ObjExpr) : CommandElabM Unit := do
-  ensureLFMirrorForTheory theoryName
-  liftTermElabM do
-    withLFMirrorLocals theoryName params fun locals => do
-      let typeLean ← lfMirrorExpr theoryName locals typeExpr
-      let valueLean ← lfMirrorTermWithExpected theoryName locals typeExpr valueExpr
-      let actual ← inferType valueLean
-      unless ← isDefEq actual typeLean do
-        let msg :=
-          m!"Lean mirror checker inferred\n  {actual}\nfor translated value, expected\n  {typeLean}"
-        throwError msg
+  try
+    ensureLFMirrorForTheory theoryName
+    liftTermElabM do
+      withLFMirrorLocals theoryName params fun locals => do
+        let typeLean ← lfMirrorExpr theoryName locals typeExpr
+        let valueLean ← lfMirrorTermWithExpected theoryName locals typeExpr valueExpr
+        let actual ← inferType valueLean
+        unless ← isDefEq actual typeLean do
+          let msg :=
+            m!"Lean mirror checker inferred\n  {actual}\nfor translated value, \
+              expected\n  {typeLean}"
+          throwError msg
+  catch ex =>
+    let typeText := ObjExpr.toString typeExpr
+    let valueText := ObjExpr.toString valueExpr
+    let reason := exceptionMessageData ex
+    throwError "Lean mirror backend rejected term in type theory '{theoryName}'.
+
+Internal type:
+  {typeText}
+
+Internal value:
+  {valueText}
+
+Reason:
+{reason}"
 
 /-- Check one LF value using the mirror and, optionally, the ordinary LF checker. -/
 def checkWithLFMirror (theoryName : Name) (params : Array HLBinding) (typeExpr valueExpr : ObjExpr)

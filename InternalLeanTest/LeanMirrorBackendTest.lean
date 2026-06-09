@@ -44,7 +44,16 @@ internal_mirror def packageSnd : Obj := snd package
 end LeanMirrorSigmaSmoke
 
 /--
-error: Lean mirror translated LF term with type
+error: Lean mirror backend rejected term in type theory 'LeanMirrorSigmaSmoke'.
+
+Internal type:
+  Σ x : Obj, Obj
+
+Internal value:
+  o
+
+Reason:
+Lean mirror translated LF term with type
   LeanMirrorSigmaSmoke.LFMirror.Obj
 expected
   (_ : LeanMirrorSigmaSmoke.LFMirror.Obj) × LeanMirrorSigmaSmoke.LFMirror.Obj
@@ -73,7 +82,16 @@ declare_type_theory LeanMirrorDependentSmoke where
   LeanMirrorDependentSmoke.LFMirror.Obj → Type)
 
 /--
-error: Lean mirror translated LF term with type
+error: Lean mirror backend rejected term in type theory 'LeanMirrorDependentSmoke'.
+
+Internal type:
+  Σ x : Obj, Fiber x
+
+Internal value:
+  ⟨o, o⟩
+
+Reason:
+Lean mirror translated LF term with type
   LeanMirrorDependentSmoke.LFMirror.Obj
 expected
   LeanMirrorDependentSmoke.LFMirror.Fiber LeanMirrorDependentSmoke.LFMirror.o
@@ -82,7 +100,16 @@ expected
 #check_lf_mirror LeanMirrorDependentSmoke : Σ x : Obj, Fiber x := ⟨o, o⟩
 
 /--
-error: Lean mirror translated LF term with type
+error: Lean mirror backend rejected term in type theory 'LeanMirrorDependentSmoke'.
+
+Internal type:
+  Obj
+
+Internal value:
+  usePack (⟨o, o⟩)
+
+Reason:
+Lean mirror translated LF term with type
   LeanMirrorDependentSmoke.LFMirror.Obj
 expected
   LeanMirrorDependentSmoke.LFMirror.Fiber LeanMirrorDependentSmoke.LFMirror.o
@@ -125,7 +152,16 @@ declare_type_theory LeanMirrorTransparencySmoke where
 #check_lf_mirror LeanMirrorTransparencySmoke : Good objectAlias := good_o
 
 /--
-error: Lean mirror translated LF term with type
+error: Lean mirror backend rejected term in type theory 'LeanMirrorTransparencySmoke'.
+
+Internal type:
+  AdmittedAlias
+
+Internal value:
+  o
+
+Reason:
+Lean mirror translated LF term with type
   LeanMirrorTransparencySmoke.LFMirror.Obj
 expected
   LeanMirrorTransparencySmoke.LFMirror.AdmittedAlias
