@@ -322,8 +322,9 @@ A registered executable `beta` conversion plugin can participate in internal `si
 conversion_plugin beta_step executable [beta]
 ```
 
-Currently only executable `beta` plugin steps are used by internal `simp`. Other plugin-step
-classes are recorded as conversion-certificate metadata for now.
+Currently only executable `beta` plugin steps are used by internal `simp`. Executable `eta` steps
+are checked at the conversion-certificate boundary but are not used by internal `simp` yet; other
+plugin-step classes remain metadata for now.
 
 ### `simp`, `simp [...]`, and `simp only [...]`
 

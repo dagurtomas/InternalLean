@@ -137,7 +137,8 @@ normalized expected: EqFun (fun y._hyg0 => y._hyg0) (fun y._hyg0 => y._hyg0)
 LF definitions mentioned before unfolding: Alias
 LF definitions unfolded: Alias
 Normalization policy: LF matching unfolds earlier checked `lf_def` values, beta-reduces
-explicit LF lambdas, and alpha-renames binders to avoid local-binder capture.
+explicit LF lambdas, contracts structural eta-redexes, and alpha-renames binders
+to avoid local-binder capture.
 -/
 #guard_msgs (whitespace := lax) in
 declare_type_theory LFDefinitionCaptureUnfoldReject where

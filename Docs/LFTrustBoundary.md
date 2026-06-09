@@ -167,8 +167,10 @@ A plugin declaration records the trust mode and supported generic step classes. 
 steps can be checked by the framework when support exists. External-certificate and opaque modes are
 trusted leaves unless backed by additional checked evidence.
 
-Internal `simp` currently uses registered executable `beta` plugin steps. Other step classes are
-part of the conversion-certificate vocabulary and future automation boundary.
+Internal `simp` currently uses registered executable `beta` plugin steps. Executable `eta` steps
+check structural function eta for explicit raw `_app` redexes and structural Sigma eta for
+`pair`/`fst`/`snd` redexes. Other step classes remain part of the conversion-certificate vocabulary
+and future automation boundary.
 
 ## Rewriting and transport metadata
 

@@ -401,8 +401,10 @@ plugin_axiom
 pluginAxiom
 ```
 
-Currently, internal `simp` can use registered executable `beta` steps. Other step classes are
-metadata for the checked conversion-certificate boundary and future automation.
+Currently, internal `simp` can use registered executable `beta` steps. Executable `eta` steps
+check structural function eta for explicit raw `_app` redexes and structural Sigma eta for
+`pair`/`fst`/`snd` redexes. Other step classes are metadata for the checked
+conversion-certificate boundary and future automation.
 
 ### Model visibility and sections
 

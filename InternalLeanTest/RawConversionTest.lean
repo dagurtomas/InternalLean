@@ -64,4 +64,39 @@ namespace InternalLeanTest.RawConversion
   | .ok () => true
   | .error _ => false
 
+/- Function eta contracts the explicit raw `_app` convention. -/
+#guard
+  let lhs := Raw.tmApp `lam [
+    .leanParam `x,
+    .tmApp `_app [.leanParam `f, .leanParam `x]]
+  let stmt : ConversionStatement := { plugin := `conv, lhs := lhs, rhs := .leanParam `f }
+  let sig : Signature := { name := `T, conversionPlugins := [
+    { name := `conv, trust := .executableChecked, supportedSteps := [.eta] }] }
+  match KernelLFConversionCertificate.check sig (.pluginStep stmt .eta none [] "") stmt with
+  | .ok () => true
+  | .error _ => false
+
+/- Function eta refuses to capture a binder that also occurs in the function part. -/
+#guard
+  let lhs := Raw.tmApp `lam [
+    .leanParam `x,
+    .tmApp `_app [.tmApp `_app [.leanParam `f, .leanParam `x], .leanParam `x]]
+  let stmt : ConversionStatement := { plugin := `conv, lhs := lhs, rhs := .leanParam `f }
+  let sig : Signature := { name := `T, conversionPlugins := [
+    { name := `conv, trust := .executableChecked, supportedSteps := [.eta] }] }
+  match KernelLFConversionCertificate.check sig (.pluginStep stmt .eta none [] "") stmt with
+  | .ok () => false
+  | .error err => err.contains "eta step expected"
+
+/- Sigma eta contracts a pair of projections from alpha-equivalent values. -/
+#guard
+  let p := Raw.tmConst `p
+  let lhs := Raw.tmApp `pair [.tmApp `fst [p], .tmApp `snd [p]]
+  let stmt : ConversionStatement := { plugin := `conv, lhs := lhs, rhs := p }
+  let sig : Signature := { name := `T, conversionPlugins := [
+    { name := `conv, trust := .executableChecked, supportedSteps := [.eta] }] }
+  match KernelLFConversionCertificate.check sig (.pluginStep stmt .eta none [] "") stmt with
+  | .ok () => true
+  | .error _ => false
+
 end InternalLeanTest.RawConversion

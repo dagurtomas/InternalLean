@@ -558,6 +558,21 @@ def betaReduce? : Raw → Option Raw
       some (Raw.substLeanParam x arg body)
   | _ => none
 
+/-- One-step structural η reduction for raw conversion certificates.
+
+Function eta is recognized for the explicit `_app` convention, and Sigma eta is recognized for the
+structural `pair`/`fst`/`snd` convention. -/
+def etaReduce? : Raw → Option Raw
+  | .tmApp `lam [.leanParam x, .tmApp `_app [f, .leanParam y]] =>
+      if x.eraseMacroScopes == y.eraseMacroScopes &&
+          !(f.localRefNames.map Name.eraseMacroScopes).contains x.eraseMacroScopes then
+        some f
+      else
+        none
+  | .tmApp `pair [.tmApp `fst [p], .tmApp `snd [q]] =>
+      if p.alphaEq q then some p else none
+  | _ => none
+
 end Raw
 
 /-- Built-in low-level object judgments supported by the replay checker. -/
@@ -1780,6 +1795,17 @@ def validateExecutableStep (pluginName : Name) (stmt : ConversionStatement)
           throwFailure .malformedCertificate <|
             s!"checked conversion plugin '{pluginName}' beta step expected a raw `_app` " ++
             "redex whose function is a one-argument `lam`"
+  | .eta =>
+      match stmt.lhs.etaReduce? with
+      | some rhs =>
+          unless rhs.alphaEq stmt.rhs do
+            throwFailure .malformedCertificate <|
+              s!"checked conversion plugin '{pluginName}' eta step contracts lhs to " ++
+              s!"'{reprStr rhs}', expected rhs '{reprStr stmt.rhs}'"
+      | none =>
+          throwFailure .malformedCertificate <|
+            s!"checked conversion plugin '{pluginName}' eta step expected a raw structural " ++
+            "function or Sigma eta-redex"
   | _ =>
       throwFailure .unsupportedConversion <|
         s!"checked conversion plugin '{pluginName}' has no generic executable engine for " ++

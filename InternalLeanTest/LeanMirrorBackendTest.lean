@@ -206,7 +206,7 @@ expected
 #guard_msgs (whitespace := lax) in
 #check_lf_mirror LeanMirrorTransparencySmoke : AdmittedAlias := o
 
-/-- Lean's Sigma eta is accepted by the mirror, so compare mode must report the LF rejection. -/
+/-- Structural Sigma eta is part of LF conversion, matching the Lean mirror. -/
 declare_type_theory LeanMirrorSigmaEtaPitfall where
   syntax_sort Obj : Type
   lf_opaque p : Σ x : Obj, Obj
@@ -214,20 +214,9 @@ declare_type_theory LeanMirrorSigmaEtaPitfall where
   rule good_p : GoodPack p
 
 #check_lf_mirror LeanMirrorSigmaEtaPitfall : GoodPack ⟨fst p, snd p⟩ := good_p
+#compare_lf_mirror LeanMirrorSigmaEtaPitfall : GoodPack ⟨fst p, snd p⟩ := good_p
 
-/--
-error: Lean mirror accepted a term in type theory 'LeanMirrorSigmaEtaPitfall',
-but the ordinary LF checker rejected it.
-
-Recognized mirror/LF conversion gap: the translated Lean term uses Sigma eta.
-The current LF conversion policy does not identify `⟨fst p, snd p⟩` with `p`.
--/
-#guard_msgs (whitespace := lax) in
-set_option internalLean.mirrorBackend.compareWithLF true in
-#check_lf_mirror LeanMirrorSigmaEtaPitfall : GoodPack ⟨fst p, snd p⟩ := good_p
-
-/-- Function-to-judgment shapes are mirror-checkable Lean types but not LF theorem
-statements. -/
+/-- Structural function eta is part of LF conversion, matching the Lean mirror. -/
 declare_type_theory LeanMirrorFunctionEtaPitfall where
   syntax_sort Obj : Type
   judgment GoodFun (g : Obj → Obj)
@@ -237,18 +226,13 @@ declare_type_theory LeanMirrorFunctionEtaPitfall where
     (g : Obj → Obj) → GoodFun (fun x => g x) :=
   fun g => good g
 
-/--
-error: Lean mirror accepted a term in type theory 'LeanMirrorFunctionEtaPitfall',
-but the ordinary LF checker rejected it.
+namespace LeanMirrorFunctionEtaPitfall
 
-Recognized mirror/LF conversion gap: the translated Lean term uses function eta.
-The current LF conversion policy does not identify `fun x => f x` with `f`.
--/
-#guard_msgs (whitespace := lax) in
-set_option internalLean.mirrorBackend.compareWithLF true in
-#check_lf_mirror LeanMirrorFunctionEtaPitfall :
-    (g : Obj → Obj) → GoodFun (fun x => g x) :=
-  fun g => good g
+internal_mirror def etaTheorem (g : Obj → Obj) : GoodFun (fun x => g x) := good g
+
+#check etaTheorem
+
+end LeanMirrorFunctionEtaPitfall
 
 /-- Binder-style declarations mirror-check under local LF parameters, then use ordinary LF
 registration. -/

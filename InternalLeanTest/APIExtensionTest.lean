@@ -1842,8 +1842,8 @@ declare_type_theory BadUndeclaredLFLevelParam where
   syntax_sort Obj (A : Type u)
 
 /--
-error: judgment_theorem 'bad' in type theory 'BadLFDefinitionNormalizationMismatch' applies rule
-'simplex_refl_rule' but the statement does not match the rule conclusion after LF-definition
+error: judgment_theorem 'bad' in type theory 'BadLFDefinitionNormalizationMismatch' applies
+rule 'simplex_refl_rule' but the statement does not match the rule conclusion after LF-definition
 normalization:
 LF-definition normalization could not match expressions.
 actual: shapeIncl emptyCtx Alias Other
@@ -1853,7 +1853,8 @@ normalized expected: shapeIncl emptyCtx simplexPayload simplexPayload
 LF definitions mentioned before unfolding: Alias, Other
 LF definitions unfolded: Alias, Other
 Normalization policy: LF matching unfolds earlier checked `lf_def` values, beta-reduces
-explicit LF lambdas, and alpha-renames binders to avoid local-binder capture.
+explicit LF lambdas, contracts structural eta-redexes, and alpha-renames binders
+to avoid local-binder capture.
 -/
 #guard_msgs (whitespace := lax) in
 declare_type_theory BadLFDefinitionNormalizationMismatch where
@@ -1890,8 +1891,9 @@ declare_type_theory BadLFJudgmentTheoremUnknownJudgment where
   judgment_theorem bad_theorem : missingJudgment := proofPayload
 
 /--
-error: judgment_theorem 'bad' in type theory 'BadLFTheoremReferenceStatementMismatch' uses premise
-theorem 'simplex_refl' with a statement that does not match after LF-definition normalization:
+error: judgment_theorem 'bad' in type theory 'BadLFTheoremReferenceStatementMismatch' uses
+premise theorem 'simplex_refl' with a statement that does not match after LF-definition
+normalization:
 LF-definition normalization could not match expressions.
 actual: shapeIncl emptyCtx Simplex Simplex
 expected: shapeIncl emptyCtx Simplex Other
@@ -1900,7 +1902,8 @@ normalized expected: shapeIncl emptyCtx simplexPayload otherPayload
 LF definitions mentioned before unfolding: Simplex, Other
 LF definitions unfolded: Simplex, Other
 Normalization policy: LF matching unfolds earlier checked `lf_def` values, beta-reduces
-explicit LF lambdas, and alpha-renames binders to avoid local-binder capture.
+explicit LF lambdas, contracts structural eta-redexes, and alpha-renames binders
+to avoid local-binder capture.
 -/
 #guard_msgs (whitespace := lax) in
 declare_type_theory BadLFTheoremReferenceStatementMismatch where
@@ -1978,7 +1981,8 @@ normalized expected: shapeIncl emptyCtx simplexPayload simplexPayload
 LF definitions mentioned before unfolding: Other, Simplex
 LF definitions unfolded: Other, Simplex
 Normalization policy: LF matching unfolds earlier checked `lf_def` values, beta-reduces
-explicit LF lambdas, and alpha-renames binders to avoid local-binder capture.
+explicit LF lambdas, contracts structural eta-redexes, and alpha-renames binders
+to avoid local-binder capture.
 -/
 #guard_msgs (whitespace := lax) in
 declare_type_theory BadLFNestedTheoremReferencePremiseMismatch where
@@ -2038,7 +2042,8 @@ normalized expected: shapeIncl emptyCtx simplexPayload simplexPayload
 LF definitions mentioned before unfolding: Simplex, Other
 LF definitions unfolded: Simplex, Other
 Normalization policy: LF matching unfolds earlier checked `lf_def` values, beta-reduces
-explicit LF lambdas, and alpha-renames binders to avoid local-binder capture.
+explicit LF lambdas, contracts structural eta-redexes, and alpha-renames binders
+to avoid local-binder capture.
 -/
 #guard_msgs (whitespace := lax) in
 declare_type_theory BadLFNestedRuleApplicationPremiseMismatch where

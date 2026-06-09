@@ -456,14 +456,11 @@ def lfMirrorComparePitfallHint? (typeExpr valueExpr : ObjExpr) : Option String :
   let sigmaEta := lfMirrorContainsSigmaEtaShape typeExpr || lfMirrorContainsSigmaEtaShape valueExpr
   let funEta :=
     lfMirrorContainsFunctionEtaShape typeExpr || lfMirrorContainsFunctionEtaShape valueExpr
-  if sigmaEta then
+  if sigmaEta || funEta then
     some <| String.intercalate "\n" [
-      "Recognized mirror/LF conversion gap: the translated Lean term uses Sigma eta.",
-      "The current LF conversion policy does not identify `⟨fst p, snd p⟩` with `p`."]
-  else if funEta then
-    some <| String.intercalate "\n" [
-      "Recognized mirror/LF conversion gap: the translated Lean term uses function eta.",
-      "The current LF conversion policy does not identify `fun x => f x` with `f`."]
+      "The translated Lean term uses structural eta, which is part of the ordinary LF",
+      "conversion policy. Any LF rejection here is therefore a different LF/mirror shape",
+      "or classification mismatch rather than an eta-conversion mismatch."]
   else
     none
 
@@ -498,15 +495,15 @@ def checkWithLFForMirrorCompare (theoryName : Name) (params : Array HLBinding)
       else
         checkObject
     catch secondEx =>
-      if let some hint := lfMirrorComparePitfallHint? typeExpr valueExpr then
-        throwError "Lean mirror accepted a term in type theory '{theoryName}',\nbut the \
-          ordinary LF checker rejected it.\n\n{hint}"
-      else
-        let msg :=
-          m!"Lean mirror accepted a term in type theory '{theoryName}',\nbut the ordinary LF \
-            checker rejected it.\n\nFirst LF path:\n{exceptionMessageData firstEx}\n\nSecond LF \
-              path:\n{exceptionMessageData secondEx}"
-        throwError msg
+      let etaNote :=
+        match lfMirrorComparePitfallHint? typeExpr valueExpr with
+        | some hint => m!"\n\nNote:\n{hint}"
+        | none => m!""
+      let msg :=
+        m!"Lean mirror accepted a term in type theory '{theoryName}',\nbut the ordinary LF \
+          checker rejected it.{etaNote}\n\nFirst LF path:\n{exceptionMessageData firstEx}\n\n" ++
+        m!"Second LF path:\n{exceptionMessageData secondEx}"
+      throwError msg
 
 /-- Check one LF value against an LF type using only the experimental Lean mirror backend. -/
 def checkWithLFMirrorOnly (theoryName : Name) (params : Array HLBinding)

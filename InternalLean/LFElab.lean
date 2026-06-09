@@ -1373,22 +1373,94 @@ def lfDefinitionValuesOfMapForExpr (allDefs : LFDefinitionValueMap) (e : ObjExpr
 def lfDefinitionValuesOfSignatureForExpr (sig : HLSignature) (e : ObjExpr) : LFDefinitionValueMap :=
   lfDefinitionValuesOfMapForExpr (lfDefinitionValuesOfSignature sig) e
 
+/-- Return the name of an LF eta argument, when it is a variable occurrence. -/
+def lfEtaArgumentName? : ObjExpr → Option Name
+  | .ident n => some n.eraseMacroScopes
+  | _ => none
+
+/-- Try to contract a structural function eta-redex after recursive normalization. -/
+def contractLFFunctionEta? (xs : Array Name) (body : ObjExpr) : Option ObjExpr :=
+  let binders := xs.toList.map Name.eraseMacroScopes
+  if binders.isEmpty then
+    none
+  else
+    let (head, args) := splitObjApp body
+    let args := args.toList
+    if args.length < binders.length then
+      none
+    else
+      let prefixLength := args.length - binders.length
+      match (args.drop prefixLength).mapM lfEtaArgumentName? with
+      | none => none
+      | some suffixNames =>
+          if suffixNames == binders then
+            let prefixExpr := mkObjApp head (args.take prefixLength).toArray
+            let freePrefix := freeLFObjectIdentifiers prefixExpr
+            if binders.any (fun x => freePrefix.contains x) then none else some prefixExpr
+          else
+            none
+
+/-- Normalize structural function and Sigma eta-redexes in an already beta/delta-normal LF
+expression. -/
+partial def normalizeLFExprEtaOnly : ObjExpr → ObjExpr
+  | .ident n => .ident n.eraseMacroScopes
+  | .sort => .sort
+  | .univ u => .univ u
+  | .app f a => .app (normalizeLFExprEtaOnly f) (normalizeLFExprEtaOnly a)
+  | .arrow x A B => .arrow (x.map Name.eraseMacroScopes) (normalizeLFExprEtaOnly A) (
+    normalizeLFExprEtaOnly B)
+  | .funArrow x A B => .funArrow (x.map Name.eraseMacroScopes) (normalizeLFExprEtaOnly A) (
+    normalizeLFExprEtaOnly B)
+  | .sigma x A B => .sigma (x.map Name.eraseMacroScopes) (normalizeLFExprEtaOnly A) (
+    normalizeLFExprEtaOnly B)
+  | .pair a b =>
+      let a := normalizeLFExprEtaOnly a
+      let b := normalizeLFExprEtaOnly b
+      match a, b with
+      | .fst p, .snd q => if lfExprAlphaEq p q then p else .pair a b
+      | _, _ => .pair a b
+  | .fst e =>
+      match normalizeLFExprEtaOnly e with
+      | .pair a _ => a
+      | e => .fst e
+  | .snd e =>
+      match normalizeLFExprEtaOnly e with
+      | .pair _ b => b
+      | e => .snd e
+  | .lam xs body =>
+      let xs := xs.map Name.eraseMacroScopes
+      let body := normalizeLFExprEtaOnly body
+      match contractLFFunctionEta? xs body with
+      | some f => f
+      | none => .lam xs body
+  | .jeq lhs rhs => .jeq (normalizeLFExprEtaOnly lhs) (normalizeLFExprEtaOnly rhs)
+
+/-- Normalize an LF expression for conversion using checked definitions under local binders. -/
+def normalizeLFExprForConversionWithLocals (defs : LFDefinitionValueMap) (locals : NameSet)
+    (e : ObjExpr) : ObjExpr :=
+  normalizeLFExprEtaOnly (unfoldLFDefinitionsInExprWithLocals defs locals e)
+
+/-- Normalize an LF expression for conversion using an available definition map. -/
+def normalizeLFExprForConversionWithDefs (defs : LFDefinitionValueMap) (e : ObjExpr) :
+    ObjExpr :=
+  normalizeLFExprForConversionWithLocals (lfDefinitionValuesOfMapForExpr defs e) {} e
+
 /-- Normalize an LF expression for shallow type comparisons using an available definition map. -/
 def normalizeLFExprForTypeComparisonWithDefs (defs : LFDefinitionValueMap) (e : ObjExpr) :
     ObjExpr :=
-  unfoldLFDefinitionsInExpr (lfDefinitionValuesOfMapForExpr defs e) e
+  normalizeLFExprForConversionWithDefs defs e
 
 /-- Normalize an LF expression for shallow type comparisons. -/
 def normalizeLFExprForTypeComparison (sig : HLSignature) (e : ObjExpr) : ObjExpr :=
-  unfoldLFDefinitionsInExpr (lfDefinitionValuesOfSignatureForExpr sig e) e
+  normalizeLFExprForConversionWithDefs (lfDefinitionValuesOfSignatureForExpr sig e) e
 
-/-- Shallow equality of LF types after beta-reduction and LF-definition unfolding using an
+/-- Shallow equality of LF types after beta/eta-reduction and LF-definition unfolding using an
 available definition map. -/
 def lfTypeCompareEqWithDefs (defs : LFDefinitionValueMap) (actual expected : ObjExpr) : Bool :=
   lfExprAlphaEq (normalizeLFExprForTypeComparisonWithDefs defs actual)
     (normalizeLFExprForTypeComparisonWithDefs defs expected)
 
-/-- Shallow equality of LF types after beta-reduction and LF-definition unfolding. -/
+/-- Shallow equality of LF types after beta/eta-reduction and LF-definition unfolding. -/
 def lfTypeCompareEq (sig : HLSignature) (actual expected : ObjExpr) : Bool :=
   lfExprAlphaEq (normalizeLFExprForTypeComparison sig actual)
     (normalizeLFExprForTypeComparison sig expected)
@@ -1810,7 +1882,7 @@ def lfDefinitionValuesWithSyntaxDefs (lookup : LFCheckLookupContext) : LFDefinit
   return out
 
 /-- Normalize a pair for diagnostics, unfolding checked syntax definitions only if the cheap
-object-definition-only normal forms do not already match. -/
+object-definition-only beta/eta normal forms do not already match. -/
 def normalizeLFTypeComparisonPairInLookup (lookup : LFCheckLookupContext)
     (actual expected : ObjExpr) : ObjExpr × ObjExpr :=
   let actualCheap := normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actual
@@ -1822,7 +1894,7 @@ def normalizeLFTypeComparisonPairInLookup (lookup : LFCheckLookupContext)
     (normalizeLFExprForTypeComparisonWithDefs defs actual,
       normalizeLFExprForTypeComparisonWithDefs defs expected)
 
-/-- Shallow type comparison using the lookup context's LF-definition map. Checked syntax
+/-- Shallow beta/eta type comparison using the lookup context's LF-definition map. Checked syntax
 definitions are unfolded only as a fallback after cheap comparison fails. -/
 def lfTypeCompareEqInLookup (lookup : LFCheckLookupContext) (actual expected : ObjExpr) : Bool :=
   let (actualN, expectedN) := normalizeLFTypeComparisonPairInLookup lookup actual expected
@@ -4068,13 +4140,14 @@ def collectLFDefinitionUnfolds (defs : LFDefinitionValueMap) (locals : NameSet)
     (acc : Array Name) (e : ObjExpr) : Array Name :=
   collectLFDefinitionUnfoldsCore defs locals (lfDefinitionUnfoldFuel defs) acc e
 
-/-- Equality modulo macro scopes and checked LF-definition unfolding under local binders. -/
+/-- Equality modulo macro scopes, checked LF-definition unfolding, and structural eta under
+local binders. -/
 def lfExprEqModuloDefinitionsWithLocals (defs : LFDefinitionValueMap) (locals : NameSet)
     (a b : ObjExpr) : Bool :=
-  lfExprAlphaEq (unfoldLFDefinitionsInExprWithLocals defs locals a)
-    (unfoldLFDefinitionsInExprWithLocals defs locals b)
+  lfExprAlphaEq (normalizeLFExprForConversionWithLocals defs locals a)
+    (normalizeLFExprForConversionWithLocals defs locals b)
 
-/-- Equality modulo macro scopes and checked LF-definition unfolding. -/
+/-- Equality modulo macro scopes, checked LF-definition unfolding, and structural eta. -/
 def lfExprEqModuloDefinitions (defs : LFDefinitionValueMap) (a b : ObjExpr) : Bool :=
   lfExprEqModuloDefinitionsWithLocals defs {} a b
 
@@ -4085,8 +4158,8 @@ def diagnosticNameListString (xs : Array Name) : String :=
 /-- Rich diagnostic for failed LF-definition/beta normalization matching. -/
 def lfDefinitionNormalizationMismatchMessage (defs : LFDefinitionValueMap) (locals : NameSet)
     (actual expected : ObjExpr) : MessageData :=
-  let actualN := unfoldLFDefinitionsInExprWithLocals defs locals actual
-  let expectedN := unfoldLFDefinitionsInExprWithLocals defs locals expected
+  let actualN := normalizeLFExprForConversionWithLocals defs locals actual
+  let expectedN := normalizeLFExprForConversionWithLocals defs locals expected
   let mentioned :=
     collectLFDefinitionMentions defs locals (collectLFDefinitionMentions defs locals #[] actual)
       expected
@@ -4111,7 +4184,8 @@ def lfDefinitionNormalizationMismatchMessage (defs : LFDefinitionValueMap) (loca
     s!"LF definitions unfolded: {diagnosticNameListString unfolded}"] ++
       remainingLines ++ [
     "Normalization policy: LF matching unfolds earlier checked `lf_def` values, beta-reduces",
-    "explicit LF lambdas, and alpha-renames binders to avoid local-binder capture."]
+    "explicit LF lambdas, contracts structural eta-redexes, and alpha-renames binders",
+    "to avoid local-binder capture."]
   m!"{String.intercalate "\n" lines}"
 
 /-- Shallow rule-application metadata collected at the outermost theorem proof. -/
@@ -4163,7 +4237,7 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
                 lfDefinitionNormalizationMismatchMessage defValues localNames actualStatement
                   expectedStatement
               throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' uses \
-                local theorem assumption '{localName}' with a statement that does not match after \
+                local theorem assumption '{localName}' with a statement that does not match after\n\
                 LF-definition normalization:\n{mismatch}"
           return some (.localAssumption localName actualStatement)
       | none =>
@@ -4255,9 +4329,9 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
           let mismatch :=
             lfDefinitionNormalizationMismatchMessage defValues localNames actualStatement
               expectedStatement
-          throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' uses premise \
-            theorem '{theoremRefName}' with a statement that does not match after LF-definition \
-            normalization:\n{mismatch}"
+          throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' uses \
+            premise\ntheorem '{theoremRefName}' with a statement that does not match after \
+            LF-definition normalization:\n{mismatch}"
       let replayStatement :=
         if premiseTheorem.binders.isEmpty then
           (availableTheoremStatements.find? theoremRefName.eraseMacroScopes).getD actualStatement
@@ -4304,8 +4378,8 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
           let mismatch :=
             lfDefinitionNormalizationMismatchMessage defValues localNames actualStatement
               expectedConclusion
-          throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' applies rule \
-            '{ruleName}' but the statement does not match the rule conclusion after \
+          throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' applies \
+            rule\n'{ruleName}' but the statement does not match the rule conclusion after \
             LF-definition normalization:\n{mismatch}"
       let mut premiseDerivations := #[]
       let mut scopedRuleArgs : Array ObjExpr := ruleArgs
