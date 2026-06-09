@@ -110,6 +110,61 @@ partial def qualifyLFQuoteSourceIdents (theoryName : Name) (sig : HLSignature)
       .node info kind (args.map (qualifyLFQuoteSourceIdents theoryName sig protectedNames))
   | stx => stx
 
+mutual
+
+/-- Reflect a unary binder argument to a quoted LF structural constructor. -/
+partial def reflectLFQuoteUnaryBinder (theoryName : Name) (locals : LFQuoteLocalMap) (e : Expr) :
+    MetaM (Name × ObjExpr) := do
+  lambdaTelescope e fun xs body => do
+    unless xs.size == 1 do
+      throwError "quoted LF structural binder expected one Lean binder, but elaborated to \
+        {xs.size} binder(s)"
+    let x := xs[0]!
+    let localDecl ← x.fvarId!.getDecl
+    let userName := localDecl.userName.eraseMacroScopes
+    let locals := locals.push (x.fvarId!, userName)
+    pure (userName, ← reflectLFQuoteExpr theoryName locals body)
+
+/-- Reflect an application of one built-in quoted LF structural constructor, if present. -/
+partial def reflectLFQuoteBuiltinApp? (theoryName : Name) (locals : LFQuoteLocalMap)
+    (constName : Name) (args : Array Expr) : MetaM (Option ObjExpr) := do
+  let binary (ctor : ObjExpr → ObjExpr → ObjExpr) : MetaM (Option ObjExpr) := do
+    unless args.size == 2 do
+      throwError "quoted LF constructor '{constName}' expected 2 argument(s), got {args.size}"
+    pure <| some <| ctor (← reflectLFQuoteExpr theoryName locals args[0]!)
+      (← reflectLFQuoteExpr theoryName locals args[1]!)
+  let dependent (ctor : Option Name → ObjExpr → ObjExpr → ObjExpr) :
+      MetaM (Option ObjExpr) := do
+    unless args.size == 2 do
+      throwError "quoted LF constructor '{constName}' expected 2 argument(s), got {args.size}"
+    let domain ← reflectLFQuoteExpr theoryName locals args[0]!
+    let (binderName, codomain) ← reflectLFQuoteUnaryBinder theoryName locals args[1]!
+    pure <| some <| ctor (some binderName) domain codomain
+  let unary (ctor : ObjExpr → ObjExpr) : MetaM (Option ObjExpr) := do
+    unless args.size == 1 do
+      throwError "quoted LF constructor '{constName}' expected 1 argument(s), got {args.size}"
+    pure <| some <| ctor (← reflectLFQuoteExpr theoryName locals args[0]!)
+  if constName == ``InternalLean.LFQuote.arrow then
+    binary (fun A B => .arrow none A B)
+  else if constName == ``InternalLean.LFQuote.arrowDep then
+    dependent (fun x A B => .arrow x A B)
+  else if constName == ``InternalLean.LFQuote.funArrow then
+    binary (fun A B => .funArrow none A B)
+  else if constName == ``InternalLean.LFQuote.funArrowDep then
+    dependent (fun x A B => .funArrow x A B)
+  else if constName == ``InternalLean.LFQuote.prod then
+    binary (fun A B => .sigma none A B)
+  else if constName == ``InternalLean.LFQuote.sigma then
+    dependent (fun x A B => .sigma x A B)
+  else if constName == ``InternalLean.LFQuote.pair then
+    binary (fun a b => .pair a b)
+  else if constName == ``InternalLean.LFQuote.projFst then
+    unary (fun e => .fst e)
+  else if constName == ``InternalLean.LFQuote.projSnd then
+    unary (fun e => .snd e)
+  else
+    pure none
+
 /-- Reflect one Lean expression elaborated against quoted-LF stubs back to an `ObjExpr`. -/
 partial def reflectLFQuoteExpr (theoryName : Name) (locals : LFQuoteLocalMap) :
     Expr → MetaM ObjExpr
@@ -117,27 +172,33 @@ partial def reflectLFQuoteExpr (theoryName : Name) (locals : LFQuoteLocalMap) :
   | e@(.app ..) => do
       match e.getAppFn with
       | .const n _ =>
-          match ← lfQuoteSourceNameAndArityOfConst? theoryName n with
-          | some (localName, arity, _) =>
-              let args := lfQuoteArgsForSourceArity n arity e.getAppArgs
-              let mut out : ObjExpr := .ident localName
-              for arg in args do
-                out := .app out (← reflectLFQuoteExpr theoryName locals arg)
-              pure out
+          match ← reflectLFQuoteBuiltinApp? theoryName locals n e.getAppArgs with
+          | some out => pure out
           | none =>
-              pure (.app (← reflectLFQuoteExpr theoryName locals e.appFn!)
-                (← reflectLFQuoteExpr theoryName locals e.appArg!))
+              match ← lfQuoteSourceNameAndArityOfConst? theoryName n with
+              | some (localName, arity, _) =>
+                  let args := lfQuoteArgsForSourceArity n arity e.getAppArgs
+                  let mut out : ObjExpr := .ident localName
+                  for arg in args do
+                    out := .app out (← reflectLFQuoteExpr theoryName locals arg)
+                  pure out
+              | none =>
+                  pure (.app (← reflectLFQuoteExpr theoryName locals e.appFn!)
+                    (← reflectLFQuoteExpr theoryName locals e.appArg!))
       | _ =>
           pure (.app (← reflectLFQuoteExpr theoryName locals e.appFn!)
             (← reflectLFQuoteExpr theoryName locals e.appArg!))
   | .const n _ => do
-      match ← lfQuoteSourceNameAndArityOfConst? theoryName n with
-      | some (localName, _, _) =>
-          pure (.ident localName)
-      | none => throwError "Lean-elaborated LF term uses Lean constant '{n}', which is not part \
-          of the quoted LF signature for type theory '{theoryName}'. Use a generated declaration \
-          in namespace '{lfQuoteNamespace theoryName}', or an LF declaration name available in the \
-          checked theory."
+      if n == ``InternalLean.LFQuote.sort then
+        pure .sort
+      else
+        match ← lfQuoteSourceNameAndArityOfConst? theoryName n with
+        | some (localName, _, _) =>
+            pure (.ident localName)
+        | none => throwError "Lean-elaborated LF term uses Lean constant '{n}', which is not part \
+            of the quoted LF signature for type theory '{theoryName}'. Use a generated declaration \
+            in namespace '{lfQuoteNamespace theoryName}', or an LF declaration name available in \
+            the checked theory."
   | .fvar fvarId => do
       match findLFQuoteLocal? locals fvarId with
       | some localName => pure (.ident localName)
@@ -160,9 +221,12 @@ partial def reflectLFQuoteExpr (theoryName : Name) (locals : LFQuoteLocalMap) :
       pure (.ident `_)
   | e => throwError "unsupported Lean-elaborated LF expression after elaboration:\n  {e}"
 
+end
+
 /-- Elaborate `body` as a quoted LF term and reflect it to `ObjExpr`. -/
 def elabLeanQuotedLFBody (target : InternalDefTarget) (params : Array HLBinding)
     (typeExpr : ObjExpr) (body : TSyntax `term) : CommandElabM ObjExpr := do
+  let builtinQuoteOpenDecl ← `(Lean.Parser.Command.openDecl| InternalLean.LFQuote)
   let quoteNs := mkIdent (lfQuoteNamespace target.theoryName)
   let quoteOpenDecl ← `(Lean.Parser.Command.openDecl| $quoteNs:ident)
   let protectedNames := params.foldl (init := {}) fun names p =>
@@ -171,7 +235,7 @@ def elabLeanQuotedLFBody (target : InternalDefTarget) (params : Array HLBinding)
     match ← liftCoreM <| getCheckedHLSignature? target.theoryName with
     | some sig => qualifyLFQuoteSourceIdents target.theoryName sig protectedNames body
     | none => body.raw
-  let body ← `(term| open $quoteOpenDecl in $(⟨body⟩):term)
+  let body ← `(term| open $builtinQuoteOpenDecl in open $quoteOpenDecl in $(⟨body⟩):term)
   liftTermElabM do
     let expectedType := lfQuoteLeanTypeOfObjType typeExpr
     let rec withLocals (i : Nat) (locals : LFQuoteLocalMap) : TermElabM ObjExpr := do
@@ -213,13 +277,14 @@ def saveLeanQuotedLFBodyInfo (target : InternalDefTarget) (params : Array HLBind
 /-- Elaborate and reflect a quoted LF term for diagnostics. -/
 def elabAndReflectLFQuoteTerm (theoryName : Name) (body : TSyntax `term) :
     CommandElabM ObjExpr := do
+  let builtinQuoteOpenDecl ← `(Lean.Parser.Command.openDecl| InternalLean.LFQuote)
   let quoteNs := mkIdent (lfQuoteNamespace theoryName)
   let quoteOpenDecl ← `(Lean.Parser.Command.openDecl| $quoteNs:ident)
   let body :=
     match ← liftCoreM <| getCheckedHLSignature? theoryName with
     | some sig => qualifyLFQuoteSourceIdents theoryName sig {} body
     | none => body.raw
-  let body ← `(term| open $quoteOpenDecl in $(⟨body⟩):term)
+  let body ← `(term| open $builtinQuoteOpenDecl in open $quoteOpenDecl in $(⟨body⟩):term)
   liftTermElabM do
     let value ← Term.elabTerm body (some (mkConst ``LFQuoteTerm))
     Term.synthesizeSyntheticMVarsNoPostponing

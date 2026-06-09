@@ -49,6 +49,34 @@ info: reflected LF term in type theory 'LeanQuotedFrontendSmoke':
 #guard_msgs (whitespace := lax) in
 #reflect_lf_quote LeanQuotedFrontendSmoke : id LeanQuotedFrontendSmoke.LFQuote.o
 
+/--
+info: reflected LF term in type theory 'LeanQuotedFrontendSmoke':
+  Obj × Obj
+-/
+#guard_msgs (whitespace := lax) in
+#reflect_lf_quote LeanQuotedFrontendSmoke : prod Obj Obj
+
+/--
+info: reflected LF term in type theory 'LeanQuotedFrontendSmoke':
+  Σ x : Obj, Obj
+-/
+#guard_msgs (whitespace := lax) in
+#reflect_lf_quote LeanQuotedFrontendSmoke : sigma Obj (fun _ => Obj)
+
+/--
+info: reflected LF term in type theory 'LeanQuotedFrontendSmoke':
+  Obj → Obj
+-/
+#guard_msgs (whitespace := lax) in
+#reflect_lf_quote LeanQuotedFrontendSmoke : funArrow Obj Obj
+
+/--
+info: reflected LF term in type theory 'LeanQuotedFrontendSmoke':
+  Obj ⇒ Obj
+-/
+#guard_msgs (whitespace := lax) in
+#reflect_lf_quote LeanQuotedFrontendSmoke : arrow Obj Obj
+
 namespace LeanQuotedFrontendSmoke
 
 internal_lean def d : Obj := o
@@ -59,6 +87,10 @@ internal_lean def dAlias : Obj := LFQuote.d
 internal_lean def idObj : Obj → Obj := fun x => x
 internal_lean def idObjUnqualified : Obj → Obj := fun x => id x
 internal_lean def byExactObj : Obj := by exact o
+internal_lean def pairOO : Obj × Obj := pair o o
+internal_lean def pairOOFst : Obj := projFst pairOO
+internal_lean def pairOOSnd : Obj := projSnd pairOO
+internal_lean def dependentPairOO : Σ x : Obj, Obj := pair o o
 internal_lean def applyLocal (g : Obj → Obj) (x : Obj) : Obj := g x
 internal_lean def o_ok : IsObj o := LFQuote.mkObj o
 internal_lean theorem o_ok_theorem : IsObj o := LFQuote.mkObj o
@@ -111,6 +143,10 @@ internal_lean def admittedBinderBy (x : Obj) : Obj := by
 #check idObj
 #check idObjUnqualified
 #check byExactObj
+#check pairOO
+#check pairOOFst
+#check pairOOSnd
+#check dependentPairOO
 #check applyLocal
 #check o_ok
 #check o_ok_theorem
@@ -136,6 +172,24 @@ admitted internal def LeanQuotedFrontendSmoke.admittedBinderBy (x : Obj) : Obj [
 #lint_type_theory_sorries LeanQuotedFrontendSmoke
 
 end LeanQuotedFrontendSmoke
+
+declare_type_theory LeanQuotedParentSmoke where
+  syntax_sort Obj : Type
+  lf_opaque o : Obj
+
+declare_type_theory LeanQuotedChildSmoke extends LeanQuotedParentSmoke where
+  judgment IsObj (x : Obj)
+  rule mkObj (x : Obj) : IsObj x
+
+namespace LeanQuotedChildSmoke
+
+internal_lean def inheritedObj : Obj := o
+internal_lean theorem inheritedObjOk : IsObj o := mkObj o
+
+#check inheritedObj
+#check inheritedObjOk
+
+end LeanQuotedChildSmoke
 
 declare_type_theory LeanQuotedTheoremSorrySmoke where
   syntax_sort Obj : Type

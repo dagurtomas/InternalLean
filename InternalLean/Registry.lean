@@ -60,6 +60,46 @@ public inductive LFQuoteTerm where
   | mk : LFQuoteTerm
   deriving Inhabited
 
+/- Built-in quoted LF syntax constructors available to the Lean-elaborated frontend. -/
+namespace LFQuote
+
+/-- Quoted object universe `Type`. -/
+public def sort : LFQuoteTerm := LFQuoteTerm.mk
+
+/-- Quoted framework/internal arrow, matching the `⇒` object syntax. -/
+public def arrow (_domain _codomain : LFQuoteTerm) : LFQuoteTerm := LFQuoteTerm.mk
+
+/-- Quoted dependent framework/internal arrow. -/
+public def arrowDep (_domain : LFQuoteTerm) (_codomain : LFQuoteTerm → LFQuoteTerm) :
+    LFQuoteTerm :=
+  LFQuoteTerm.mk
+
+/-- Quoted function-family arrow, matching the `→` object syntax. -/
+public def funArrow (_domain _codomain : LFQuoteTerm) : LFQuoteTerm := LFQuoteTerm.mk
+
+/-- Quoted dependent function-family arrow. -/
+public def funArrowDep (_domain : LFQuoteTerm) (_codomain : LFQuoteTerm → LFQuoteTerm) :
+    LFQuoteTerm :=
+  LFQuoteTerm.mk
+
+/-- Quoted nondependent Sigma/product type. -/
+public def prod (_fst _snd : LFQuoteTerm) : LFQuoteTerm := LFQuoteTerm.mk
+
+/-- Quoted dependent Sigma type. -/
+public def sigma (_fst : LFQuoteTerm) (_snd : LFQuoteTerm → LFQuoteTerm) : LFQuoteTerm :=
+  LFQuoteTerm.mk
+
+/-- Quoted pair constructor. -/
+public def pair (_fst _snd : LFQuoteTerm) : LFQuoteTerm := LFQuoteTerm.mk
+
+/-- Quoted first projection. -/
+public def projFst (_value : LFQuoteTerm) : LFQuoteTerm := LFQuoteTerm.mk
+
+/-- Quoted second projection. -/
+public def projSnd (_value : LFQuoteTerm) : LFQuoteTerm := LFQuoteTerm.mk
+
+end LFQuote
+
 /-- Namespace containing generated quoted-LF frontend stubs for one type theory. -/
 public meta def lfQuoteNamespace (theoryName : Lean.Name) : Lean.Name :=
   theoryName ++ `LFQuote

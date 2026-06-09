@@ -301,6 +301,34 @@ def addLFQuoteStubDeclaration (theoryName sourceName : Name) (params : Array HLB
   addDocStringCore declName
     s!"Experimental quoted-LF frontend stub for `{theoryName}.{sourceName}`."
 
+/-- Add one generated quote stub unless the target Lean stub name already exists. -/
+def addLFQuoteStubDeclarationIfMissing (theoryName sourceName : Name)
+    (params : Array HLBinding) : CommandElabM Unit := do
+  unless (← getEnv).contains (lfQuoteDeclName theoryName sourceName) do
+    addLFQuoteStubDeclaration theoryName sourceName params
+
+/-- Add generated quote stubs for all term/proof heads in a checked high-level signature. -/
+def addLFQuoteStubsForHLSignatureIfMissing (theoryName : Name) (sig : HLSignature) :
+    CommandElabM Unit := do
+  for d in sig.syntaxSorts do
+    addLFQuoteStubDeclarationIfMissing theoryName d.name d.params
+  for d in sig.syntaxAbbrevs do
+    addLFQuoteStubDeclarationIfMissing theoryName d.name d.params
+  for d in sig.syntaxDefs do
+    addLFQuoteStubDeclarationIfMissing theoryName d.name d.params
+  for d in sig.judgmentAbbrevs do
+    addLFQuoteStubDeclarationIfMissing theoryName d.name d.params
+  for d in sig.judgments do
+    addLFQuoteStubDeclarationIfMissing theoryName d.name d.params
+  for d in sig.rules do
+    addLFQuoteStubDeclarationIfMissing theoryName d.name (lfQuoteParamsOfRule d)
+  for d in sig.lfOpaqueConsts do
+    addLFQuoteStubDeclarationIfMissing theoryName d.name (lfQuoteParamsOfLFOpaqueConst d)
+  for d in sig.lfObjectDefs do
+    addLFQuoteStubDeclarationIfMissing theoryName d.name #[]
+  for d in sig.lfJudgmentTheorems do
+    addLFQuoteStubDeclarationIfMissing theoryName d.name d.binders
+
 /-- Add generated quote stubs for all term/proof heads introduced by one theory block. -/
 def addLFQuoteStubsForTheoryBlock (theoryName : Name) (block : HLTheoryBlock) :
     CommandElabM Unit := do
@@ -1633,7 +1661,12 @@ def elabDeclareInternalLean (doc? : Option (TSyntax ``Parser.Command.docComment)
     registerTheory sig
     registerSourceDocs sourceDocs
   addInternalTheoryDeclarationAnchors sig.name decls
-  addLFQuoteStubsForTheoryBlock sig.name block
+  if parents.isEmpty then
+    addLFQuoteStubsForTheoryBlock sig.name block
+  else
+    let some checkedHL ← liftCoreM <| getCheckedHLSignature? sig.name
+      | throwError "no checked high-level signature stored for type theory '{sig.name}'"
+    addLFQuoteStubsForHLSignatureIfMissing sig.name checkedHL
   addTheoryAnchorDeclaration sig sourceDoc? (← getRef) nm
   addTheoryBlockNavigationInfo sig.name decls
 
