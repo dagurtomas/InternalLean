@@ -191,6 +191,23 @@ internal_lean theorem inheritedObjOk : IsObj o := mkObj o
 
 end LeanQuotedChildSmoke
 
+declare_type_theory LeanQuotedBinderShadowSmoke where
+  syntax_sort Obj : Type
+  lf_opaque o : Obj
+  lf_opaque x : Obj
+
+namespace LeanQuotedBinderShadowSmoke
+
+internal_lean def shadowLocal : Obj → Obj := fun x => x
+internal_lean def shadowLocalApplied : Obj := (fun x => x) o
+internal_lean def useGlobalX : Obj := x
+
+#check shadowLocal
+#check shadowLocalApplied
+#check useGlobalX
+
+end LeanQuotedBinderShadowSmoke
+
 declare_type_theory LeanQuotedTheoremSorrySmoke where
   syntax_sort Obj : Type
   lf_opaque o : Obj

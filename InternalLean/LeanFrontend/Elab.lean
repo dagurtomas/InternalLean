@@ -97,6 +97,34 @@ def isSimpleLFQuoteSourceName : Name → Bool
   | .str .anonymous _ => true
   | _ => false
 
+/-- Collect binder names from a Lean `fun` binder list. -/
+partial def collectLFQuoteFunBinderNames (stx : Syntax) (acc : NameSet) : NameSet :=
+  match stx with
+  | stx@(.ident ..) => acc.insert stx.getId.eraseMacroScopes
+  | .node _ `Lean.Parser.Term.typeAscription args =>
+      match args[1]? with
+      | some stx =>
+          match stx with
+          | .ident .. => acc.insert stx.getId.eraseMacroScopes
+          | _ => acc
+      | none => acc
+  | .node _ _ args => args.foldl (fun acc arg => collectLFQuoteFunBinderNames arg acc) acc
+  | _ => acc
+
+/-- Collect simple Lean lambda-binder names that should not be rewritten as LF globals. -/
+partial def collectLFQuoteBinderNames (stx : Syntax) (acc : NameSet := {}) : NameSet :=
+  match stx with
+  | .node _ `Lean.Parser.Term.basicFun args =>
+      let acc :=
+        match args[0]? with
+        | some binders => collectLFQuoteFunBinderNames binders acc
+        | none => acc
+      match args[3]? with
+      | some body => collectLFQuoteBinderNames body acc
+      | none => acc
+  | .node _ _ args => args.foldl (fun acc arg => collectLFQuoteBinderNames arg acc) acc
+  | _ => acc
+
 /-- Qualify simple LF head identifiers so Lean resolution prefers the current theory. -/
 partial def qualifyLFQuoteSourceIdents (theoryName : Name) (sig : HLSignature)
     (protectedNames : NameSet) : Syntax → Syntax
@@ -229,7 +257,7 @@ def elabLeanQuotedLFBody (target : InternalDefTarget) (params : Array HLBinding)
   let builtinQuoteOpenDecl ← `(Lean.Parser.Command.openDecl| InternalLean.LFQuote)
   let quoteNs := mkIdent (lfQuoteNamespace target.theoryName)
   let quoteOpenDecl ← `(Lean.Parser.Command.openDecl| $quoteNs:ident)
-  let protectedNames := params.foldl (init := {}) fun names p =>
+  let protectedNames := params.foldl (init := collectLFQuoteBinderNames body.raw) fun names p =>
     names.insert p.name.eraseMacroScopes
   let body :=
     match ← liftCoreM <| getCheckedHLSignature? target.theoryName with
@@ -280,9 +308,10 @@ def elabAndReflectLFQuoteTerm (theoryName : Name) (body : TSyntax `term) :
   let builtinQuoteOpenDecl ← `(Lean.Parser.Command.openDecl| InternalLean.LFQuote)
   let quoteNs := mkIdent (lfQuoteNamespace theoryName)
   let quoteOpenDecl ← `(Lean.Parser.Command.openDecl| $quoteNs:ident)
+  let protectedNames := collectLFQuoteBinderNames body.raw
   let body :=
     match ← liftCoreM <| getCheckedHLSignature? theoryName with
-    | some sig => qualifyLFQuoteSourceIdents theoryName sig {} body
+    | some sig => qualifyLFQuoteSourceIdents theoryName sig protectedNames body
     | none => body.raw
   let body ← `(term| open $builtinQuoteOpenDecl in open $quoteOpenDecl in $(⟨body⟩):term)
   liftTermElabM do
