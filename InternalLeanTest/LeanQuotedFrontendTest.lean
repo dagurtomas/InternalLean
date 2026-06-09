@@ -128,6 +128,40 @@ admitted internal def LeanQuotedFrontendSmoke.admittedBinderBy (x : Obj) : Obj [
 
 end LeanQuotedFrontendSmoke
 
+declare_type_theory LeanQuotedTheoremSorrySmoke where
+  syntax_sort Obj : Type
+  lf_opaque o : Obj
+  judgment IsObj (x : Obj)
+
+namespace LeanQuotedTheoremSorrySmoke
+
+/--
+warning: internal theorem 'LeanQuotedTheoremSorrySmoke.a' was admitted by `sorry`; the statement
+was checked in theory 'LeanQuotedTheoremSorrySmoke', but the proof was not checked. Use
+`#lint_type_theory_sorries LeanQuotedTheoremSorrySmoke` to list current admissions.
+-/
+#guard_msgs (whitespace := lax) in
+internal_lean theorem a : IsObj o := sorry
+
+/--
+warning: internal theorem 'LeanQuotedTheoremSorrySmoke.b' was admitted by `sorry`; the statement
+was checked in theory 'LeanQuotedTheoremSorrySmoke', but the proof was not checked. Use
+`#lint_type_theory_sorries LeanQuotedTheoremSorrySmoke` to list current admissions.
+-/
+#guard_msgs (whitespace := lax) in
+internal_lean theorem b (x : Obj) : IsObj x := by
+  sorry
+
+/--
+warning: type theory 'LeanQuotedTheoremSorrySmoke' has 2 admitted internal declaration(s):
+admitted internal theorem LeanQuotedTheoremSorrySmoke.a : IsObj o [missing doc]
+admitted internal theorem LeanQuotedTheoremSorrySmoke.b (x : Obj) : IsObj x [missing doc]
+-/
+#guard_msgs (whitespace := lax) in
+#lint_type_theory_sorries LeanQuotedTheoremSorrySmoke
+
+end LeanQuotedTheoremSorrySmoke
+
 namespace LeanQuotedFrontendSmoke
 
 /--
