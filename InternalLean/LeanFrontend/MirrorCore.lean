@@ -419,7 +419,7 @@ where
     | e => do
         let eExpr ← lfMirrorExprWithLevels theoryName levelArgs locals e
         let actual ← inferType eExpr
-        unless ← isDefEq actual expected do
+        unless ← withTransparency .all <| isDefEq actual expected do
           throwError "Lean mirror translated LF term with type\n  {actual}\nexpected\n  {expected}"
         pure eExpr
 
@@ -487,7 +487,7 @@ partial def lfMirrorTermWithExpectedWithLevels (theoryName : Name) (levelArgs : 
       let expectedLean ← lfMirrorExprWithLevels theoryName levelArgs locals expected
       let eExpr ← lfMirrorExprWithLevels theoryName levelArgs locals e
       let actual ← inferType eExpr
-      unless ← isDefEq actual expectedLean do
+      unless ← withTransparency .all <| isDefEq actual expectedLean do
         throwError "Lean mirror translated LF term with type\n  {actual}\nexpected\n  \
           {expectedLean}"
       pure eExpr
@@ -571,7 +571,7 @@ def addLFMirrorDefinitionIfMissing (declName : Name) (levelParams : List Name)
   unless (← getEnv).contains declName do
     MetaM.run' do
       let actual ← inferType value
-      unless ← isDefEq actual type do
+      unless ← withTransparency .all <| isDefEq actual type do
         throwError "cannot add Lean mirror definition '{declName}': translated value has \
           type\n  {actual}\nexpected\n  {type}"
     let defVal : DefinitionVal := {
@@ -775,7 +775,7 @@ def checkWithLFMirrorOnlyInSignature (sig : HLSignature) (params : Array HLBindi
         let valueLean ← lfMirrorTermWithExpectedWithLevels sig.name
           (lfMirrorLevelArgsForSignature sig) locals typeExpr valueExpr
         let actual ← inferType valueLean
-        unless ← isDefEq actual typeLean do
+        unless ← withTransparency .all <| isDefEq actual typeLean do
           let msg :=
             m!"Lean mirror checker inferred\n  {actual}\nfor translated value, expected\n  \
               {typeLean}"
@@ -842,7 +842,7 @@ def checkLFMirrorSyntaxDefBodyInSignature (sig : HLSignature) (d : SyntaxDefDecl
       let valueLean ← lfMirrorExprWithLevels sig.name (lfMirrorLevelArgsForSignature sig) locals
         value
       let actual ← inferType valueLean
-      unless ← isDefEq actual expected do
+      unless ← withTransparency .all <| isDefEq actual expected do
         throwError "translated value has type\n  {actual}\nexpected\n  {expected}"
   catch ex =>
     let valueText := ObjExpr.toString value
