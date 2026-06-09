@@ -145,10 +145,10 @@ namespace InternalLean
 
 syntax (name := internalObjectGoalViewPretty) "object_goal" ident " : " ttExpr : «term»
 syntax (name := internalObjectGoalViewPrettyWithContext)
-  "object_goal_context" ident str " : " ttExpr : «term»
+  "object_goal_context" ident ppSpace str " : " ttExpr : «term»
 syntax (name := internalObjectGoalViewPrettyRaw) "object_goal_raw" ident " : " str : «term»
 syntax (name := internalObjectGoalViewPrettyWithContextRaw)
-  "object_goal_context_raw" ident str " : " str : «term»
+  "object_goal_context_raw" ident ppSpace str " : " str : «term»
 declare_syntax_cat internalHoverKind
 syntax "local_assumption" : internalHoverKind
 syntax "internal_definition" : internalHoverKind

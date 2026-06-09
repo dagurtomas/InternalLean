@@ -46,6 +46,12 @@ namespace InternalLeanTest.IntroUXTest
 #check (InternalLean.InternalHoverView.marker :
   InternalLean.InternalHoverView "IntroUXSmoke" "rule" "reach_refl" "(x : Node) ⇒ Reach x x")
 
+/-- info: InternalLean.InternalObjectGoalView.marker : object_goal_context IntroUXSmoke
+  "  x : Node" : Reach x x -/
+#guard_msgs (whitespace := lax) in
+#check (InternalLean.InternalObjectGoalView.marker :
+  InternalLean.InternalObjectGoalView "IntroUXSmoke" "  x : Node" "Reach x x")
+
 end InternalLeanTest.IntroUXTest
 
 declare_type_theory IntroUXSmoke where

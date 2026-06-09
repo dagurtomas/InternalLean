@@ -273,11 +273,201 @@ def elabLeanQuotedLFBody (target : InternalDefTarget) (params : Array HLBinding)
             (lfQuoteLeanTypeOfBinding p) fun fvar =>
           withLocals (i + 1) (locals.push (fvar.fvarId!, p.name.eraseMacroScopes))
       else
-        let value ← Term.elabTerm body (some expectedType)
-        Term.synthesizeSyntheticMVarsNoPostponing
-        let value ← instantiateMVars value
+        let value ← withEnableInfoTree false do
+          let value ← Term.elabTerm body (some expectedType)
+          Term.synthesizeSyntheticMVarsNoPostponing
+          instantiateMVars value
         reflectLFQuoteExpr target.theoryName locals value
     withLocals 0 #[]
+
+/-- Collect names from the binder-pattern side of a Lean typed `fun` binder. -/
+partial def collectLFQuoteFunBinderPatternNames (stx : Syntax) (acc : Array Name := #[]) :
+    Array Name :=
+  match stx with
+  | stx@(.ident ..) => acc.push stx.getId.eraseMacroScopes
+  | .node _ _ args => args.foldl (fun acc arg => collectLFQuoteFunBinderPatternNames arg acc) acc
+  | _ => acc
+
+/-- Collect the source names from a Lean `fun` binder list, preserving order. -/
+partial def collectLFQuoteFunBinderNamesOrdered (stx : Syntax) (acc : Array Name := #[]) :
+    Array Name :=
+  match stx with
+  | stx@(.ident ..) => acc.push stx.getId.eraseMacroScopes
+  | .node _ `Lean.Parser.Term.typeAscription args =>
+      match args[1]? with
+      | some pattern => collectLFQuoteFunBinderPatternNames pattern acc
+      | none => acc
+  | .node _ _ args => args.foldl (fun acc arg => collectLFQuoteFunBinderNamesOrdered arg acc) acc
+  | _ => acc
+
+/-- If `stx` is a Lean `fun`, return its binder names and body syntax. -/
+partial def leanQuotedFunView? (stx : Syntax) : Option (Array Name × Syntax) :=
+  match stx with
+  | .node _ `Lean.Parser.Term.fun args =>
+      match args[1]? with
+      | some body => leanQuotedFunView? body
+      | none => none
+  | .node _ `Lean.Parser.Term.basicFun args => do
+      let binders ← args[0]?
+      let body ← args[3]?
+      some (collectLFQuoteFunBinderNamesOrdered binders, body)
+  | _ => none
+
+/-- Save one Lean infoview goal marker over a quoted-LF body syntax node. -/
+def saveLeanQuotedLFGoalInfo (target : InternalDefTarget) (goal : InternalObjectGoal)
+    (stx : Syntax) : CommandElabM Unit := do
+  liftTermElabM do
+    let goalsBefore ← mkInternalObjectGoalMVars target #[goal]
+    let mctxBefore ← getMCtx
+    let mctxAfter ← getMCtx
+    pushInfoLeaf <| .ofTacticInfo {
+      elaborator := `InternalLean.leanQuotedLFBodyInfo
+      stx := mkNullNode #[stx]
+      mctxBefore := mctxBefore
+      goalsBefore := goalsBefore
+      mctxAfter := mctxAfter
+      goalsAfter := goalsBefore }
+
+/-- Collect direct tactic syntax nodes from a Lean tactic sequence. -/
+partial def collectLeanQuotedTacticSteps (stx : Syntax) : Array Syntax :=
+  match stx with
+  | .node _ `Lean.Parser.Term.byTactic args =>
+      match args[1]? with
+      | some seq => collectLeanQuotedTacticSteps seq
+      | none => #[]
+  | .node _ `Lean.Parser.Tactic.tacticSeq args =>
+      args.foldl (fun acc arg => acc ++ collectLeanQuotedTacticSteps arg) #[]
+  | .node _ `Lean.Parser.Tactic.tacticSeq1Indented args =>
+      args.foldl (fun acc arg =>
+        if arg.isMissing then acc
+        else if arg.isOfKind nullKind then acc ++ collectLeanQuotedTacticSteps arg
+        else acc.push arg) #[]
+  | .node _ `Lean.Parser.Tactic.tacticSeqBracketed args =>
+      args.foldl (fun acc arg => acc ++ collectLeanQuotedTacticSteps arg) #[]
+  | .node _ k args =>
+      if k == nullKind then
+        args.foldl (fun acc arg =>
+          if arg.isMissing then acc
+          else if arg.isOfKind nullKind then acc ++ collectLeanQuotedTacticSteps arg
+          else acc.push arg) #[]
+      else
+        #[]
+  | _ => #[]
+
+/-- Return the first identifier contained in a Lean tactic syntax node. -/
+def firstLeanQuotedTacticIdent? (stx : Syntax) : Option Name := Id.run do
+  for identStx in collectInternalIdentSyntaxes stx do
+    if let some n := internalSyntaxIdentName? identStx then
+      return some n
+  return none
+
+/-- Return every identifier contained in a Lean tactic syntax node. -/
+def leanQuotedTacticIdents (stx : Syntax) : Array Name := Id.run do
+  let mut out := #[]
+  for identStx in collectInternalIdentSyntaxes stx do
+    if let some n := internalSyntaxIdentName? identStx then
+      out := out.push n
+  return out
+
+/-- Diagnostic subgoals for Lean's ordinary `apply` over quote stubs.
+
+Unlike object tactic `apply`, Lean only sees explicit arguments to `LFQuoteTerm` stubs, so explicit
+source parameters become visible Lean subgoals even when the LF conclusion would determine them. -/
+def leanQuotedApplyDiagnosticSubgoals (target : InternalDefTarget) (sig : HLSignature)
+    (goal : InternalObjectGoal) (rawName : Name) : Except String (Array InternalObjectGoal) := do
+  let (_, innerGoal) := autoIntroGoal goal
+  let some cand := findInternalApplyCandidate? target sig rawName
+    | throw s!"quoted LF `apply {rawName}` failed: unknown rule or internal declaration"
+  let some subst0 := matchInternalCandidateConclusion? sig innerGoal.ctx cand.params
+      cand.conclusionExpr innerGoal.target
+    | throw s!"quoted LF `apply {rawName}` failed: conclusion does not match current goal"
+  let mut subst := subst0
+  let mut newGoals : Array InternalObjectGoal := #[]
+  for param in cand.params do
+    let key := param.name.eraseMacroScopes
+    let paramTy := substObjectVars subst param.typeExpr
+    if param.visibility == .explicit then
+      newGoals := newGoals.push { ctx := innerGoal.ctx, target := paramTy }
+      subst := subst.insert key (internalObjectGoalPlaceholder param.name)
+    else if (subst.find? key).isNone then
+      subst := subst.insert key (internalObjectGoalPlaceholder param.name)
+  for premiseTarget in cand.subgoalTargets do
+    newGoals := newGoals.push {
+      ctx := innerGoal.ctx
+      target := substObjectVars subst premiseTarget }
+  pure newGoals
+
+/-- Simulate one Lean tactic step as object-goal metadata for quoted-LF bodies. -/
+def stepLeanQuotedTacticInfoState (target : InternalDefTarget) (sig : HLSignature)
+    (goals : Array InternalObjectGoal) (stx : Syntax) :
+    Except String (Array InternalObjectGoal) := do
+  let some goal := goals[0]?
+    | throw "no remaining object goals"
+  let rest := goals.extract 1 goals.size
+  if stx.isOfKind `Lean.Parser.Tactic.exact then
+    pure rest
+  else if stx.isOfKind `Lean.Parser.Tactic.apply then
+    let some rawName := firstLeanQuotedTacticIdent? stx
+      | throw "quoted LF `apply` tactic has no identifier head"
+    let subgoals ← leanQuotedApplyDiagnosticSubgoals target sig goal rawName
+    pure (subgoals ++ rest)
+  else if stx.isOfKind `Lean.Parser.Tactic.intro then
+    let mut goal := goal
+    for n in leanQuotedTacticIdents stx do
+      goal ← introObjectGoal goal n
+    pure (#[goal] ++ rest)
+  else if stx.isOfKind `Lean.Parser.Tactic.assumption then
+    let (_, innerGoal) := autoIntroGoal goal
+    let some _ := findAssumption? sig #[] innerGoal.ctx innerGoal.target
+      | throw "quoted LF `assumption` tactic failed"
+    pure rest
+  else
+    pure goals
+
+/-- Build per-tactic LF goal snapshots for a Lean `by` proof in the quoted frontend. -/
+def collectLeanQuotedByTacticInfo (target : InternalDefTarget) (sig : HLSignature)
+    (goal : InternalObjectGoal) (stx : Syntax) : Array InternalObjectTacticInfo := Id.run do
+  let mut goals := #[goal]
+  let mut infos := #[]
+  for stepStx in collectLeanQuotedTacticSteps stx do
+    let before := goals
+    let after :=
+      match stepLeanQuotedTacticInfoState target sig goals stepStx with
+      | .ok goals => goals
+      | .error _ => goals
+    infos := infos.push { stx := stepStx, goalsBefore := before, goalsAfter := after }
+    goals := after
+  return infos
+
+/-- Follow leading Lean lambdas so the infoview inside the body shows LF locals. -/
+partial def saveLeanQuotedLFBodyGoalInfo (target : InternalDefTarget) (flatSig : HLSignature)
+    (goal : InternalObjectGoal) (stx : Syntax) : CommandElabM Unit := do
+  match leanQuotedFunView? stx with
+  | some (names, bodyStx) =>
+      let mut goal := goal
+      let mut ok := true
+      for n in names do
+        match introObjectGoal goal n with
+        | .ok next => goal := next
+        | .error _ => ok := false
+      if ok then
+        saveLeanQuotedLFBodyGoalInfo target flatSig goal bodyStx
+      else
+        saveLeanQuotedLFGoalInfo target goal stx
+        saveInternalObjectHoverInfo target flatSig {
+          stx := stx
+          goalsBefore := #[goal]
+          goalsAfter := #[goal] }
+  | none =>
+      let byInfos := collectLeanQuotedByTacticInfo target flatSig goal stx
+      if byInfos.isEmpty then
+        saveLeanQuotedLFGoalInfo target goal stx
+        saveInternalObjectHoverInfo target flatSig {
+          stx := stx
+          goalsBefore := #[goal]
+          goalsAfter := #[goal] }
+      else
+        saveInternalObjectTacticInfo target flatSig byInfos
 
 /-- Save Lean infoview and hover metadata for a Lean-quoted LF declaration body. -/
 def saveLeanQuotedLFBodyInfo (target : InternalDefTarget) (params : Array HLBinding)
@@ -286,21 +476,7 @@ def saveLeanQuotedLFBodyInfo (target : InternalDefTarget) (params : Array HLBind
   let some sig ← liftCoreM <| getTheory? target.theoryName
     | return ()
   let flatSig ← liftCoreM <| flattenSignature sig
-  liftTermElabM do
-    let goalsBefore ← mkInternalObjectGoalMVars target #[goal]
-    let mctxBefore ← getMCtx
-    let mctxAfter ← getMCtx
-    pushInfoLeaf <| .ofTacticInfo {
-      elaborator := `InternalLean.leanQuotedLFBodyInfo
-      stx := bodyStx
-      mctxBefore := mctxBefore
-      goalsBefore := goalsBefore
-      mctxAfter := mctxAfter
-      goalsAfter := [] }
-  saveInternalObjectHoverInfo target flatSig {
-    stx := bodyStx
-    goalsBefore := #[goal]
-    goalsAfter := #[] }
+  saveLeanQuotedLFBodyGoalInfo target flatSig goal bodyStx
 
 /-- Elaborate and reflect a quoted LF term for diagnostics. -/
 def elabAndReflectLFQuoteTerm (theoryName : Name) (body : TSyntax `term) :

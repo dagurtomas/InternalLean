@@ -96,7 +96,12 @@ internal_lean def o_ok : IsObj o := LFQuote.mkObj o
 internal_lean theorem o_ok_theorem : IsObj o := LFQuote.mkObj o
 internal_lean theorem local_ok_theorem (x : Obj) (h : IsObj x) : IsObj x := h
 internal_lean theorem byExactTheorem : IsObj o := by exact mkObj o
+internal_lean theorem byApplyTheorem : IsObj o := by
+  apply mkObj
+  exact o
 internal_lean theorem byExactLocal (x : Obj) (h : IsObj x) : IsObj x := by exact h
+internal_lean theorem byAssumptionLocal (x : Obj) (h : IsObj x) : IsObj x := by
+  assumption
 internal_raw def rawObj : Obj := o
 internal_raw theorem rawObjOk : IsObj o := mkObj o
 internal_raw def rawObjOkBy : IsObj o := by
@@ -152,7 +157,9 @@ internal_lean def admittedBinderBy (x : Obj) : Obj := by
 #check o_ok_theorem
 #check local_ok_theorem
 #check byExactTheorem
+#check byApplyTheorem
 #check byExactLocal
+#check byAssumptionLocal
 #check rawObj
 #check rawObjOk
 #check rawObjOkBy
