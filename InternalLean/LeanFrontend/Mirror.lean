@@ -117,7 +117,21 @@ where
           else
             lfMirrorExprWithLeanExpected theoryName locals expected body
         go 0 expected locals
-    | e => lfMirrorExpr theoryName locals e
+    | .pair a b => do
+        let expected ← whnf expected
+        let some (AExpr, betaExpr) := lfMirrorSigmaType? expected
+          | throwError "Lean mirror expected a Sigma type while translating pair, got\n  \
+              {expected}"
+        let aExpr ← lfMirrorExprWithLeanExpected theoryName locals AExpr a
+        let bExpected ← whnf (mkApp betaExpr aExpr)
+        let bExpr ← lfMirrorExprWithLeanExpected theoryName locals bExpected b
+        pure (mkApp4 (mkConst ``Sigma.mk [Level.zero, Level.zero]) AExpr betaExpr aExpr bExpr)
+    | e => do
+        let eExpr ← lfMirrorExpr theoryName locals e
+        let actual ← inferType eExpr
+        unless ← isDefEq actual expected do
+          throwError "Lean mirror translated LF term with type\n  {actual}\nexpected\n  {expected}"
+        pure eExpr
 
   /-- Translate the components of an LF Sigma type to Lean mirror `Sigma` components. -/
   lfMirrorSigmaParts (theoryName : Name) (locals : LFMirrorLocalMap) (binder? : Option Name)
@@ -177,7 +191,14 @@ partial def lfMirrorTermWithExpected (theoryName : Name) (locals : LFMirrorLocal
           pure (mkApp4 (mkConst ``Sigma.mk [Level.zero, Level.zero]) AExpr betaExpr aExpr bExpr)
       | _ => throwError "Lean mirror expected a Sigma type while translating pair, got \
           '{ObjExpr.toString expected}'"
-  | e => lfMirrorExpr theoryName locals e
+  | e => do
+      let expectedLean ← lfMirrorExpr theoryName locals expected
+      let eExpr ← lfMirrorExpr theoryName locals e
+      let actual ← inferType eExpr
+      unless ← isDefEq actual expectedLean do
+        throwError "Lean mirror translated LF term with type\n  {actual}\nexpected\n  \
+          {expectedLean}"
+      pure eExpr
 
 /-- Build a Lean mirror function type from LF parameters and a result expression. -/
 def lfMirrorForallType (theoryName : Name) (params : Array HLBinding)
@@ -249,6 +270,12 @@ def ensureLFMirrorForTheory (theoryName : Name) : CommandElabM Unit := do
     let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
       (fun _ => pure (lfMirrorLeanSortOfLevel d.resultLevel))
     addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) type
+  for d in checkedHL.syntaxAbbrevs do
+    let type ← liftTermElabM <| lfMirrorForallType theoryName d.params fun locals => do
+      inferType (← lfMirrorExpr theoryName locals d.value)
+    let value ← liftTermElabM <| lfMirrorLambdaValue theoryName d.params
+      (fun locals => lfMirrorExpr theoryName locals d.value)
+    addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) type value
   for d in checkedHL.syntaxDefs do
     let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
       (fun _ => pure (lfMirrorLeanSortOfLevel d.resultLevel))
@@ -263,6 +290,12 @@ def ensureLFMirrorForTheory (theoryName : Name) : CommandElabM Unit := do
     let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
       (fun _ => pure (mkSort (Level.succ .zero)))
     addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) type
+  for d in checkedHL.judgmentAbbrevs do
+    let type ← liftTermElabM <| lfMirrorForallType theoryName d.params fun locals => do
+      inferType (← lfMirrorExpr theoryName locals d.value)
+    let value ← liftTermElabM <| lfMirrorLambdaValue theoryName d.params
+      (fun locals => lfMirrorExpr theoryName locals d.value)
+    addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) type value
   for d in checkedHL.lfOpaqueConsts do
     if let some typeExpr := d.typeExpr? then
       let type ← liftTermElabM <| lfMirrorForallType theoryName d.params

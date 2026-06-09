@@ -44,9 +44,9 @@ internal_mirror def packageSnd : Obj := snd package
 end LeanMirrorSigmaSmoke
 
 /--
-error: Lean mirror checker inferred
+error: Lean mirror translated LF term with type
   LeanMirrorSigmaSmoke.LFMirror.Obj
-for translated value, expected
+expected
   (_ : LeanMirrorSigmaSmoke.LFMirror.Obj) × LeanMirrorSigmaSmoke.LFMirror.Obj
 -/
 #guard_msgs (whitespace := lax) in
@@ -63,12 +63,53 @@ declare_type_theory LeanMirrorDependentSmoke where
     premise h : Good x
     conclusion : Good x
   lf_opaque witness (x : Obj) : Fiber x
+  lf_opaque usePack (p : Σ x : Obj, Fiber x) : Obj
 
 #check_lf_mirror LeanMirrorDependentSmoke : Good o := o_good
 #compare_lf_mirror LeanMirrorDependentSmoke : Good o := keep_good o o_good
 #check_lf_mirror LeanMirrorDependentSmoke : Fiber o := witness o
+#compare_lf_mirror LeanMirrorDependentSmoke : Obj := usePack ⟨o, witness o⟩
 #check (LeanMirrorDependentSmoke.LFMirror.Good :
   LeanMirrorDependentSmoke.LFMirror.Obj → Type)
+
+/--
+error: Lean mirror translated LF term with type
+  LeanMirrorDependentSmoke.LFMirror.Obj
+expected
+  LeanMirrorDependentSmoke.LFMirror.Fiber LeanMirrorDependentSmoke.LFMirror.o
+-/
+#guard_msgs (whitespace := lax) in
+#check_lf_mirror LeanMirrorDependentSmoke : Σ x : Obj, Fiber x := ⟨o, o⟩
+
+/--
+error: Lean mirror translated LF term with type
+  LeanMirrorDependentSmoke.LFMirror.Obj
+expected
+  LeanMirrorDependentSmoke.LFMirror.Fiber LeanMirrorDependentSmoke.LFMirror.o
+-/
+#guard_msgs (whitespace := lax) in
+#check_lf_mirror LeanMirrorDependentSmoke : Obj := usePack ⟨o, o⟩
+
+/-- Syntax and judgment abbreviations mirror as transparent definitions. -/
+declare_type_theory LeanMirrorAbbrevSmoke where
+  syntax_sort Obj : Type
+  lf_opaque o : Obj
+  syntax_sort Fiber (x : Obj) : Type
+  lf_opaque witness (x : Obj) : Fiber x
+  syntax_abbrev ObjAlias := Obj
+  syntax_abbrev FiberAlias (x : Obj) := Fiber x
+  judgment Good (x : Obj)
+  judgment_abbrev GoodAlias (x : Obj) := Good x
+  rule good_o : Good o
+
+#check_lf_mirror LeanMirrorAbbrevSmoke : ObjAlias := o
+#check_lf_mirror LeanMirrorAbbrevSmoke : FiberAlias o := witness o
+#compare_lf_mirror LeanMirrorAbbrevSmoke : GoodAlias o := good_o
+#check (LeanMirrorAbbrevSmoke.LFMirror.ObjAlias : Type)
+#check (LeanMirrorAbbrevSmoke.LFMirror.FiberAlias :
+  LeanMirrorAbbrevSmoke.LFMirror.Obj → Type)
+#check (LeanMirrorAbbrevSmoke.LFMirror.GoodAlias :
+  LeanMirrorAbbrevSmoke.LFMirror.Obj → Type)
 
 /-- Checked definitions are transparent to the mirror; admissions remain opaque. -/
 declare_type_theory LeanMirrorTransparencySmoke where
@@ -84,9 +125,9 @@ declare_type_theory LeanMirrorTransparencySmoke where
 #check_lf_mirror LeanMirrorTransparencySmoke : Good objectAlias := good_o
 
 /--
-error: Lean mirror checker inferred
+error: Lean mirror translated LF term with type
   LeanMirrorTransparencySmoke.LFMirror.Obj
-for translated value, expected
+expected
   LeanMirrorTransparencySmoke.LFMirror.AdmittedAlias
 -/
 #guard_msgs (whitespace := lax) in
