@@ -112,8 +112,10 @@ end LeanQuotedFrontendSmoke
 namespace LeanQuotedFrontendSmoke
 
 /--
-error: Lean-elaborated LF term uses non-LF constant 'InternalLean.LFQuoteTerm.mk'. Only generated
-stubs in namespace 'LeanQuotedFrontendSmoke.LFQuote' are accepted by this prototype.
+error: Lean-elaborated LF term uses Lean constant 'InternalLean.LFQuoteTerm.mk', which is not
+part of the quoted LF signature for type theory 'LeanQuotedFrontendSmoke'. Use a generated
+declaration in namespace 'LeanQuotedFrontendSmoke.LFQuote', or an LF declaration name available in
+the checked theory.
 -/
 #guard_msgs (whitespace := lax) in
 internal_lean def bad : Obj := InternalLean.LFQuoteTerm.mk

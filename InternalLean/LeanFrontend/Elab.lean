@@ -42,23 +42,89 @@ def lfQuoteSourceNameOfConst? (theoryName : Name) (constName : Name) : Option Na
   else
     none
 
+/-- Number of source LF parameters expected by a quoted declaration head. -/
+def lfQuoteSourceArity? (sig : HLSignature) (sourceName : Name) : Option Nat :=
+  let n := sourceName.eraseMacroScopes
+  if let some d := sig.syntaxSorts.find? (fun d => d.name == n) then
+    some d.params.size
+  else if let some d := sig.syntaxAbbrevs.find? (fun d => d.name == n) then
+    some d.params.size
+  else if let some d := sig.syntaxDefs.find? (fun d => d.name == n) then
+    some d.params.size
+  else if let some d := sig.judgmentAbbrevs.find? (fun d => d.name == n) then
+    some d.params.size
+  else if let some d := sig.judgments.find? (fun d => d.name == n) then
+    some d.params.size
+  else if let some d := sig.rules.find? (fun d => d.name == n) then
+    some (lfQuoteParamsOfRule d).size
+  else if let some d := sig.lfOpaqueConsts.find? (fun d => d.name == n) then
+    some (lfQuoteParamsOfLFOpaqueConst d).size
+  else if sig.lfObjectDefs.any (fun d => d.name == n) then
+    some 0
+  else if let some d := sig.lfJudgmentTheorems.find? (fun d => d.name == n) then
+    some d.binders.size
+  else
+    none
+
+/-- Resolve a Lean constant used in a quoted LF body to an LF source name and arity. -/
+def lfQuoteSourceNameAndArityOfConst? (theoryName : Name) (constName : Name) : CoreM
+    (Option (Name × Nat × Bool)) := do
+  let some checkedHL ← getCheckedHLSignature? theoryName
+    | return none
+  if let some localName := lfQuoteSourceNameOfConst? theoryName constName then
+    return some (localName, (lfQuoteSourceArity? checkedHL localName).getD 0, false)
+  if constName.isAnonymous then
+    return none
+  let candidate := Name.mkSimple constName.getString!
+  match lfQuoteSourceArity? checkedHL candidate with
+  | some arity => return some (candidate, arity, true)
+  | none => return none
+
+/-- Drop Lean-only arguments from a fallback application that resolved to an LF head. -/
+def lfQuoteArgsForSourceArity (constName : Name) (arity : Nat) (args : Array Expr) : Array Expr :=
+  let args :=
+    if constName == ``id && 0 < args.size then
+      args.extract 1 args.size
+    else
+      args
+  if arity < args.size then
+    args.extract (args.size - arity) args.size
+  else
+    args
+
 /-- Reflect one Lean expression elaborated against quoted-LF stubs back to an `ObjExpr`. -/
 partial def reflectLFQuoteExpr (theoryName : Name) (locals : LFQuoteLocalMap) :
     Expr → MetaM ObjExpr
   | .mdata _ e => reflectLFQuoteExpr theoryName locals e
+  | e@(.app ..) => do
+      match e.getAppFn with
+      | .const n _ =>
+          match ← lfQuoteSourceNameAndArityOfConst? theoryName n with
+          | some (localName, arity, _) =>
+              let args := lfQuoteArgsForSourceArity n arity e.getAppArgs
+              let mut out : ObjExpr := .ident localName
+              for arg in args do
+                out := .app out (← reflectLFQuoteExpr theoryName locals arg)
+              pure out
+          | none =>
+              pure (.app (← reflectLFQuoteExpr theoryName locals e.appFn!)
+                (← reflectLFQuoteExpr theoryName locals e.appArg!))
+      | _ =>
+          pure (.app (← reflectLFQuoteExpr theoryName locals e.appFn!)
+            (← reflectLFQuoteExpr theoryName locals e.appArg!))
   | .const n _ => do
-      match lfQuoteSourceNameOfConst? theoryName n with
-      | some localName => pure (.ident localName)
-      | none => throwError "Lean-elaborated LF term uses non-LF constant '{n}'. Only generated \
-          stubs in namespace '{lfQuoteNamespace theoryName}' are accepted by this prototype."
+      match ← lfQuoteSourceNameAndArityOfConst? theoryName n with
+      | some (localName, _, _) =>
+          pure (.ident localName)
+      | none => throwError "Lean-elaborated LF term uses Lean constant '{n}', which is not part \
+          of the quoted LF signature for type theory '{theoryName}'. Use a generated declaration \
+          in namespace '{lfQuoteNamespace theoryName}', or an LF declaration name available in the \
+          checked theory."
   | .fvar fvarId => do
       match findLFQuoteLocal? locals fvarId with
       | some localName => pure (.ident localName)
       | none => throwError "Lean-elaborated LF term uses local variable '{mkFVar fvarId}' that \
           was not introduced by the InternalLean declaration frontend"
-  | .app f a => do
-      pure (.app (← reflectLFQuoteExpr theoryName locals f)
-        (← reflectLFQuoteExpr theoryName locals a))
   | e@(.lam ..) => do
       lambdaTelescope e fun xs body => do
         let mut locals := locals
