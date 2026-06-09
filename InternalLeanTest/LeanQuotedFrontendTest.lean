@@ -59,6 +59,10 @@ internal_lean def dAlias : Obj := LFQuote.d
 internal_lean def idObj : Obj → Obj := fun x => x
 internal_lean def applyLocal (g : Obj → Obj) (x : Obj) : Obj := g x
 internal_lean def o_ok : IsObj o := LFQuote.mkObj o
+internal_raw def rawObj : Obj := o
+internal_raw theorem rawObjOk : IsObj o := mkObj o
+internal_raw def rawObjOkBy : IsObj o := by
+  exact mkObj o
 /--
 warning: internal declaration 'LeanQuotedFrontendSmoke.admittedObj' was admitted by `sorry`; the
 annotation was checked in theory 'LeanQuotedFrontendSmoke', but the body was not checked. Use
@@ -100,6 +104,9 @@ internal_lean def admittedBinderBy (x : Obj) : Obj := by
 #check idObj
 #check applyLocal
 #check o_ok
+#check rawObj
+#check rawObjOk
+#check rawObjOkBy
 #check admittedObj
 #check admittedObjBy
 #check admittedBinder
