@@ -28,16 +28,65 @@ register_option internalLean.mirrorBackend.compareWithLF : Bool := {
   descr := "after a successful experimental Lean mirror check, also run the ordinary LF checker"
 }
 
+/-- Translate an object-level universe expression to the corresponding Lean universe. -/
+def lfMirrorLeanLevelOfLevelExpr (u : LevelExpr) : Level :=
+  LevelExpr.toLeanLevel u
+
 /-- Convert an object-level universe to the corresponding Lean sort for the mirror backend. -/
 def lfMirrorLeanSortOfLevel (u : LevelExpr) : Expr :=
-  -- Prototype: collapse object-level universe expressions to Lean `Type`.  This keeps the first
-  -- mirror backend fragment focused on structural checking.  Universe-accurate mirroring belongs
-  -- in a later soundness pass.
-  let _ := u
-  mkSort (Level.succ .zero)
+  mkSort (Level.succ (lfMirrorLeanLevelOfLevelExpr u))
+
+/-- Lean universe parameters used by mirror declarations for one checked theory. -/
+def lfMirrorLevelParamNamesForSignature (sig : HLSignature) : List Name := Id.run do
+  let mut seen : NameSet := {}
+  let mut out : Array Name := #[]
+  for u in sig.levelParams do
+    let u := u.eraseMacroScopes
+    unless seen.contains u do
+      seen := seen.insert u
+      out := out.push u
+  return out.toList
+
+/-- Lean universe arguments used when referring to mirror declarations for one theory. -/
+def lfMirrorLevelArgsForTheory (theoryName : Name) : CoreM (List Level) := do
+  let some checkedHL ← getCheckedHLSignature? theoryName
+    | throwError "no checked high-level signature stored for type theory '{theoryName}'"
+  pure <| (lfMirrorLevelParamNamesForSignature checkedHL).map Level.param
+
+/-- Lean constant reference for a generated mirror declaration. -/
+def mkLFMirrorConst (theoryName sourceName : Name) : MetaM Expr := do
+  pure <| mkConst (lfMirrorDeclName theoryName sourceName) (← lfMirrorLevelArgsForTheory theoryName)
 
 /-- Local LF-to-Lean mirror translation environment. -/
 abbrev LFMirrorLocalMap := NameMap Expr
+
+/-- Components of a translated Lean `Sigma` type, including universe levels. -/
+structure LFMirrorSigmaLeanParts where
+  /-- Universe level of the first component type. -/
+  fstLevel : Level
+  /-- Universe level of the second component type. -/
+  sndLevel : Level
+  /-- First component type. -/
+  fstType : Expr
+  /-- Second component type family. -/
+  sndType : Expr
+
+/-- Return the Lean universe level of a translated type expression. -/
+def lfMirrorTypeUniverseLevel (typeExpr : Expr) : MetaM Level := do
+  match ← whnf (← inferType typeExpr) with
+  | .sort (.succ u) => pure u
+  | .sort .zero => pure .zero
+  | type => throwError "Lean mirror expected a type expression, got type\n  {type}"
+
+/-- Recognize a Lean mirror Sigma type. -/
+def lfMirrorSigmaType? (e : Expr) : Option LFMirrorSigmaLeanParts :=
+  match e.getAppFn, e.getAppArgs with
+  | .const n [u, v], #[AExpr, betaExpr] =>
+      if n == ``Sigma then
+        some { fstLevel := u, sndLevel := v, fstType := AExpr, sndType := betaExpr }
+      else
+        none
+  | _, _ => none
 
 /-- Translate one LF expression to the experimental Lean mirror expression. -/
 partial def lfMirrorExpr (theoryName : Name) (locals : LFMirrorLocalMap) : ObjExpr → MetaM Expr
@@ -45,7 +94,7 @@ partial def lfMirrorExpr (theoryName : Name) (locals : LFMirrorLocalMap) : ObjEx
       if let some e := locals.find? n.eraseMacroScopes then
         pure e
       else
-        pure (mkConst (lfMirrorDeclName theoryName n))
+        mkLFMirrorConst theoryName n
   | .sort => pure (lfMirrorLeanSortOfLevel .zero)
   | .univ u => pure (lfMirrorLeanSortOfLevel u)
   | .app f a => do
@@ -67,8 +116,9 @@ partial def lfMirrorExpr (theoryName : Name) (locals : LFMirrorLocalMap) : ObjEx
         let BExpr ← lfMirrorExpr theoryName locals B
         mkForallFVars #[x] BExpr
   | .sigma binder? A B => do
-      let (AExpr, betaExpr) ← lfMirrorSigmaParts theoryName locals binder? A B
-      pure (mkApp2 (mkConst ``Sigma [Level.zero, Level.zero]) AExpr betaExpr)
+      let parts ← lfMirrorSigmaParts theoryName locals binder? A B
+      pure (mkApp2 (mkConst ``Sigma [parts.fstLevel, parts.sndLevel]) parts.fstType
+        parts.sndType)
   | .pair a b => do
       -- Without an expected type, infer a nondependent Sigma package from component mirror types.
       -- Dependent pairs should use `lfMirrorTermWithExpected`, which has the LF Sigma type.
@@ -76,20 +126,24 @@ partial def lfMirrorExpr (theoryName : Name) (locals : LFMirrorLocalMap) : ObjEx
       let bExpr ← lfMirrorExpr theoryName locals b
       let AExpr ← inferType aExpr
       let BExpr ← inferType bExpr
+      let u ← lfMirrorTypeUniverseLevel AExpr
+      let v ← lfMirrorTypeUniverseLevel BExpr
       let betaExpr ← withLocalDecl `_fst .default AExpr fun x => mkLambdaFVars #[x] BExpr
-      pure (mkApp4 (mkConst ``Sigma.mk [Level.zero, Level.zero]) AExpr betaExpr aExpr bExpr)
+      pure (mkApp4 (mkConst ``Sigma.mk [u, v]) AExpr betaExpr aExpr bExpr)
   | .fst e => do
       let eExpr ← lfMirrorExpr theoryName locals e
       let eType ← whnf (← inferType eExpr)
-      let some (AExpr, betaExpr) := lfMirrorSigmaType? eType
+      let some parts := lfMirrorSigmaType? eType
         | throwError "cannot translate LF fst; mirror term does not have Sigma type:\n  {eType}"
-      pure (mkApp3 (mkConst ``Sigma.fst [Level.zero, Level.zero]) AExpr betaExpr eExpr)
+      pure (mkApp3 (mkConst ``Sigma.fst [parts.fstLevel, parts.sndLevel]) parts.fstType
+        parts.sndType eExpr)
   | .snd e => do
       let eExpr ← lfMirrorExpr theoryName locals e
       let eType ← whnf (← inferType eExpr)
-      let some (AExpr, betaExpr) := lfMirrorSigmaType? eType
+      let some parts := lfMirrorSigmaType? eType
         | throwError "cannot translate LF snd; mirror term does not have Sigma type:\n  {eType}"
-      pure (mkApp3 (mkConst ``Sigma.snd [Level.zero, Level.zero]) AExpr betaExpr eExpr)
+      pure (mkApp3 (mkConst ``Sigma.snd [parts.fstLevel, parts.sndLevel]) parts.fstType
+        parts.sndType eExpr)
   | .lam xs _body => do
       throwError "cannot translate LF lambda with binders {xs.toList} to the Lean mirror without \
         an expected function type"
@@ -119,13 +173,14 @@ where
         go 0 expected locals
     | .pair a b => do
         let expected ← whnf expected
-        let some (AExpr, betaExpr) := lfMirrorSigmaType? expected
+        let some parts := lfMirrorSigmaType? expected
           | throwError "Lean mirror expected a Sigma type while translating pair, got\n  \
               {expected}"
-        let aExpr ← lfMirrorExprWithLeanExpected theoryName locals AExpr a
-        let bExpected ← whnf (mkApp betaExpr aExpr)
+        let aExpr ← lfMirrorExprWithLeanExpected theoryName locals parts.fstType a
+        let bExpected ← whnf (mkApp parts.sndType aExpr)
         let bExpr ← lfMirrorExprWithLeanExpected theoryName locals bExpected b
-        pure (mkApp4 (mkConst ``Sigma.mk [Level.zero, Level.zero]) AExpr betaExpr aExpr bExpr)
+        pure (mkApp4 (mkConst ``Sigma.mk [parts.fstLevel, parts.sndLevel]) parts.fstType
+          parts.sndType aExpr bExpr)
     | e => do
         let eExpr ← lfMirrorExpr theoryName locals e
         let actual ← inferType eExpr
@@ -135,8 +190,9 @@ where
 
   /-- Translate the components of an LF Sigma type to Lean mirror `Sigma` components. -/
   lfMirrorSigmaParts (theoryName : Name) (locals : LFMirrorLocalMap) (binder? : Option Name)
-      (A B : ObjExpr) : MetaM (Expr × Expr) := do
+      (A B : ObjExpr) : MetaM LFMirrorSigmaLeanParts := do
     let AExpr ← lfMirrorExpr theoryName locals A
+    let u ← lfMirrorTypeUniverseLevel AExpr
     let binderName := (binder?.getD `_fst).eraseMacroScopes
     withLocalDecl binderName .default AExpr fun x => do
       let locals :=
@@ -144,15 +200,9 @@ where
         | some n => locals.insert n.eraseMacroScopes x
         | none => locals
       let BExpr ← lfMirrorExpr theoryName locals B
+      let v ← lfMirrorTypeUniverseLevel BExpr
       let beta ← mkLambdaFVars #[x] BExpr
-      pure (AExpr, beta)
-
-  /-- Recognize a Lean mirror Sigma type. -/
-  lfMirrorSigmaType? (e : Expr) : Option (Expr × Expr) :=
-    match e.getAppFnArgs with
-    | (n, #[AExpr, betaExpr]) =>
-        if n == ``Sigma then some (AExpr, betaExpr) else none
-    | _ => none
+      pure { fstLevel := u, sndLevel := v, fstType := AExpr, sndType := beta }
 
 /-- Translate an LF term to the Lean mirror while using an expected LF type when needed. -/
 partial def lfMirrorTermWithExpected (theoryName : Name) (locals : LFMirrorLocalMap)
@@ -181,14 +231,15 @@ partial def lfMirrorTermWithExpected (theoryName : Name) (locals : LFMirrorLocal
   | .pair a b => do
       match expected with
       | .sigma binder? A B => do
-          let (AExpr, betaExpr) ← lfMirrorExpr.lfMirrorSigmaParts theoryName locals binder? A B
+          let parts ← lfMirrorExpr.lfMirrorSigmaParts theoryName locals binder? A B
           let aExpr ← lfMirrorTermWithExpected theoryName locals A a
           let bExpected :=
             match binder? with
             | some n => substSingleLFParam n (eraseObjExprScopes a) B
             | none => B
           let bExpr ← lfMirrorTermWithExpected theoryName locals bExpected b
-          pure (mkApp4 (mkConst ``Sigma.mk [Level.zero, Level.zero]) AExpr betaExpr aExpr bExpr)
+          pure (mkApp4 (mkConst ``Sigma.mk [parts.fstLevel, parts.sndLevel]) parts.fstType
+            parts.sndType aExpr bExpr)
       | _ => throwError "Lean mirror expected a Sigma type while translating pair, got \
           '{ObjExpr.toString expected}'"
   | e => do
@@ -240,17 +291,19 @@ def withLFMirrorLocals {α : Type} (theoryName : Name) (params : Array HLBinding
   go 0 {}
 
 /-- Add one experimental Lean mirror axiom if it is not already present. -/
-def addLFMirrorAxiomIfMissing (declName : Name) (type : Expr) : CommandElabM Unit := do
+def addLFMirrorAxiomIfMissing (declName : Name) (levelParams : List Name) (type : Expr) :
+    CommandElabM Unit := do
   unless (← getEnv).contains declName do
     liftCoreM do
       addAndCompile (Declaration.axiomDecl {
         name := declName
-        levelParams := []
+        levelParams := levelParams
         type := type
         isUnsafe := false })
 
 /-- Add one experimental Lean mirror definition if it is not already present. -/
-def addLFMirrorDefinitionIfMissing (declName : Name) (type value : Expr) : CommandElabM Unit := do
+def addLFMirrorDefinitionIfMissing (declName : Name) (levelParams : List Name)
+    (type value : Expr) : CommandElabM Unit := do
   unless (← getEnv).contains declName do
     liftTermElabM do
       let actual ← inferType value
@@ -260,7 +313,7 @@ def addLFMirrorDefinitionIfMissing (declName : Name) (type value : Expr) : Comma
     liftCoreM do
       let defVal : DefinitionVal := {
         name := declName
-        levelParams := []
+        levelParams := levelParams
         type := type
         value := value
         hints := ReducibilityHints.abbrev
@@ -271,16 +324,17 @@ def addLFMirrorDefinitionIfMissing (declName : Name) (type value : Expr) : Comma
 def ensureLFMirrorForTheory (theoryName : Name) : CommandElabM Unit := do
   let some checkedHL ← liftCoreM <| getCheckedHLSignature? theoryName
     | throwError "no checked high-level signature stored for type theory '{theoryName}'"
+  let levelParams := lfMirrorLevelParamNamesForSignature checkedHL
   for d in checkedHL.syntaxSorts do
     let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
       (fun _ => pure (lfMirrorLeanSortOfLevel d.resultLevel))
-    addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) type
+    addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
   for d in checkedHL.syntaxAbbrevs do
     let type ← liftTermElabM <| lfMirrorForallType theoryName d.params fun locals => do
       inferType (← lfMirrorExpr theoryName locals d.value)
     let value ← liftTermElabM <| lfMirrorLambdaValue theoryName d.params
       (fun locals => lfMirrorExpr theoryName locals d.value)
-    addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) type value
+    addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
   for d in checkedHL.syntaxDefs do
     let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
       (fun _ => pure (lfMirrorLeanSortOfLevel d.resultLevel))
@@ -288,39 +342,39 @@ def ensureLFMirrorForTheory (theoryName : Name) : CommandElabM Unit := do
     | some value =>
         let value ← liftTermElabM <| lfMirrorLambdaValue theoryName d.params
           (fun locals => lfMirrorExpr theoryName locals value)
-        addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) type value
+        addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
     | none =>
-        addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) type
+        addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
   for d in checkedHL.judgments do
     let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
       (fun _ => pure (mkSort (Level.succ .zero)))
-    addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) type
+    addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
   for d in checkedHL.judgmentAbbrevs do
     let type ← liftTermElabM <| lfMirrorForallType theoryName d.params fun locals => do
       inferType (← lfMirrorExpr theoryName locals d.value)
     let value ← liftTermElabM <| lfMirrorLambdaValue theoryName d.params
       (fun locals => lfMirrorExpr theoryName locals d.value)
-    addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) type value
+    addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
   for d in checkedHL.lfOpaqueConsts do
     if let some typeExpr := d.typeExpr? then
       let type ← liftTermElabM <| lfMirrorForallType theoryName d.params
         (fun locals => lfMirrorExpr theoryName locals typeExpr)
-      addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) type
+      addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
   for d in checkedHL.rules do
     let type ← liftTermElabM do
       let premiseParams := d.premises.map fun p =>
         ({ name := p.name, typeExpr := p.judgmentExpr, visibility := .explicit } : HLBinding)
       lfMirrorForallType theoryName (d.params ++ premiseParams)
         (fun locals => lfMirrorExpr theoryName locals d.conclusionExpr)
-    addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) type
+    addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
   for d in checkedHL.lfObjectDefs do
     let type ← liftTermElabM <| lfMirrorExpr theoryName {} d.typeExpr
     let value ← liftTermElabM <| lfMirrorTermWithExpected theoryName {} d.typeExpr d.value
-    addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) type value
+    addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
   for d in checkedHL.lfJudgmentTheorems do
     let type ← liftTermElabM <| lfMirrorForallType theoryName d.binders
       (fun locals => lfMirrorExpr theoryName locals d.judgmentExpr)
-    addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) type
+    addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
 
 /-- Check one staged LF object definition with the ordinary LF checker without registering it. -/
 def checkLFObjectDefForMirrorCompare (cache : CompiledLFCheckCache) (d : LFObjectDefDecl) :

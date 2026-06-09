@@ -138,6 +138,43 @@ declare_type_theory LeanMirrorAbbrevSmoke where
 #check (LeanMirrorAbbrevSmoke.LFMirror.GoodAlias :
   LeanMirrorAbbrevSmoke.LFMirror.Obj → Type)
 
+/-- Universe-polymorphic syntax sorts mirror with Lean universe parameters. -/
+declare_type_theory LeanMirrorUniverseSmoke{u, v} where
+  syntax_sort Obj : Type u
+  lf_opaque o : Obj
+  syntax_sort Code (A : Type u) : Type v
+  lf_opaque codeObj : Code Obj
+  syntax_sort Fiber (x : Obj) : Type v
+  lf_opaque witness : Fiber o
+
+#check_lf_mirror LeanMirrorUniverseSmoke : Type u := Obj
+#check_lf_mirror LeanMirrorUniverseSmoke : Code Obj := codeObj
+#check_lf_mirror LeanMirrorUniverseSmoke : Σ x : Obj, Fiber x := ⟨o, witness⟩
+#check_lf_mirror LeanMirrorUniverseSmoke : Obj := fst ⟨o, witness⟩
+#check_lf_mirror LeanMirrorUniverseSmoke : Fiber o := snd ⟨o, witness⟩
+
+universe u v
+#check (LeanMirrorUniverseSmoke.LFMirror.Obj.{u, v} : Type u)
+#check (LeanMirrorUniverseSmoke.LFMirror.Code.{u, v} : Type u → Type v)
+
+/--
+error: Lean mirror backend rejected term in type theory 'LeanMirrorUniverseSmoke'.
+
+Internal type:
+  Type
+
+Internal value:
+  Obj
+
+Reason:
+Lean mirror translated LF term with type
+  Type u
+expected
+  Type
+-/
+#guard_msgs (whitespace := lax) in
+#check_lf_mirror LeanMirrorUniverseSmoke : Type := Obj
+
 /-- Checked definitions are transparent to the mirror; admissions remain opaque. -/
 declare_type_theory LeanMirrorTransparencySmoke where
   syntax_sort Obj : Type
