@@ -102,17 +102,11 @@ declare_type_theory LeanMirrorSigmaEtaPitfall where
 #check_lf_mirror LeanMirrorSigmaEtaPitfall : GoodPack ⟨fst p, snd p⟩ := good_p
 
 /--
-error: Lean mirror accepted a term in type theory 'LeanMirrorSigmaEtaPitfall', but the
-ordinary LF checker rejected it.
+error: Lean mirror accepted a term in type theory 'LeanMirrorSigmaEtaPitfall',
+but the ordinary LF checker rejected it.
 
-First LF path:
-lf_def '_internalLeanMirrorCompare' in type theory 'LeanMirrorSigmaEtaPitfall' has type
-headed by judgment 'GoodPack', expected an LF type expression
-
-Second LF path:
-judgment_theorem '_internalLeanMirrorCompare' in type theory 'LeanMirrorSigmaEtaPitfall'
-applies rule 'good_p' but its statement is 'GoodPack (⟨fst p, snd p⟩)', expected rule
-conclusion 'GoodPack p'
+Recognized mirror/LF conversion gap: the translated Lean term uses Sigma eta.
+The current LF conversion policy does not identify `⟨fst p, snd p⟩` with `p`.
 -/
 #guard_msgs (whitespace := lax) in
 set_option internalLean.mirrorBackend.compareWithLF true in
@@ -130,16 +124,11 @@ declare_type_theory LeanMirrorFunctionEtaPitfall where
   fun g => good g
 
 /--
-error: Lean mirror accepted a term in type theory 'LeanMirrorFunctionEtaPitfall', but the
-ordinary LF checker rejected it.
+error: Lean mirror accepted a term in type theory 'LeanMirrorFunctionEtaPitfall',
+but the ordinary LF checker rejected it.
 
-First LF path:
-lf_def '_internalLeanMirrorCompare' in type theory 'LeanMirrorFunctionEtaPitfall' has type
-headed by judgment 'GoodFun', expected an LF type expression
-
-Second LF path:
-rule '_internalLeanMirrorCompare' in type theory 'LeanMirrorFunctionEtaPitfall' has statement not
-headed by a judgment identifier: (g : Obj → Obj) → GoodFun (fun x => g x)
+Recognized mirror/LF conversion gap: the translated Lean term uses function eta.
+The current LF conversion policy does not identify `fun x => f x` with `f`.
 -/
 #guard_msgs (whitespace := lax) in
 set_option internalLean.mirrorBackend.compareWithLF true in

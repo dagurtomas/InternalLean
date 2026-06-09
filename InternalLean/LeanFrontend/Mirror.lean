@@ -335,6 +335,46 @@ def checkLFJudgmentTheoremForMirrorCompare (cache : CompiledLFCheckCache)
   let checkedTheoremRaw ← checkOneLFJudgmentTheoremArtifactWithCache cache tForCheck
   discard <| validateIncrementalLFTheoremKernelReplayWithCache cache checkedTheoremRaw
 
+/-- Detect an LF expression shape that Lean accepts by Sigma eta. -/
+partial def lfMirrorContainsSigmaEtaShape : ObjExpr → Bool
+  | .pair (.fst p) (.snd q) => lfExprAlphaEq p q
+  | .app f a => lfMirrorContainsSigmaEtaShape f || lfMirrorContainsSigmaEtaShape a
+  | .arrow _ A B | .funArrow _ A B | .sigma _ A B =>
+      lfMirrorContainsSigmaEtaShape A || lfMirrorContainsSigmaEtaShape B
+  | .pair a b => lfMirrorContainsSigmaEtaShape a || lfMirrorContainsSigmaEtaShape b
+  | .fst e | .snd e | .lam _ e => lfMirrorContainsSigmaEtaShape e
+  | .jeq lhs rhs => lfMirrorContainsSigmaEtaShape lhs || lfMirrorContainsSigmaEtaShape rhs
+  | .ident _ | .sort | .univ _ => false
+
+/-- Detect an LF expression shape that Lean accepts by function eta. -/
+partial def lfMirrorContainsFunctionEtaShape : ObjExpr → Bool
+  | .lam xs (.app f (.ident x)) =>
+      xs.size == 1 && xs[0]!.eraseMacroScopes == x.eraseMacroScopes &&
+        !internalObjExprMentionsName x.eraseMacroScopes f
+  | .app f a => lfMirrorContainsFunctionEtaShape f || lfMirrorContainsFunctionEtaShape a
+  | .arrow _ A B | .funArrow _ A B | .sigma _ A B =>
+      lfMirrorContainsFunctionEtaShape A || lfMirrorContainsFunctionEtaShape B
+  | .pair a b => lfMirrorContainsFunctionEtaShape a || lfMirrorContainsFunctionEtaShape b
+  | .fst e | .snd e | .lam _ e => lfMirrorContainsFunctionEtaShape e
+  | .jeq lhs rhs => lfMirrorContainsFunctionEtaShape lhs || lfMirrorContainsFunctionEtaShape rhs
+  | .ident _ | .sort | .univ _ => false
+
+/-- Human-oriented note for known mirror/LF conversion-policy gaps. -/
+def lfMirrorComparePitfallHint? (typeExpr valueExpr : ObjExpr) : Option String :=
+  let sigmaEta := lfMirrorContainsSigmaEtaShape typeExpr || lfMirrorContainsSigmaEtaShape valueExpr
+  let funEta :=
+    lfMirrorContainsFunctionEtaShape typeExpr || lfMirrorContainsFunctionEtaShape valueExpr
+  if sigmaEta then
+    some <| String.intercalate "\n" [
+      "Recognized mirror/LF conversion gap: the translated Lean term uses Sigma eta.",
+      "The current LF conversion policy does not identify `⟨fst p, snd p⟩` with `p`."]
+  else if funEta then
+    some <| String.intercalate "\n" [
+      "Recognized mirror/LF conversion gap: the translated Lean term uses function eta.",
+      "The current LF conversion policy does not identify `fun x => f x` with `f`."]
+  else
+    none
+
 /-- Check one LF value against one LF type using the ordinary LF checker, without registration. -/
 def checkWithLFForMirrorCompare (theoryName : Name) (params : Array HLBinding)
     (typeExpr valueExpr : ObjExpr) : CoreM Unit := do
@@ -366,9 +406,15 @@ def checkWithLFForMirrorCompare (theoryName : Name) (params : Array HLBinding)
       else
         checkObject
     catch secondEx =>
-      throwError "Lean mirror accepted a term in type theory '{theoryName}', but the ordinary LF \
-        checker rejected it.\n\nFirst LF path:\n{exceptionMessageData firstEx}\n\nSecond LF \
-          path:\n{exceptionMessageData secondEx}"
+      if let some hint := lfMirrorComparePitfallHint? typeExpr valueExpr then
+        throwError "Lean mirror accepted a term in type theory '{theoryName}',\nbut the \
+          ordinary LF checker rejected it.\n\n{hint}"
+      else
+        let msg :=
+          m!"Lean mirror accepted a term in type theory '{theoryName}',\nbut the ordinary LF \
+            checker rejected it.\n\nFirst LF path:\n{exceptionMessageData firstEx}\n\nSecond LF \
+              path:\n{exceptionMessageData secondEx}"
+        throwError msg
 
 /-- Check one LF value against an LF type using only the experimental Lean mirror backend. -/
 def checkWithLFMirrorOnly (theoryName : Name) (params : Array HLBinding)
