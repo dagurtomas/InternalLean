@@ -186,6 +186,28 @@ def saveLeanQuotedLFBodyInfo (target : InternalDefTarget) (params : Array HLBind
     goalsBefore := #[goal]
     goalsAfter := #[] }
 
+/-- Elaborate and reflect a quoted LF term for diagnostics. -/
+def elabAndReflectLFQuoteTerm (theoryName : Name) (body : TSyntax `term) :
+    CommandElabM ObjExpr := do
+  let quoteNs := mkIdent (lfQuoteNamespace theoryName)
+  let quoteOpenDecl ← `(Lean.Parser.Command.openDecl| $quoteNs:ident)
+  let body ← `(term| open $quoteOpenDecl in $body)
+  liftTermElabM do
+    let value ← Term.elabTerm body (some (mkConst ``LFQuoteTerm))
+    Term.synthesizeSyntheticMVarsNoPostponing
+    let value ← instantiateMVars value
+    reflectLFQuoteExpr theoryName #[] value
+
+syntax (name := reflectLFQuote) "#reflect_lf_quote " ident " : " term : command
+
+elab_rules : command
+  | `(#reflect_lf_quote $theory:ident : $body:term) => do
+      unless (← liftCoreM <| getCheckedHLSignature? theory.getId).isSome do
+        throwError "no checked high-level signature stored for type theory '{theory.getId}'"
+      let valueExpr ← elabAndReflectLFQuoteTerm theory.getId body
+      logInfo m!"reflected LF term in type theory '{theory.getId}':\n  \
+        {diagnosticObjExprString valueExpr}"
+
 /-- Render one generated quote-stub summary line. -/
 def lfQuoteStubSummaryLine (theoryName : Name) (role : String) (sourceName : Name)
     (params : Array HLBinding) : String :=

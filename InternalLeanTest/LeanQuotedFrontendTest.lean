@@ -42,6 +42,14 @@ lf_opaque id -> LeanQuotedFrontendSmoke.LFQuote.id / 1 parameter(s)
 #guard_msgs (whitespace := lax) in
 #print_lf_quote_stubs LeanQuotedFrontendSmoke
 
+/--
+info: reflected LF term in type theory 'LeanQuotedFrontendSmoke':
+  id o
+-/
+#guard_msgs (whitespace := lax) in
+#reflect_lf_quote LeanQuotedFrontendSmoke :
+  LeanQuotedFrontendSmoke.LFQuote.id LeanQuotedFrontendSmoke.LFQuote.o
+
 namespace LeanQuotedFrontendSmoke
 
 internal_lean def d : Obj := o
