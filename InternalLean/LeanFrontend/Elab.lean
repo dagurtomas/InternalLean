@@ -1377,9 +1377,13 @@ def elabDeclareInternalLeanQuoted (doc? : Option (TSyntax ``Parser.Command.docCo
     CommandElabM Unit := do
   let strict ← ensureLeanQuotedTheoryBlockFrontendEnabled
   if strict then
-    let basePrefix ← liftCoreM <| flattenSignature { name := nm.getId, parents, levelParams }
-    let block ← elabLeanQuotedTheoryBlock nm.getId basePrefix decls strict
-    elabDeclareInternalLeanWithBlock doc? nm levelParams parents decls block
+    try
+      let basePrefix ← liftCoreM <| flattenSignature { name := nm.getId, parents, levelParams }
+      let block ← elabLeanQuotedTheoryBlock nm.getId basePrefix decls strict
+      elabDeclareInternalLeanWithBlock doc? nm levelParams parents decls block
+    catch ex =>
+      recordFailedTheoryDeclarationFromSyntax nm
+      throw ex
   else
     try
       withRestoredCommandStateOnError do

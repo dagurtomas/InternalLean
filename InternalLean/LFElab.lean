@@ -4754,8 +4754,8 @@ partial def lowerLFDerivationToKernelWithMode (sig : HLSignature) (rules : Array
       | .error err => throwError err
       if !judgmentAlphaEq kernelStmt expectedConclusion then
         throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' kernel-facing \
-          replay of rule '{ruleName}' has conclusion '{reprStr kernelStmt}', expected \
-            instantiated rule conclusion '{reprStr expectedConclusion}'"
+          replay of rule '{ruleName}' has conclusion '{judgmentSourceString kernelStmt}', \
+            expected instantiated rule conclusion '{judgmentSourceString expectedConclusion}'"
       let mut loweredPremises := []
       let mut premiseIndex := 0
       for p in appliedRule.premises do
@@ -4788,8 +4788,9 @@ partial def lowerLFDerivationToKernelWithMode (sig : HLSignature) (rules : Array
           let actualPremise := kernelLFDerivationStatement lowered
           if !judgmentAlphaEq actualPremise expectedPremise then
             throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' \
-              kernel-facing replay of rule '{ruleName}' has premise '{reprStr actualPremise}', \
-                expected instantiated premise '{reprStr expectedPremise}'"
+              kernel-facing replay of rule '{ruleName}' has premise \
+                '{judgmentSourceString actualPremise}', expected instantiated premise \
+                  '{judgmentSourceString expectedPremise}'"
           loweredPremises := loweredPremises ++ [lowered]
       if premiseIndex != premises.size then
         throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' lowers rule \

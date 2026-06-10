@@ -162,3 +162,28 @@ unknown identifier 'missing' in proof of judgment_theorem 'badThm' in type theor
 internal def badThm : Good o := missing
 
 end Phase2SinglePathSmoke
+
+/--
+error: LF opaque constant declaration 'pair' uses reserved name 'pair', which is reserved by the
+kernel encoding. Reserved kernel names: lam, _app, pair, fst, snd, arrow, sigma, Type, jeq,
+__implicitArg
+-/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.requireLeanQuotedTheoryBlocks true in
+declare_type_theory Phase2StrictQuotedFailedTheory where
+  syntax_sort Obj
+  lf_opaque pair : Obj
+
+/--
+error: type theory 'Phase2StrictQuotedFailedTheory' failed to declare (see the earlier error at
+line 173, column 20)
+-/
+#guard_msgs (whitespace := lax) in
+#check_theory Phase2StrictQuotedFailedTheory
+
+/--
+error: type theory 'Phase2StrictQuotedFailedTheory' failed to declare (see the earlier error at
+line 173, column 20)
+-/
+#guard_msgs (whitespace := lax) in
+internal def Phase2StrictQuotedFailedTheory.a : Obj := o
