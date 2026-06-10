@@ -1113,61 +1113,30 @@ def elabLeanQuotedTheoryItem (theoryName : Name) (sigPrefix : HLSignature)
     (stagedEnv : Environment) (strict : Bool) (decl : TSyntax `ttDecl) :
     CommandElabM HLTheoryItem := do
   match decl with
-  | `(ttDecl| syntax_sort $n:ident $bs:ttBinder*) => do
+  | `(ttDecl| $[$doc?:docComment]? syntax_sort $n:ident $bs:ttBinder*) => do
       let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
       pure <| .syntaxSort { name := n.getId, params := bs }
-  | `(ttDecl| $doc:docComment syntax_sort $n:ident $bs:ttBinder*) => do
-      let _ := doc.raw
-      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
-      pure <| .syntaxSort { name := n.getId, params := bs }
-  | `(ttDecl| syntax_sort $n:ident $bs:ttBinder* : $result:ttExpr) => do
+  | `(ttDecl| $[$doc?:docComment]? syntax_sort $n:ident $bs:ttBinder* : $result:ttExpr) => do
       let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
       pure <| .syntaxSort {
         name := n.getId
         params := bs
         resultLevel := (← elabSyntaxSortResultLevel n.getId result) }
-  | `(ttDecl| $doc:docComment syntax_sort $n:ident $bs:ttBinder* : $result:ttExpr) => do
-      let _ := doc.raw
-      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
-      pure <| .syntaxSort {
-        name := n.getId
-        params := bs
-        resultLevel := (← elabSyntaxSortResultLevel n.getId result) }
-  | `(ttDecl| syntax_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
-      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
-      let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none value
-      pure <| .syntaxAbbrev { name := n.getId, params := bs, value }
-  | `(ttDecl| $doc:docComment syntax_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
-      let _ := doc.raw
-      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
-      let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none value
-      pure <| .syntaxAbbrev { name := n.getId, params := bs, value }
-  | `(ttDecl| syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := sorry) => do
-      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
-      pure <| .syntaxDef {
-        name := n.getId
-        params := bs
-        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
-        value? := none }
-  | `(ttDecl| $doc:docComment syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := sorry) => do
-      let _ := doc.raw
-      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
-      pure <| .syntaxDef {
-        name := n.getId
-        params := bs
-        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
-        value? := none }
-  | `(ttDecl| syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := $value:ttExpr) => do
-      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
-      let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none value
-      pure <| .syntaxDef {
-        name := n.getId
-        params := bs
-        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
-        value? := some value }
-  | `(ttDecl| $doc:docComment syntax_def $n:ident $bs:ttBinder* : $result:ttExpr :=
+  | `(ttDecl| $[$doc?:docComment]? syntax_abbrev $n:ident $bs:ttBinder* :=
       $value:ttExpr) => do
-      let _ := doc.raw
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none value
+      pure <| .syntaxAbbrev { name := n.getId, params := bs, value }
+  | `(ttDecl| $[$doc?:docComment]? syntax_def $n:ident $bs:ttBinder* : $result:ttExpr :=
+      sorry) => do
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      pure <| .syntaxDef {
+        name := n.getId
+        params := bs
+        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
+        value? := none }
+  | `(ttDecl| $[$doc?:docComment]? syntax_def $n:ident $bs:ttBinder* : $result:ttExpr :=
+      $value:ttExpr) => do
       let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
       let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none value
       pure <| .syntaxDef {
@@ -1175,73 +1144,35 @@ def elabLeanQuotedTheoryItem (theoryName : Name) (sigPrefix : HLSignature)
         params := bs
         resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
         value? := some value }
-  | `(ttDecl| judgment_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
+  | `(ttDecl| $[$doc?:docComment]? judgment_abbrev $n:ident $bs:ttBinder* :=
+      $value:ttExpr) => do
       let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
       let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none value
       pure <| .judgmentAbbrev { name := n.getId, params := bs, value }
-  | `(ttDecl| $doc:docComment judgment_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
-      let _ := doc.raw
-      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
-      let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none value
-      pure <| .judgmentAbbrev { name := n.getId, params := bs, value }
-  | `(ttDecl| judgment $n:ident $bs:ttBinder*) => do
+  | `(ttDecl| $[$doc?:docComment]? judgment $n:ident $bs:ttBinder*) => do
       let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
       pure <| .judgment { name := n.getId, params := bs }
-  | `(ttDecl| $doc:docComment judgment $n:ident $bs:ttBinder*) => do
-      let _ := doc.raw
+  | `(ttDecl| $[$doc?:docComment]? rule $n:ident $bs:ttBinder* : $conclStx:ttExpr) => do
       let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
-      pure <| .judgment { name := n.getId, params := bs }
-  | `(ttDecl| rule $n:ident $bs:ttBinder* : $conclStx:ttExpr) => do
-      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
-      let conclusionExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none
-        conclStx
+      let conclusionExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs
+        none conclStx
       pure <| .rule { name := n.getId, params := bs, conclusionExpr }
-  | `(ttDecl| $doc:docComment rule $n:ident $bs:ttBinder* : $conclStx:ttExpr) => do
-      let _ := doc.raw
-      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
-      let conclusionExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none
-        conclStx
-      pure <| .rule { name := n.getId, params := bs, conclusionExpr }
-  | `(ttDecl| rule $n:ident $bs:ttBinder* where $items:ttRuleItem*) => do
+  | `(ttDecl| $[$doc?:docComment]? rule $n:ident $bs:ttBinder* where $items:ttRuleItem*) => do
       let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
       let items ← elabLeanQuotedTheoryRuleItems theoryName sigPrefix stagedEnv strict bs items
       pure <| .rule (← mkRuleDeclFromItems n.getId bs items)
-  | `(ttDecl| $doc:docComment rule $n:ident $bs:ttBinder* where $items:ttRuleItem*) => do
-      let _ := doc.raw
-      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
-      let items ← elabLeanQuotedTheoryRuleItems theoryName sigPrefix stagedEnv strict bs items
-      pure <| .rule (← mkRuleDeclFromItems n.getId bs items)
-  | `(ttDecl| lf_opaque $n:ident $bs:ttBinder* : $ty:ttExpr) => do
+  | `(ttDecl| $[$doc?:docComment]? lf_opaque $n:ident $bs:ttBinder* : $ty:ttExpr) => do
       let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
       let typeExpr? ←
         some <$> elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none ty
       pure <| .lfOpaqueConst { name := n.getId, arity? := some bs.size, params := bs, typeExpr? }
-  | `(ttDecl| $doc:docComment lf_opaque $n:ident $bs:ttBinder* : $ty:ttExpr) => do
-      let _ := doc.raw
-      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
-      let typeExpr? ←
-        some <$> elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none ty
-      pure <| .lfOpaqueConst { name := n.getId, arity? := some bs.size, params := bs, typeExpr? }
-  | `(ttDecl| lf_def $n:ident : $ty:ttExpr := $value:ttExpr) => do
+  | `(ttDecl| $[$doc?:docComment]? lf_def $n:ident : $ty:ttExpr := $value:ttExpr) => do
       let typeExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict #[] none ty
       let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict #[]
         (some typeExpr) value
       pure <| .lfObjectDef { name := n.getId, typeExpr, value }
-  | `(ttDecl| $doc:docComment lf_def $n:ident : $ty:ttExpr := $value:ttExpr) => do
-      let _ := doc.raw
-      let typeExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict #[] none ty
-      let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict #[]
-        (some typeExpr) value
-      pure <| .lfObjectDef { name := n.getId, typeExpr, value }
-  | `(ttDecl| judgment_theorem $n:ident $bs:ttBinder* : $j:ttExpr := $proof:ttExpr) => do
-      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
-      let judgmentExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none j
-      let proof ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs
-        (some judgmentExpr) proof
-      pure <| .lfJudgmentTheorem { name := n.getId, binders := bs, judgmentExpr, proof }
-  | `(ttDecl| $doc:docComment judgment_theorem $n:ident $bs:ttBinder* : $j:ttExpr :=
+  | `(ttDecl| $[$doc?:docComment]? judgment_theorem $n:ident $bs:ttBinder* : $j:ttExpr :=
       $proof:ttExpr) => do
-      let _ := doc.raw
       let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
       let judgmentExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none j
       let proof ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs

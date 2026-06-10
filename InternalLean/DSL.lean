@@ -2046,25 +2046,18 @@ syntax:70 ttExpr:70 ppSpace ttExpr:71 : ttExpr
 
 syntax (name := ttBinderStx) "(" ident " : " ttExpr ")" : ttBinder
 syntax (name := ttImplicitBinderStx) "{" ident " : " ttExpr "}" : ttBinder
-syntax (name := ttSyntaxSortDeclStx) "syntax_sort" ident ttBinder* : ttDecl
-syntax (name := ttSyntaxSortDocDeclStx) atomic(docComment "syntax_sort") ident ttBinder* : ttDecl
-syntax (name := ttSyntaxSortTypedDeclStx) "syntax_sort" ident ttBinder* " : " ttExpr : ttDecl
-syntax (name := ttSyntaxSortTypedDocDeclStx)
-  atomic(docComment "syntax_sort") ident ttBinder* " : " ttExpr : ttDecl
-syntax (name := ttSyntaxAbbrevDeclStx) "syntax_abbrev" ident ttBinder* " := " ttExpr : ttDecl
-syntax (name := ttSyntaxAbbrevDocDeclStx)
-  atomic(docComment "syntax_abbrev") ident ttBinder* " := " ttExpr : ttDecl
+syntax (name := ttSyntaxSortDeclStx)
+  atomic((docComment)? "syntax_sort") ident ttBinder* : ttDecl
+syntax (name := ttSyntaxSortTypedDeclStx)
+  atomic((docComment)? "syntax_sort") ident ttBinder* " : " ttExpr : ttDecl
+syntax (name := ttSyntaxAbbrevDeclStx)
+  atomic((docComment)? "syntax_abbrev") ident ttBinder* " := " ttExpr : ttDecl
 syntax (name := ttSyntaxDefDeclStx)
-  "syntax_def" ident ttBinder* " : " ttExpr " := " ttExpr : ttDecl
-syntax (name := ttSyntaxDefDocDeclStx)
-  atomic(docComment "syntax_def") ident ttBinder* " : " ttExpr " := " ttExpr : ttDecl
+  atomic((docComment)? "syntax_def") ident ttBinder* " : " ttExpr " := " ttExpr : ttDecl
 syntax (name := ttSyntaxDefSorryDeclStx)
-  "syntax_def" ident ttBinder* " : " ttExpr " := " "sorry" : ttDecl
-syntax (name := ttSyntaxDefSorryDocDeclStx)
-  atomic(docComment "syntax_def") ident ttBinder* " : " ttExpr " := " "sorry" : ttDecl
-syntax (name := ttJudgmentAbbrevDeclStx) "judgment_abbrev" ident ttBinder* " := " ttExpr : ttDecl
-syntax (name := ttJudgmentAbbrevDocDeclStx)
-  atomic(docComment "judgment_abbrev") ident ttBinder* " := " ttExpr : ttDecl
+  atomic((docComment)? "syntax_def") ident ttBinder* " : " ttExpr " := " "sorry" : ttDecl
+syntax (name := ttJudgmentAbbrevDeclStx)
+  atomic((docComment)? "judgment_abbrev") ident ttBinder* " := " ttExpr : ttDecl
 syntax (name := ttSyntaxSortRoleDeclStx) "syntax_sort_role" ident " : " ident : ttDecl
 syntax (name := ttSyntaxSortRoleDocDeclStx)
   atomic(docComment "syntax_sort_role") ident " : " ident : ttDecl
@@ -2082,8 +2075,7 @@ syntax (name := ttBinderClassDependsDeclStx)
   "binder_class" ident " : " ident " in " ident " depends_on " ident,* : ttDecl
 syntax (name := ttBinderClassDependsDocDeclStx)
   atomic(docComment "binder_class") ident " : " ident " in " ident " depends_on " ident,* : ttDecl
-syntax (name := ttJudgmentDeclStx) "judgment" ident ttBinder* : ttDecl
-syntax (name := ttJudgmentDocDeclStx) atomic(docComment "judgment") ident ttBinder* : ttDecl
+syntax (name := ttJudgmentDeclStx) atomic((docComment)? "judgment") ident ttBinder* : ttDecl
 syntax (name := ttJudgmentRoleDeclStx) "judgment_role" ident " : " ident : ttDecl
 syntax (name := ttJudgmentRoleDocDeclStx)
   atomic(docComment "judgment_role") ident " : " ident : ttDecl
@@ -2092,11 +2084,10 @@ syntax (name := ttRuleEvidenceItemStx) "evidence" ident " for " ident " : " ttEx
 syntax (name := ttRuleSideConditionItemStx)
   "side_condition" ident " by " ident " : " ttExpr : ttRuleItem
 syntax (name := ttRuleConclusionItemStx) "conclusion" " : " ttExpr : ttRuleItem
-syntax (name := ttRuleDeclStx) "rule" ident ttBinder* " : " ttExpr : ttDecl
-syntax (name := ttRuleDocDeclStx) atomic(docComment "rule") ident ttBinder* " : " ttExpr : ttDecl
-syntax (name := ttRuleBlockDeclStx) "rule" ident ttBinder* " where" ppLine ttRuleItem* : ttDecl
-syntax (name := ttRuleBlockDocDeclStx)
-  atomic(docComment "rule") ident ttBinder* " where" ppLine ttRuleItem* : ttDecl
+syntax (name := ttRuleDeclStx)
+  atomic((docComment)? "rule") ident ttBinder* " : " ttExpr : ttDecl
+syntax (name := ttRuleBlockDeclStx)
+  atomic((docComment)? "rule") ident ttBinder* " where" ppLine ttRuleItem* : ttDecl
 syntax (name := ttRuleRoleDeclStx) "rule_role" ident " : " ident : ttDecl
 syntax (name := ttRuleRoleDocDeclStx) atomic(docComment "rule_role") ident " : " ident : ttDecl
 syntax (name := ttRewriteRelationDeclStx)
@@ -2152,9 +2143,8 @@ syntax (name := ttLFOpaqueConstDocDeclStx) atomic(docComment "lf_opaque") ident 
 syntax (name := ttLFOpaqueConstArityDeclStx) "lf_opaque" ident " / " num : ttDecl
 syntax (name := ttLFOpaqueConstArityDocDeclStx)
   atomic(docComment "lf_opaque") ident " / " num : ttDecl
-syntax (name := ttLFOpaqueConstTypedDeclStx) "lf_opaque" ident ttBinder* " : " ttExpr : ttDecl
-syntax (name := ttLFOpaqueConstTypedDocDeclStx)
-  atomic(docComment "lf_opaque") ident ttBinder* " : " ttExpr : ttDecl
+syntax (name := ttLFOpaqueConstTypedDeclStx)
+  atomic((docComment)? "lf_opaque") ident ttBinder* " : " ttExpr : ttDecl
 syntax (name := ttModelPublicDeclStx) "model_public" ident : ttDecl
 syntax (name := ttModelPublicDocDeclStx) atomic(docComment "model_public") ident : ttDecl
 syntax (name := ttModelInternalDeclStx) "model_internal" ident : ttDecl
@@ -2163,13 +2153,10 @@ syntax (name := ttModelCompatDeclStx) "model_compat" ident : ttDecl
 syntax (name := ttModelCompatDocDeclStx) atomic(docComment "model_compat") ident : ttDecl
 syntax (name := ttModelSectionDeclStx) "model_section" ident : ttDecl
 syntax (name := ttModelSectionDocDeclStx) atomic(docComment "model_section") ident : ttDecl
-syntax (name := ttLFObjectDefDeclStx) "lf_def" ident " : " ttExpr " := " ttExpr : ttDecl
-syntax (name := ttLFObjectDefDocDeclStx)
-  atomic(docComment "lf_def") ident " : " ttExpr " := " ttExpr : ttDecl
+syntax (name := ttLFObjectDefDeclStx)
+  atomic((docComment)? "lf_def") ident " : " ttExpr " := " ttExpr : ttDecl
 syntax (name := ttLFJudgmentTheoremDeclStx)
-  "judgment_theorem" ident ttBinder* " : " ttExpr " := " ttExpr : ttDecl
-syntax (name := ttLFJudgmentTheoremDocDeclStx)
-  atomic(docComment "judgment_theorem") ident ttBinder* " : " ttExpr " := " ttExpr : ttDecl
+  atomic((docComment)? "judgment_theorem") ident ttBinder* " : " ttExpr " := " ttExpr : ttDecl
 
 /-- Parse an object universe expression. -/
 meta partial def elabLevelExpr : TSyntax `ttLevel → CommandElabM LevelExpr
@@ -2383,69 +2370,37 @@ meta def elabConversionStepKinds (steps : TSyntaxArray `ident) :
 
 /-- Parse a full item in a type-theory declaration block. -/
 meta def elabHLTheoryItem : TSyntax `ttDecl → CommandElabM HLTheoryItem
-  | `(ttDecl| syntax_sort $n:ident $bs:ttBinder*) => do
+  | `(ttDecl| $[$doc?:docComment]? syntax_sort $n:ident $bs:ttBinder*) => do
       let bs ← bs.mapM elabHLBinding
       pure <| .syntaxSort { name := n.getId, params := bs }
-  | `(ttDecl| $doc:docComment syntax_sort $n:ident $bs:ttBinder*) => do
-      let _ := doc.raw
-      let bs ← bs.mapM elabHLBinding
-      pure <| .syntaxSort { name := n.getId, params := bs }
-  | `(ttDecl| syntax_sort $n:ident $bs:ttBinder* : $result:ttExpr) => do
+  | `(ttDecl| $[$doc?:docComment]? syntax_sort $n:ident $bs:ttBinder* : $result:ttExpr) => do
       let bs ← bs.mapM elabHLBinding
       pure <| .syntaxSort {
         name := n.getId
         params := bs
         resultLevel := (← elabSyntaxSortResultLevel n.getId result) }
-  | `(ttDecl| $doc:docComment syntax_sort $n:ident $bs:ttBinder* : $result:ttExpr) => do
-      let _ := doc.raw
-      let bs ← bs.mapM elabHLBinding
-      pure <| .syntaxSort {
-        name := n.getId
-        params := bs
-        resultLevel := (← elabSyntaxSortResultLevel n.getId result) }
-  | `(ttDecl| syntax_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
-      let bs ← bs.mapM elabHLBinding
-      pure <| .syntaxAbbrev { name := n.getId, params := bs, value := (← elabObjExpr value) }
-  | `(ttDecl| $doc:docComment syntax_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
-      let _ := doc.raw
-      let bs ← bs.mapM elabHLBinding
-      pure <| .syntaxAbbrev { name := n.getId, params := bs, value := (← elabObjExpr value) }
-  | `(ttDecl| syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := sorry) => do
-      let bs ← bs.mapM elabHLBinding
-      pure <| .syntaxDef {
-        name := n.getId
-        params := bs
-        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
-        value? := none }
-  | `(ttDecl| $doc:docComment syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := sorry) => do
-      let _ := doc.raw
-      let bs ← bs.mapM elabHLBinding
-      pure <| .syntaxDef {
-        name := n.getId
-        params := bs
-        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
-        value? := none }
-  | `(ttDecl| syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := $value:ttExpr) => do
-      let bs ← bs.mapM elabHLBinding
-      pure <| .syntaxDef {
-        name := n.getId
-        params := bs
-        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
-        value? := some (← elabObjExpr value) }
-  | `(ttDecl| $doc:docComment syntax_def $n:ident $bs:ttBinder* : $result:ttExpr :=
+  | `(ttDecl| $[$doc?:docComment]? syntax_abbrev $n:ident $bs:ttBinder* :=
       $value:ttExpr) => do
-      let _ := doc.raw
+      let bs ← bs.mapM elabHLBinding
+      pure <| .syntaxAbbrev { name := n.getId, params := bs, value := (← elabObjExpr value) }
+  | `(ttDecl| $[$doc?:docComment]? syntax_def $n:ident $bs:ttBinder* : $result:ttExpr :=
+      sorry) => do
+      let bs ← bs.mapM elabHLBinding
+      pure <| .syntaxDef {
+        name := n.getId
+        params := bs
+        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
+        value? := none }
+  | `(ttDecl| $[$doc?:docComment]? syntax_def $n:ident $bs:ttBinder* : $result:ttExpr :=
+      $value:ttExpr) => do
       let bs ← bs.mapM elabHLBinding
       pure <| .syntaxDef {
         name := n.getId
         params := bs
         resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
         value? := some (← elabObjExpr value) }
-  | `(ttDecl| judgment_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
-      let bs ← bs.mapM elabHLBinding
-      pure <| .judgmentAbbrev { name := n.getId, params := bs, value := (← elabObjExpr value) }
-  | `(ttDecl| $doc:docComment judgment_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
-      let _ := doc.raw
+  | `(ttDecl| $[$doc?:docComment]? judgment_abbrev $n:ident $bs:ttBinder* :=
+      $value:ttExpr) => do
       let bs ← bs.mapM elabHLBinding
       pure <| .judgmentAbbrev { name := n.getId, params := bs, value := (← elabObjExpr value) }
   | `(ttDecl| syntax_sort_role $sortName:ident : $kind:ident) =>
@@ -2501,11 +2456,7 @@ meta def elabHLTheoryItem : TSyntax `ttDecl → CommandElabM HLTheoryItem
         zoneName := zoneName.getId
         dependsOn := deps.getElems.map (·.getId)
       }
-  | `(ttDecl| judgment $n:ident $bs:ttBinder*) => do
-      let bs ← bs.mapM elabHLBinding
-      pure <| .judgment { name := n.getId, params := bs }
-  | `(ttDecl| $doc:docComment judgment $n:ident $bs:ttBinder*) => do
-      let _ := doc.raw
+  | `(ttDecl| $[$doc?:docComment]? judgment $n:ident $bs:ttBinder*) => do
       let bs ← bs.mapM elabHLBinding
       pure <| .judgment { name := n.getId, params := bs }
   | `(ttDecl| judgment_role $judgmentName:ident : $kind:ident) =>
@@ -2513,19 +2464,10 @@ meta def elabHLTheoryItem : TSyntax `ttDecl → CommandElabM HLTheoryItem
   | `(ttDecl| $doc:docComment judgment_role $judgmentName:ident : $kind:ident) =>
       let _ := doc.raw
       pure <| .judgmentRole { judgmentName := judgmentName.getId, kind := kind.getId }
-  | `(ttDecl| rule $n:ident $bs:ttBinder* : $conclStx:ttExpr) => do
+  | `(ttDecl| $[$doc?:docComment]? rule $n:ident $bs:ttBinder* : $conclStx:ttExpr) => do
       let bs ← bs.mapM elabHLBinding
       pure <| .rule { name := n.getId, params := bs, conclusionExpr := (← elabObjExpr conclStx) }
-  | `(ttDecl| $doc:docComment rule $n:ident $bs:ttBinder* : $conclStx:ttExpr) => do
-      let _ := doc.raw
-      let bs ← bs.mapM elabHLBinding
-      pure <| .rule { name := n.getId, params := bs, conclusionExpr := (← elabObjExpr conclStx) }
-  | `(ttDecl| rule $n:ident $bs:ttBinder* where $items:ttRuleItem*) => do
-      let bs ← bs.mapM elabHLBinding
-      let items ← items.mapM elabRuleItem
-      pure <| .rule (← mkRuleDeclFromItems n.getId bs items)
-  | `(ttDecl| $doc:docComment rule $n:ident $bs:ttBinder* where $items:ttRuleItem*) => do
-      let _ := doc.raw
+  | `(ttDecl| $[$doc?:docComment]? rule $n:ident $bs:ttBinder* where $items:ttRuleItem*) => do
       let bs ← bs.mapM elabHLBinding
       let items ← items.mapM elabRuleItem
       pure <| .rule (← mkRuleDeclFromItems n.getId bs items)
@@ -2641,15 +2583,7 @@ meta def elabHLTheoryItem : TSyntax `ttDecl → CommandElabM HLTheoryItem
   | `(ttDecl| $doc:docComment lf_opaque $n:ident / $arity:num) =>
       let _ := doc.raw
       pure <| .lfOpaqueConst { name := n.getId, arity? := some arity.getNat }
-  | `(ttDecl| lf_opaque $n:ident $bs:ttBinder* : $ty:ttExpr) => do
-      let bs ← bs.mapM elabHLBinding
-      pure <| .lfOpaqueConst {
-        name := n.getId
-        arity? := some bs.size
-        params := bs
-        typeExpr? := some (← elabObjExpr ty) }
-  | `(ttDecl| $doc:docComment lf_opaque $n:ident $bs:ttBinder* : $ty:ttExpr) => do
-      let _ := doc.raw
+  | `(ttDecl| $[$doc?:docComment]? lf_opaque $n:ident $bs:ttBinder* : $ty:ttExpr) => do
       let bs ← bs.mapM elabHLBinding
       pure <| .lfOpaqueConst {
         name := n.getId
@@ -2676,30 +2610,14 @@ meta def elabHLTheoryItem : TSyntax `ttDecl → CommandElabM HLTheoryItem
   | `(ttDecl| $doc:docComment model_section $n:ident) =>
       let _ := doc.raw
       pure <| .modelSection { name := n.getId }
-  | `(ttDecl| lf_def $n:ident : $ty:ttExpr := $value:ttExpr) => do
+  | `(ttDecl| $[$doc?:docComment]? lf_def $n:ident : $ty:ttExpr := $value:ttExpr) => do
       pure <| .lfObjectDef {
         name := n.getId
         typeExpr := (← elabObjExpr ty)
         value := (← elabObjExpr value)
       }
-  | `(ttDecl| $doc:docComment lf_def $n:ident : $ty:ttExpr := $value:ttExpr) => do
-      let _ := doc.raw
-      pure <| .lfObjectDef {
-        name := n.getId
-        typeExpr := (← elabObjExpr ty)
-        value := (← elabObjExpr value)
-      }
-  | `(ttDecl| judgment_theorem $n:ident $bs:ttBinder* : $j:ttExpr := $proof:ttExpr) => do
-      let bs ← bs.mapM elabHLBinding
-      pure <| .lfJudgmentTheorem {
-        name := n.getId
-        binders := bs
-        judgmentExpr := (← elabObjExpr j)
-        proof := (← elabObjExpr proof)
-      }
-  | `(ttDecl| $doc:docComment judgment_theorem $n:ident $bs:ttBinder* : $j:ttExpr :=
+  | `(ttDecl| $[$doc?:docComment]? judgment_theorem $n:ident $bs:ttBinder* : $j:ttExpr :=
       $proof:ttExpr) => do
-      let _ := doc.raw
       let bs ← bs.mapM elabHLBinding
       pure <| .lfJudgmentTheorem {
         name := n.getId

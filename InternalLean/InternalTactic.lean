@@ -2743,25 +2743,53 @@ def saveInternalObjectTacticInfo (target : InternalDefTarget) (sig : HLSignature
       }
     saveInternalObjectHoverInfo target sig info
 
-/-- Prefix used internally to carry the source tactic index through recursive compilation. -/
-def internalStepErrorPrefix : String := "__internal_object_tactic_step__"
+/-- Structured object-tactic compilation errors, optionally tagged with a source step index. -/
+inductive InternalObjectTacticCompileError where
+  /-- A plain diagnostic not yet associated with an outer source tactic step. -/
+  | message (message : String)
+  /-- A diagnostic associated with a source tactic step index. -/
+  | atStep (idx : Nat) (message : String)
+  deriving Inhabited
 
-/-- Encode a tactic-step index in an error without changing the user-facing message after decoding.
--/
-def encodeInternalStepError (idx : Nat) (err : String) : String :=
-  s!"{internalStepErrorPrefix}{idx}\n{err}"
+/-- Object-tactic compilation monad with structured step-index diagnostics. -/
+abbrev InternalObjectTacticCompileM := Except InternalObjectTacticCompileError
 
-/-- Decode an internally tagged tactic-step error. -/
-def decodeInternalStepError? (err : String) : Option (Nat × String) :=
-  if err.startsWith internalStepErrorPrefix then
-    let rest := (err.drop internalStepErrorPrefix.length).toString
-    match rest.splitOn "\n" with
-    | idx :: msgLines => do
-        let idx ← idx.toNat?
-        some (idx, String.intercalate "\n" msgLines)
-    | [] => none
-  else
-    none
+instance : Coe String InternalObjectTacticCompileError where
+  coe := InternalObjectTacticCompileError.message
+
+/-- Lift an existing string-diagnostic helper into structured object-tactic compilation. -/
+def liftInternalObjectTacticStringError (x : Except String α) :
+    InternalObjectTacticCompileM α :=
+  x.mapError InternalObjectTacticCompileError.message
+
+instance : MonadLift (Except String) InternalObjectTacticCompileM where
+  monadLift := liftInternalObjectTacticStringError
+
+instance : MonadExceptOf String InternalObjectTacticCompileM where
+  throw msg := .error (.message msg)
+  tryCatch body handler :=
+    match body with
+    | .ok value => .ok value
+    | .error (.message msg) => handler msg
+    | .error err@(.atStep _ _) => .error err
+
+/-- Attach a source step index unless an inner step already tagged the error. -/
+def InternalObjectTacticCompileError.tagStep (idx : Nat) :
+    InternalObjectTacticCompileError → InternalObjectTacticCompileError
+  | .message msg => .atStep idx msg
+  | err@(.atStep _ _) => err
+
+/-- Extract the source step index and message, when present. -/
+def InternalObjectTacticCompileError.step? :
+    InternalObjectTacticCompileError → Option (Nat × String)
+  | .atStep idx msg => some (idx, msg)
+  | .message _ => none
+
+/-- User-facing message carried by a structured object-tactic compilation error. -/
+def InternalObjectTacticCompileError.messageText :
+    InternalObjectTacticCompileError → String
+  | .message msg => msg
+  | .atStep _ msg => msg
 
 mutual
   /-- Compile one object tactic goal, returning the synthesized term and next unconsumed step index.
@@ -2769,7 +2797,7 @@ mutual
   partial def compileInternalObjectGoal (target : InternalDefTarget) (sig : HLSignature) (levels :
     Array Name)
       (steps : Array InternalTacticStep) (idx : Nat) (goal : InternalObjectGoal) :
-        Except String (ObjExpr × Nat) := do
+        InternalObjectTacticCompileM (ObjExpr × Nat) := do
     let some step := steps[idx]?
       | throw <| String.intercalate "\n" [
           s!"unsolved object goal in `internal def {target.anchorName}`:",
@@ -2908,15 +2936,13 @@ mutual
         throw s!"internal object tactic `sorry` is handled as a declaration-wide admission before \
           tactic compilation"
     catch err =>
-      match decodeInternalStepError? err with
-      | some _ => throw err
-      | none => throw (encodeInternalStepError idx err)
+      .error <| InternalObjectTacticCompileError.tagStep idx (.message err)
 
   /-- Compile after one `rw` and wrap the resulting proof if transport is needed. -/
   partial def compileInternalObjectRwStep (target : InternalDefTarget) (sig : HLSignature)
       (levels : Array Name) (steps : Array InternalTacticStep) (nextIdx : Nat)
       (goal : InternalObjectGoal) (rawName : Name) (symm : Bool) :
-      Except String (ObjExpr × Nat) := do
+      InternalObjectTacticCompileM (ObjExpr × Nat) := do
     let app ← findObjectRewriteApplication target sig goal.target rawName symm
     match checkObjectGoalConversion sig levels goal.ctx goal.target app.newGoal with
     | .ok _ =>
@@ -2941,7 +2967,7 @@ mutual
   partial def compileInternalObjectRwSeq (target : InternalDefTarget) (sig : HLSignature)
       (levels : Array Name) (steps : Array InternalTacticStep) (nextIdx : Nat)
       (goal : InternalObjectGoal) (items : Array (Name × Bool)) (itemIdx : Nat) :
-      Except String (ObjExpr × Nat) := do
+      InternalObjectTacticCompileM (ObjExpr × Nat) := do
     let some item := items[itemIdx]?
       | compileInternalObjectGoal target sig levels steps nextIdx goal
     let (rawName, symm) := item
@@ -2970,7 +2996,7 @@ mutual
     Array Name)
       (steps : Array InternalTacticStep) (idx : Nat) (goal : InternalObjectGoal)
       (rawName candName : Name) (useBullets? : Option Bool) (tacticName : String) :
-      Except String (ObjExpr × Nat × Option Bool) := do
+      InternalObjectTacticCompileM (ObjExpr × Nat × Option Bool) := do
     let useBullets? := match useBullets? with
       | some b => some b
       | none => some (internalTacticStepAtIsFocusBullet steps idx)
@@ -2988,7 +3014,7 @@ mutual
       (levels : Array Name) (steps : Array InternalTacticStep) (idx : Nat)
       (goal : InternalObjectGoal) (arg : InternalTacticArg) (allowHoles : Bool)
       (tacticName : String) (useBullets? : Option Bool) :
-      Except String (ObjExpr × Nat × Option Bool) := do
+      InternalObjectTacticCompileM (ObjExpr × Nat × Option Bool) := do
     match arg with
     | .expr e => pure (e, idx, useBullets?)
     | .inferPlaceholder =>
@@ -3010,7 +3036,7 @@ mutual
         InternalObjectGoal)
       (rawName : Name) (suppliedArgs : Array InternalTacticArg) (allowHoles : Bool)
       (tacticName : String) (useBullets? : Option Bool) :
-        Except String (ObjExpr × Nat × Option Bool) := do
+        InternalObjectTacticCompileM (ObjExpr × Nat × Option Bool) := do
     let some cand := findInternalApplyCandidate? target sig rawName
       | throw s!"object tactic `{tacticName}` failed to elaborate nested application `{rawName}`: \
         unknown rule or internal declaration '{rawName}' in type theory '{target.theoryName}'"
@@ -3135,7 +3161,7 @@ mutual
     levels : Array Name)
       (steps : Array InternalTacticStep) (idx : Nat) (goal : InternalObjectGoal) (rawName : Name)
       (suppliedArgs : Array InternalTacticArg) (allowHoles : Bool) (tacticName : String) :
-        Except String (ObjExpr × Nat) := do
+        InternalObjectTacticCompileM (ObjExpr × Nat) := do
     let some cand := findInternalApplyCandidate? target sig rawName
       | throw s!"object tactic `{tacticName} {rawName}` failed: unknown rule or internal \
         declaration '{rawName}' in type theory '{target.theoryName}'"
@@ -3279,7 +3305,7 @@ mutual
   partial def compileInternalApply (target : InternalDefTarget) (sig : HLSignature) (levels :
     Array Name)
       (steps : Array InternalTacticStep) (idx : Nat) (goal : InternalObjectGoal) (rawName : Name) :
-        Except String (ObjExpr × Nat) := do
+        InternalObjectTacticCompileM (ObjExpr × Nat) := do
     let some cand := findInternalApplyCandidate? target sig rawName
       | throw s!"object tactic `apply {rawName}` failed: unknown rule or internal declaration \
         '{rawName}' in type theory '{target.theoryName}'"
@@ -3344,11 +3370,11 @@ def compileInternalObjectTacticsWithGoal (target : InternalDefTarget) (sig : HLS
   let errorRef := stepStxs[0]?.getD (← getRef)
   match compileInternalObjectGoal target sig levels steps 0 goal with
   | .error err =>
-      match decodeInternalStepError? err with
+      match err.step? with
       | some (idx, msg) =>
           let errorRef := stepStxs[idx]?.getD errorRef
           withRef errorRef <| throwError msg
-      | none => withRef errorRef <| throwError err
+      | none => withRef errorRef <| throwError err.messageText
   | .ok (termExpr, nextIdx) =>
       if nextIdx != steps.size then
         let errorRef := stepStxs[nextIdx]?.getD errorRef
