@@ -16,7 +16,28 @@ compilation smoke test; `scripts/benchmark_checker.py` provides wall-clock scali
 
 @[expose] public section
 
+open Lean Elab Command
 open InternalLean
+
+/-- Test helper asserting that a kernel rule conclusion preserves a compact LF-definition head. -/
+elab "#guard_kernel_rule_conclusion_first_arg_head " theory:ident ruleName:ident expected:ident :
+    command => do
+  let some checked ← liftCoreM <| getCheckedTheory? theory.getId
+    | throwError "no checked artifact stored for type theory '{theory.getId}'"
+  let some schema := checked.lfKernelRuleSchemas.find? (fun r =>
+      r.name.eraseMacroScopes == ruleName.getId.eraseMacroScopes)
+    | throwError "no kernel rule schema '{ruleName.getId}' for type theory '{theory.getId}'"
+  let some actualHead :=
+      match schema.conclusion with
+      | .custom _ (arg :: _) =>
+          match arg with
+          | .tmConst n | .tyConst n | .tmApp n _ | .tyApp n _ => some n.eraseMacroScopes
+          | _ => none
+      | _ => none
+    | throwError "kernel rule schema '{ruleName.getId}' has no headed first conclusion argument"
+  unless actualHead == expected.getId.eraseMacroScopes do
+    throwError "kernel rule schema '{ruleName.getId}' first conclusion argument head is \
+      '{actualHead}', expected '{expected.getId.eraseMacroScopes}'"
 
 declare_type_theory CheckerPerfDefChain50 where
   syntax_sort Obj
@@ -133,6 +154,25 @@ declare_type_theory CheckerPerfTheoremChain50 where
   judgment_theorem t50 : J base := t49
 
 #check_type_theory CheckerPerfTheoremChain50
+
+declare_type_theory CheckerPerfLazyLFDefKernelSchemaSmoke where
+  syntax_sort Ty
+  judgment J (A : Ty)
+  lf_opaque base : Ty
+  lf_def alias : Ty := base
+  rule usesAlias : J alias
+
+#guard_kernel_rule_conclusion_first_arg_head CheckerPerfLazyLFDefKernelSchemaSmoke usesAlias alias
+
+declare_type_theory CheckerPerfLazyLFDefConversionFallbackSmoke where
+  syntax_sort Ty
+  judgment J (A : Ty)
+  lf_opaque base : Ty
+  lf_def alias : Ty := base
+  rule intro : J base
+  judgment_theorem aliasTheorem : J alias := intro
+
+#check_type_theory CheckerPerfLazyLFDefConversionFallbackSmoke
 
 /--
 error: rule 'bad' in type theory 'CheckerPerfRejectedBadIndex' has conclusion for judgment

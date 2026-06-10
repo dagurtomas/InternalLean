@@ -1764,9 +1764,9 @@ structure LFCheckLookupContext where
   proofTypeInfos : NameMap LFGlobalTypeInfo := {}
   /-- Source LF object-definition and syntax-definition result types. -/
   lfObjectDefTypes : LFLocalTypes := {}
-  /-- Source LF object-definition values used by cheap LF type comparison. -/
+  /-- Checked LF object-definition values, unfolded only as a conversion fallback. -/
   lfDefinitionValues : LFDefinitionValueMap := {}
-  /-- Checked syntax-definition values, unfolded only as a lazy conversion fallback. -/
+  /-- Checked syntax-definition values, unfolded only as a conversion fallback. -/
   lfSyntaxDefValues : LFDefinitionValueMap := {}
   /-- Syntax-sort declarations by erased name. -/
   syntaxSortDecls : NameMap SyntaxSortDecl := {}
@@ -1902,21 +1902,24 @@ def lfDefinitionValuesWithSyntaxDefs (lookup : LFCheckLookupContext) : LFDefinit
     out := out.insert n value
   return out
 
-/-- Normalize a pair for diagnostics, unfolding checked syntax definitions only if the cheap
-object-definition-only beta/eta normal forms do not already match. -/
+/-- Normalize a pair for diagnostics, unfolding checked LF and syntax definitions only if the
+beta/eta-only compact normal forms do not already match. -/
 def normalizeLFTypeComparisonPairInLookup (lookup : LFCheckLookupContext)
     (actual expected : ObjExpr) : ObjExpr × ObjExpr :=
-  let actualCheap := normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actual
-  let expectedCheap := normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues expected
-  if lfExprAlphaEq actualCheap expectedCheap || lookup.lfSyntaxDefValues.isEmpty then
+  let actualCheap := normalizeLFExprForTypeComparisonWithDefs {} actual
+  let expectedCheap := normalizeLFExprForTypeComparisonWithDefs {} expected
+  if lfExprAlphaEq actualCheap expectedCheap then
     (actualCheap, expectedCheap)
   else
     let defs := lfDefinitionValuesWithSyntaxDefs lookup
-    (normalizeLFExprForTypeComparisonWithDefs defs actual,
-      normalizeLFExprForTypeComparisonWithDefs defs expected)
+    if defs.isEmpty then
+      (actualCheap, expectedCheap)
+    else
+      (normalizeLFExprForTypeComparisonWithDefs defs actual,
+        normalizeLFExprForTypeComparisonWithDefs defs expected)
 
-/-- Shallow beta/eta type comparison using the lookup context's LF-definition map. Checked syntax
-definitions are unfolded only as a fallback after cheap comparison fails. -/
+/-- Shallow beta/eta type comparison using the lookup context's LF-definition map. Checked LF and
+syntax definitions are unfolded only as a fallback after compact comparison fails. -/
 def lfTypeCompareEqInLookup (lookup : LFCheckLookupContext) (actual expected : ObjExpr) : Bool :=
   let (actualN, expectedN) := normalizeLFTypeComparisonPairInLookup lookup actual expected
   lfExprAlphaEq actualN expectedN
@@ -3336,9 +3339,16 @@ def checkLFSyntaxSortArgumentsInBindings (sig : HLSignature) (ownerKind : String
 /-- Whether a shallow inferred LF type certifies that an expression is itself a type. -/
 def inferredLFTypeIsUniverseWithLookup (lookup : LFCheckLookupContext)
     (actualType : ObjExpr) : Bool :=
-  match normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actualType with
+  match normalizeLFExprForTypeComparisonWithDefs {} actualType with
   | .sort | .univ _ => true
-  | _ => false
+  | _ =>
+      let defs := lfDefinitionValuesWithSyntaxDefs lookup
+      if defs.isEmpty then
+        false
+      else
+        match normalizeLFExprForTypeComparisonWithDefs defs actualType with
+        | .sort | .univ _ => true
+        | _ => false
 
 /-- Whether a shallow inferred LF type certifies that an expression is itself a type. -/
 def inferredLFTypeIsUniverse (sig : HLSignature) (actualType : ObjExpr) : Bool :=
@@ -3347,10 +3357,18 @@ def inferredLFTypeIsUniverse (sig : HLSignature) (actualType : ObjExpr) : Bool :
 /-- Extract the universe level from an inferred LF universe type. -/
 def inferredLFUniverseLevelWithLookup? (lookup : LFCheckLookupContext)
     (actualType : ObjExpr) : Option LevelExpr :=
-  match normalizeLFExprForTypeComparisonWithDefs lookup.lfDefinitionValues actualType with
+  match normalizeLFExprForTypeComparisonWithDefs {} actualType with
   | .sort => some .zero
   | .univ u => some (LevelExpr.normalize u)
-  | _ => none
+  | _ =>
+      let defs := lfDefinitionValuesWithSyntaxDefs lookup
+      if defs.isEmpty then
+        none
+      else
+        match normalizeLFExprForTypeComparisonWithDefs defs actualType with
+        | .sort => some .zero
+        | .univ u => some (LevelExpr.normalize u)
+        | _ => none
 
 /-- Infer the universe level of a checked LF type expression when the shallow metadata is enough. -/
 partial def inferLFTypeExprUniverseLevelWithLookup? (lookup : LFCheckLookupContext)
@@ -4506,12 +4524,14 @@ judgments, scoped typed instantiations, and explicit certificate names.
 This is still a staging checker, not a trusted-evidence producer, but it is intentionally closer
 to the eventual trusted kernel boundary: rule instantiations are finite typed telescopes and
 premise/conclusion matching is replayed on instantiated low-level `Judgment`s. -/
-partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array CheckedLFRule)
+partial def lowerLFDerivationToKernelWithMode (sig : HLSignature) (rules : Array CheckedLFRule)
     (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (knownTypes : LFLocalTypes)
-    (defValues : LFDefinitionValueMap) (localNames : NameSet) (theoremName : Name) :
-    CheckedLFDerivation → CoreM KernelLFDerivation
+    (defValues : LFDefinitionValueMap) (localNames : NameSet) (theoremName : Name)
+    (unfoldDefs : Bool) : CheckedLFDerivation → CoreM KernelLFDerivation
   | .localAssumption name stmt => do
-      let kernelStmtExpr := unfoldLFDefinitionsInExprWithLocals defValues localNames stmt
+      let kernelStmtExpr :=
+        if unfoldDefs then unfoldLFDefinitionsInExprWithLocals defValues localNames stmt
+        else eraseObjExprScopes stmt
       let kernelStmt ← lfJudgmentObjExprToKernel sig globalHeads "local theorem assumption"
         theoremName kernelStmtExpr localNames
       match kernelStmt.validateBuiltinConstructorDiscipline s!"judgment_theorem '{theoremName}' \
@@ -4520,7 +4540,9 @@ partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array Checked
       | .error err => throwError err
       pure (.assumption name kernelStmt)
   | .theoremRef name stmt args premises => do
-      let kernelStmtExpr := unfoldLFDefinitionsInExprWithLocals defValues localNames stmt
+      let kernelStmtExpr :=
+        if unfoldDefs then unfoldLFDefinitionsInExprWithLocals defValues localNames stmt
+        else eraseObjExprScopes stmt
       let kernelStmt ← lfJudgmentObjExprToKernel sig globalHeads "theorem reference" theoremName
         kernelStmtExpr localNames
       match kernelStmt.validateBuiltinConstructorDiscipline s!"judgment_theorem '{theoremName}' \
@@ -4549,9 +4571,14 @@ partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array Checked
                 theorem reference '{name}' with too few syntax/evidence arguments"
             let priorInst : Instantiation := fun x =>
               (rawSubst.find? x.eraseMacroScopes).getD (.leanParam x)
-            let kernelArg := unfoldLFDefinitionsInExprWithLocals defValues localNames arg
+            let kernelArg :=
+              if unfoldDefs then unfoldLFDefinitionsInExprWithLocals defValues localNames arg
+              else eraseObjExprScopes arg
             let kernelExpectedBinderType :=
-              unfoldLFDefinitionsInExprWithLocals defValues localNames expectedBinderType
+              if unfoldDefs then
+                unfoldLFDefinitionsInExprWithLocals defValues localNames expectedBinderType
+              else
+                expectedBinderType
             let checkedArg ← resolveLFExpr sig globalHeads localNames
               "kernel-facing theorem reference" theoremName
               s!"argument for theorem '{name}' binder '{b.name.eraseMacroScopes}'" kernelArg
@@ -4582,8 +4609,8 @@ partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array Checked
         let mut loweredPremises := []
         for premiseDeriv in premises do
           loweredPremises := loweredPremises ++
-            [← lowerLFDerivationToKernel sig rules globalHeads knownTypes defValues localNames
-              theoremName premiseDeriv]
+            [← lowerLFDerivationToKernelWithMode sig rules globalHeads knownTypes defValues
+              localNames theoremName unfoldDefs premiseDeriv]
         pure (.ruleApp (lfJudgmentTheoremKernelRuleName name) kernelStmt { entries := entries }
           loweredPremises [])
   | .ruleApp ruleName stmt ruleArgs premises certs => do
@@ -4610,7 +4637,9 @@ partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array Checked
         let priorInst : Instantiation := fun x =>
           (rawSubst.find? x.eraseMacroScopes).getD (.leanParam x)
         let expectedParamType := substLFParams objSubst param.typeExpr
-        let kernelArg := unfoldLFDefinitionsInExprWithLocals defValues localNames arg
+        let kernelArg :=
+          if unfoldDefs then unfoldLFDefinitionsInExprWithLocals defValues localNames arg
+          else eraseObjExprScopes arg
         checkLFExprHasType sig "judgment_theorem" theoremName
           s!"kernel-facing replay argument for rule '{ruleName}' parameter '{param.name}'"
           knownTypes arg expectedParamType
@@ -4660,9 +4689,14 @@ partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array Checked
           let priorInst : Instantiation := fun x =>
             (rawSubst.find? x.eraseMacroScopes).getD (.leanParam x)
           let expectedPremise := eraseObjExprScopes (substLFParams objSubst p.judgmentExpr)
-          let kernelArg := unfoldLFDefinitionsInExprWithLocals defValues localNames arg
+          let kernelArg :=
+            if unfoldDefs then unfoldLFDefinitionsInExprWithLocals defValues localNames arg
+            else eraseObjExprScopes arg
           let kernelExpectedPremise :=
-            unfoldLFDefinitionsInExprWithLocals defValues localNames expectedPremise
+            if unfoldDefs then
+              unfoldLFDefinitionsInExprWithLocals defValues localNames expectedPremise
+            else
+              expectedPremise
           checkLFExprHasType sig "judgment_theorem" theoremName
             s!"kernel-facing replay evidence argument for rule '{ruleName}' premise '{p.name}'"
             knownTypes arg expectedPremise
@@ -4688,7 +4722,9 @@ partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array Checked
         throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' lowers rule \
           '{ruleName}' with unused evidence argument(s)"
       let inst : ScopedInstantiation := { entries := entries }
-      let kernelStmtExpr := unfoldLFDefinitionsInExprWithLocals defValues localNames stmt
+      let kernelStmtExpr :=
+        if unfoldDefs then unfoldLFDefinitionsInExprWithLocals defValues localNames stmt
+        else eraseObjExprScopes stmt
       let kernelStmt ← lfJudgmentObjExprToKernel sig globalHeads "rule application" theoremName
         kernelStmtExpr localNames
       match kernelStmt.validateBuiltinConstructorDiscipline s!"judgment_theorem '{theoremName}' \
@@ -4698,7 +4734,10 @@ partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array Checked
       let ruleLocals : NameSet := appliedRule.params.foldl (init := {}) fun acc p =>
         acc.insert p.name
       let ruleConclusionExpr :=
-        unfoldLFDefinitionsInExprWithLocals defValues ruleLocals appliedRule.conclusionExpr
+        if unfoldDefs then
+          unfoldLFDefinitionsInExprWithLocals defValues ruleLocals appliedRule.conclusionExpr
+        else
+          eraseObjExprScopes appliedRule.conclusionExpr
       let ruleConclusion ← lfJudgmentObjExprToKernel sig globalHeads "rule conclusion"
         appliedRule.name ruleConclusionExpr ruleLocals
       let expectedConclusion ←
@@ -4724,10 +4763,13 @@ partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array Checked
             | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' lowers \
               rule '{ruleName}' with too few premise derivation(s)"
           premiseIndex := premiseIndex + 1
-          let lowered ← lowerLFDerivationToKernel sig rules globalHeads knownTypes defValues
-            localNames theoremName premiseDeriv
+          let lowered ← lowerLFDerivationToKernelWithMode sig rules globalHeads knownTypes
+            defValues localNames theoremName unfoldDefs premiseDeriv
           let rulePremiseExpr :=
-            unfoldLFDefinitionsInExprWithLocals defValues ruleLocals p.judgmentExpr
+            if unfoldDefs then
+              unfoldLFDefinitionsInExprWithLocals defValues ruleLocals p.judgmentExpr
+            else
+              eraseObjExprScopes p.judgmentExpr
           let rulePremise ← lfJudgmentObjExprToKernel sig globalHeads "rule premise"
             appliedRule.name rulePremiseExpr ruleLocals
           let expectedPremise ←
@@ -4752,6 +4794,20 @@ partial def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array Checked
         throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' lowers rule \
           '{ruleName}' with unused premise derivation(s)"
       pure (.ruleApp ruleName kernelStmt inst loweredPremises certs.toList)
+
+/-- Lower a shallow checked LF derivation, preserving checked LF-definition heads when exact replay
+works and falling back to the former fully unfolded replay shape when compact replay is too
+coarse. -/
+def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array CheckedLFRule)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (knownTypes : LFLocalTypes)
+    (defValues : LFDefinitionValueMap) (localNames : NameSet) (theoremName : Name)
+    (derivation : CheckedLFDerivation) : CoreM KernelLFDerivation := do
+  try
+    lowerLFDerivationToKernelWithMode sig rules globalHeads knownTypes defValues localNames
+      theoremName false derivation
+  catch _ =>
+    lowerLFDerivationToKernelWithMode sig rules globalHeads knownTypes defValues localNames
+      theoremName true derivation
 
 /-- Summarize the outer layer of a shallow checked LF derivation for legacy diagnostics. -/
 def summarizeLFRuleApplication? : CheckedLFDerivation → LFRuleApplicationSummary
@@ -6695,7 +6751,50 @@ def checkedLFDefinitionValues (syntaxDefs : Array CheckedLFSyntaxDef)
   return values
 
 /-- Convert a Phase-2/3 LF rule schema to the low-level kernel `RuleSchema` shape. -/
-def checkedLFRuleSchemaToKernel (defValues : CheckedLFDefinitionValueMap)
+def checkedLFRuleSchemaToKernel (_defValues : CheckedLFDefinitionValueMap)
+    (r : CheckedLFRuleSchema) : RuleSchema :=
+  let sideConditions := r.sideConditionSlots.toList.map fun sc =>
+    ({ name := sc.solver, args := [checkedLFExprToRaw sc.checkedInput] } : SideCondition)
+  let certificateSlots := r.sideConditionSlots.toList.map fun sc =>
+    let condition : SideCondition :=
+      { name := sc.solver, args := [checkedLFExprToRaw sc.checkedInput] }
+    ({ name := sc.name, condition := condition } : SideConditionCertificateSlot)
+  let checkedCertificates := r.sideConditionSlots.toList.filterMap fun sc =>
+    sc.certificate?.map checkedLFSideConditionCertificateToKernel
+  let ruleMetas := r.metavariables.toList.map (fun v =>
+    { name := v.name
+      sort := match v.sortHead? with | some h => .custom h.name | none => .arg
+      zone? := v.zoneName?
+      type? := some (checkedLFExprToRaw v.checkedTypeExpr)
+      evidence? := v.evidence?.map (fun ev =>
+        checkedLFJudgmentExprToKernel ev.checkedJudgmentExpr ev.head) })
+  let evidenceMetas := r.premises.toList.filterMap fun p =>
+    if p.isDirectJudgment then
+      none
+    else
+      some ({ name := p.name
+              sort := match p.head? with
+                | some h => if h.kind == .syntaxSort then .custom h.name else .arg
+                | none => .arg
+              type? := some (checkedLFExprToRaw p.checkedJudgmentExpr) } : RuleMetaVar)
+  let kernelPremises := r.premises.toList.filterMap fun p =>
+    match p.head? with
+    | some h =>
+        if h.kind == .judgment then
+          some (checkedLFJudgmentExprToKernel p.checkedJudgmentExpr h)
+        else
+          none
+    | none => none
+  RuleSchema.mk r.name
+    (ruleMetas ++ evidenceMetas)
+    kernelPremises
+    sideConditions
+    certificateSlots
+    checkedCertificates
+    (checkedLFJudgmentExprToKernel r.checkedConclusionExpr r.conclusionHead)
+
+/-- Convert a checked LF rule schema to the former fully unfolded kernel `RuleSchema` shape. -/
+def checkedLFRuleSchemaToKernelExpanded (defValues : CheckedLFDefinitionValueMap)
     (r : CheckedLFRuleSchema) : RuleSchema :=
   let locals := r.metavariables.foldl (init := {}) fun locals v =>
     locals.insert v.name.eraseMacroScopes
@@ -6740,10 +6839,15 @@ def checkedLFRuleSchemaToKernel (defValues : CheckedLFDefinitionValueMap)
     checkedCertificates
     (checkedLFJudgmentExprToKernel (norm r.checkedConclusionExpr) r.conclusionHead)
 
-/-- Convert all Phase-2 LF rule schemas to kernel `RuleSchema` staging artifacts. -/
+/-- Convert all Phase-2 LF rule schemas to compact kernel `RuleSchema` staging artifacts. -/
 def checkedLFRuleSchemasToKernel (defValues : CheckedLFDefinitionValueMap)
     (rules : Array CheckedLFRuleSchema) : Array RuleSchema :=
   rules.map (checkedLFRuleSchemaToKernel defValues)
+
+/-- Convert all Phase-2 LF rule schemas to fully unfolded kernel replay artifacts. -/
+def checkedLFRuleSchemasToKernelExpanded (defValues : CheckedLFDefinitionValueMap)
+    (rules : Array CheckedLFRuleSchema) : Array RuleSchema :=
+  rules.map (checkedLFRuleSchemaToKernelExpanded defValues)
 
 /-- Extract checked local theorem-assumption entries from a locally quantified LF theorem. -/
 def kernelLFLocalAssumptionEntriesOfTheorem (t : CheckedLFJudgmentTheorem) :
@@ -6757,8 +6861,13 @@ def kernelLFLocalAssumptionEntriesOfTheorem (t : CheckedLFJudgmentTheorem) :
           none
     | none => none
 
+/-- Extract checked local theorem assumptions without expanding checked LF definitions. -/
+def kernelLFLocalAssumptionEntriesOfTheoremCompact (t : CheckedLFJudgmentTheorem) :
+    List KernelLFTheoremEntry :=
+  kernelLFLocalAssumptionEntriesOfTheorem t
+
 /-- Extract checked local theorem assumptions after LF-definition normalization. -/
-def kernelLFLocalAssumptionEntriesOfTheoremNormalized (sig : HLSignature)
+def kernelLFLocalAssumptionEntriesOfTheoremExpanded (sig : HLSignature)
     (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (defValues : LFDefinitionValueMap)
     (t : CheckedLFJudgmentTheorem) : CoreM (List KernelLFTheoremEntry) := do
   let theoremLocals := t.binders.foldl (init := {}) fun locals b =>
@@ -6777,7 +6886,32 @@ def kernelLFLocalAssumptionEntriesOfTheoremNormalized (sig : HLSignature)
 
 /-- Kernel rule schema used when a checked LF theorem with local binders is referenced as a premise.
 -/
-def kernelLFRuleSchemaOfTheorem (defValues : CheckedLFDefinitionValueMap)
+def kernelLFRuleSchemaOfTheorem (_defValues : CheckedLFDefinitionValueMap)
+    (t : CheckedLFJudgmentTheorem) : RuleSchema :=
+  let metavariables := t.binders.toList.filterMap fun b =>
+    match b.head? with
+    | some head =>
+        if head.kind == .judgment then none
+        else
+          some ({ name := b.name
+                  sort := if head.kind == .syntaxSort then .custom head.name else .arg
+                  type? := some (checkedLFExprToRaw b.checkedTypeExpr) } : RuleMetaVar)
+    | none =>
+        some ({ name := b.name
+                sort := .arg
+                type? := some (checkedLFExprToRaw b.checkedTypeExpr) } : RuleMetaVar)
+  let premises := t.binders.toList.filterMap fun b =>
+    match b.head? with
+    | some head =>
+        if head.kind == .judgment then
+          some (checkedLFJudgmentExprToKernel b.checkedTypeExpr head)
+        else none
+    | none => none
+  RuleSchema.mk (lfJudgmentTheoremKernelRuleName t.name) metavariables premises [] [] []
+    (checkedLFJudgmentExprToKernel t.checkedJudgmentExpr t.judgmentHead)
+
+/-- Fully unfolded kernel rule schema used for replay fallback of checked LF theorem references. -/
+def kernelLFRuleSchemaOfTheoremExpanded (defValues : CheckedLFDefinitionValueMap)
     (t : CheckedLFJudgmentTheorem) : RuleSchema :=
   let locals := t.binders.foldl (init := {}) fun locals b => locals.insert b.name.eraseMacroScopes
   let norm := unfoldLFDefinitionsInCheckedExpr defValues locals
@@ -6803,10 +6937,23 @@ def kernelLFRuleSchemaOfTheorem (defValues : CheckedLFDefinitionValueMap)
   RuleSchema.mk (lfJudgmentTheoremKernelRuleName t.name) metavariables premises [] [] []
     (checkedLFJudgmentExprToKernel (norm t.checkedJudgmentExpr) t.judgmentHead)
 
-/-- Kernel rule schemas for checked LF theorems, used by instantiated theorem references. -/
+/-- Compact kernel rule schemas for checked LF theorems, used by theorem references. -/
 def kernelLFRuleSchemasOfTheorems (defValues : CheckedLFDefinitionValueMap)
     (theorems : Array CheckedLFJudgmentTheorem) : Array RuleSchema :=
   theorems.map (kernelLFRuleSchemaOfTheorem defValues)
+
+/-- Fully unfolded kernel rule schemas for checked LF theorem replay fallback. -/
+def kernelLFRuleSchemasOfTheoremsExpanded (defValues : CheckedLFDefinitionValueMap)
+    (theorems : Array CheckedLFJudgmentTheorem) : Array RuleSchema :=
+  theorems.map (kernelLFRuleSchemaOfTheoremExpanded defValues)
+
+/-- Replace replay rules in a kernel signature by fully unfolded compatibility rules. -/
+def kernelSignatureWithExpandedReplayRules (kernelSig : Signature)
+    (defValues : CheckedLFDefinitionValueMap) (ruleSchemas : Array CheckedLFRuleSchema)
+    (theorems : Array CheckedLFJudgmentTheorem) : Signature :=
+  { kernelSig with
+    rules := (checkedLFRuleSchemasToKernelExpanded defValues ruleSchemas ++
+      kernelLFRuleSchemasOfTheoremsExpanded defValues theorems).toList }
 
 /-- Extract checked external-certificate entries exposed by theorem-like bridge artifacts. -/
 def kernelLFCertificateEntriesOfTheorems (theorems : Array CheckedLFJudgmentTheorem) :
@@ -6838,20 +6985,31 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
     if prior.binders.isEmpty then
       if let some priorKernel := prior.kernelDerivation? then
         replayCtx := replayCtx.addTheorem prior.name (KernelLFDerivation.statement priorKernel)
-  let lfKernelGlobalHeads := lfGlobalHeadInfo sig
-  let lfKernelDefValues :=
-    lfDefinitionValueMapFromCheckedDefs checked.lfSyntaxDefs checked.lfObjectDefs
-  let assumptions ← kernelLFLocalAssumptionEntriesOfTheoremNormalized sig lfKernelGlobalHeads
-    lfKernelDefValues t
+  let assumptions := kernelLFLocalAssumptionEntriesOfTheoremCompact t
   let localReplayCtx := { replayCtx with
     localParameters := t.binders.toList.map (fun b => b.name)
     assumptions := assumptions }
   match CheckedKernelLFDerivation.ofReplay kernelSig localReplayCtx
       (KernelLFDerivation.statement kernelDeriv) kernelDeriv with
   | .ok checkedReplay => pure { t with checkedKernelDerivation? := some checkedReplay }
-  | .error err =>
-      throwError "kernel-facing replay check failed for judgment_theorem '{t.name}' in type theory \
-        '{sig.name}': {err}"
+  | .error compactErr =>
+      let expandedKernelSig :=
+        kernelSignatureWithExpandedReplayRules kernelSig lfCheckedDefValues checked.lfRuleSchemas
+          checked.lfJudgmentTheorems
+      let lfKernelDefValues :=
+        lfDefinitionValueMapFromCheckedDefs checked.lfSyntaxDefs checked.lfObjectDefs
+      let expandedAssumptions ←
+        kernelLFLocalAssumptionEntriesOfTheoremExpanded sig (lfGlobalHeadInfo sig)
+          lfKernelDefValues t
+      let expandedReplayCtx := { replayCtx with
+        localParameters := t.binders.toList.map (fun b => b.name)
+        assumptions := expandedAssumptions }
+      match CheckedKernelLFDerivation.ofReplay expandedKernelSig expandedReplayCtx
+          (KernelLFDerivation.statement kernelDeriv) kernelDeriv with
+      | .ok checkedReplay => pure { t with checkedKernelDerivation? := some checkedReplay }
+      | .error expandedErr =>
+          throwError "kernel-facing replay check failed for judgment_theorem '{t.name}' in type \
+            theory '{sig.name}': {compactErr}\nexpanded fallback also failed: {expandedErr}"
 
 /-- Add checked kernel replay validation to one incrementally checked LF theorem, reusing a
 compiled checked-theory replay cache. -/
@@ -6859,22 +7017,40 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
     (t : CheckedLFJudgmentTheorem) : CoreM CheckedLFJudgmentTheorem := do
   let some kernelDeriv := t.kernelDerivation?
     | pure t
-  let lfKernelDefValues : LFDefinitionValueMap := Id.run do
-    let mut values := cache.knownLFDefValues
-    for (n, value) in cache.knownLFSyntaxDefValues.toList do
-      values := values.insert n value
-    return values
-  let assumptions ← kernelLFLocalAssumptionEntriesOfTheoremNormalized cache.checkedHL
-    cache.globalHeads lfKernelDefValues t
+  let assumptions := kernelLFLocalAssumptionEntriesOfTheoremCompact t
   let localReplayCtx := { cache.kernelReplayBase with
     localParameters := t.binders.toList.map (fun b => b.name)
     assumptions := assumptions }
   match CheckedKernelLFDerivation.ofReplay cache.kernelSig localReplayCtx
       (KernelLFDerivation.statement kernelDeriv) kernelDeriv with
   | .ok checkedReplay => pure { t with checkedKernelDerivation? := some checkedReplay }
-  | .error err =>
-      throwError "kernel-facing replay check failed for judgment_theorem '{t.name}' in type theory \
-        '{cache.checkedHL.name}': {err}"
+  | .error compactErr =>
+      let primitiveNames : NameSet := cache.checkedRuleSchemas.foldl (init := {}) fun names r =>
+        names.insert r.name.eraseMacroScopes
+      let expandedPrimitiveRules :=
+        checkedLFRuleSchemasToKernelExpanded cache.checkedLFDefValues cache.checkedRuleSchemas
+      let oldTheoremRules := cache.kernelSig.rules.toArray.filter fun r =>
+        !primitiveNames.contains r.name.eraseMacroScopes
+      let expandedKernelSig := { cache.kernelSig with
+        rules := (expandedPrimitiveRules ++ oldTheoremRules).toList }
+      let lfKernelDefValues : LFDefinitionValueMap := Id.run do
+        let mut values := cache.knownLFDefValues
+        for (n, value) in cache.knownLFSyntaxDefValues.toList do
+          values := values.insert n value
+        return values
+      let expandedAssumptions ←
+        kernelLFLocalAssumptionEntriesOfTheoremExpanded cache.checkedHL cache.globalHeads
+          lfKernelDefValues t
+      let expandedReplayCtx := { cache.kernelReplayBase with
+        localParameters := t.binders.toList.map (fun b => b.name)
+        assumptions := expandedAssumptions }
+      match CheckedKernelLFDerivation.ofReplay expandedKernelSig expandedReplayCtx
+          (KernelLFDerivation.statement kernelDeriv) kernelDeriv with
+      | .ok checkedReplay => pure { t with checkedKernelDerivation? := some checkedReplay }
+      | .error expandedErr =>
+          throwError "kernel-facing replay check failed for judgment_theorem '{t.name}' in type \
+            theory '{cache.checkedHL.name}': {compactErr}\nexpanded fallback also failed: \
+            {expandedErr}"
 
 
 /-- Convert a checked LF binding back to the high-level declaration shape used for checking
@@ -7894,13 +8070,15 @@ end CompiledLFCheckCache
 
 /-- Cached kernel-facing replay state shared by all theorem checks in one block. -/
 structure IntraBlockKernelReplayContext where
-  /-- Low-level kernel signature built once for the candidate block. -/
+  /-- Low-level compact kernel signature built once for the candidate block. -/
   kernelSig : Signature
+  /-- Fully unfolded replay signature used only as a compatibility fallback. -/
+  kernelSigExpanded : Signature
   /-- Replay context containing prior checked theorems and certificates. -/
   replayCtx : KernelLFCheckContext
-  /-- Global LF heads used to lower local theorem assumptions. -/
+  /-- Global LF heads used by expanded fallback assumptions. -/
   lfKernelGlobalHeads : NameMap (CheckedLFHeadKind × Option Nat)
-  /-- LF definition values available while normalizing replay statements. -/
+  /-- LF definition values used by expanded fallback assumptions. -/
   lfKernelDefValues : LFDefinitionValueMap
   deriving Inhabited
 
@@ -7938,6 +8116,9 @@ def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignat
           replayCtx := replayCtx.addTheorem prior.name (KernelLFDerivation.statement priorKernel)
     return replayCtx
   { kernelSig := kernelSig
+    kernelSigExpanded :=
+      kernelSignatureWithExpandedReplayRules kernelSig lfCheckedDefValues lfRuleSchemas
+        lfJudgmentTheorems
     replayCtx := replayCtx
     lfKernelGlobalHeads := lfGlobalHeadInfo sig
     lfKernelDefValues := lfDefinitionValueMapFromCheckedDefs lfSyntaxDefs lfObjectDefs }
@@ -7949,8 +8130,7 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
   let some kernelDeriv := t.kernelDerivation?
     | pure (t, ctx)
   let stmt := KernelLFDerivation.statement kernelDeriv
-  let assumptions ← kernelLFLocalAssumptionEntriesOfTheoremNormalized sig
-    ctx.lfKernelGlobalHeads ctx.lfKernelDefValues t
+  let assumptions := kernelLFLocalAssumptionEntriesOfTheoremCompact t
   let localReplayCtx := { ctx.replayCtx with
     localParameters := t.binders.toList.map (fun b => b.name)
     assumptions := assumptions }
@@ -7960,9 +8140,23 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
       let replayCtx :=
         if t.binders.isEmpty then ctx.replayCtx.addTheorem t.name stmt else ctx.replayCtx
       pure (t, { ctx with replayCtx := replayCtx })
-  | .error err =>
-      throwError "kernel-facing replay check failed for judgment_theorem '{t.name}' in type theory \
-        '{sig.name}': {err}"
+  | .error compactErr =>
+      let expandedAssumptions ←
+        kernelLFLocalAssumptionEntriesOfTheoremExpanded sig ctx.lfKernelGlobalHeads
+          ctx.lfKernelDefValues t
+      let expandedReplayCtx := { ctx.replayCtx with
+        localParameters := t.binders.toList.map (fun b => b.name)
+        assumptions := expandedAssumptions }
+      match CheckedKernelLFDerivation.ofReplay ctx.kernelSigExpanded expandedReplayCtx stmt
+          kernelDeriv with
+      | .ok checkedReplay =>
+          let t := { t with checkedKernelDerivation? := some checkedReplay }
+          let replayCtx :=
+            if t.binders.isEmpty then ctx.replayCtx.addTheorem t.name stmt else ctx.replayCtx
+          pure (t, { ctx with replayCtx := replayCtx })
+      | .error expandedErr =>
+          throwError "kernel-facing replay check failed for judgment_theorem '{t.name}' in type \
+            theory '{sig.name}': {compactErr}\nexpanded fallback also failed: {expandedErr}"
 
 /-- Replay-check all new theorem artifacts in one block using one cached kernel signature. -/
 def validateLFTheoremKernelReplayBlock (sig : HLSignature)
