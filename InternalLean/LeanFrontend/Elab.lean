@@ -40,6 +40,112 @@ register_option internalLean.requireLeanQuotedTheoryBlocks : Bool := {
     `extend_type_theory` expression fields instead of falling back to the raw frontend"
 }
 
+register_option internalLean.frontend.logFallbacks : Bool := {
+  defValue := false
+  descr := "log warnings when the Lean-quoted frontend falls back to the legacy InternalLean \
+    parser/checking path"
+}
+
+register_option internalLean.frontend.compareLegacy : Bool := {
+  defValue := false
+  descr := "for canonical internal def/theorem bodies accepted by the Lean-quoted frontend, also \
+    elaborate the legacy body and error if the reflected LF bodies differ"
+}
+
+/-- One recorded fallback/skip in the Lean-quoted frontend. -/
+structure InternalFrontendFallbackEntry where
+  /-- Source file that recorded this entry. -/
+  fileName : String := ""
+  /-- Stable command/fallback class. -/
+  kind : Name
+  /-- Human-readable source position when available. -/
+  position? : Option String := none
+  /-- Exception or skip message recorded at the fallback boundary. -/
+  message : String := ""
+  deriving Inhabited, Repr, BEq
+
+/-- Fallback profile state that survives command-elaborator fallthrough and state restoration. -/
+initialize internalFrontendFallbackStore : IO.Ref (Array InternalFrontendFallbackEntry) ←
+  IO.mkRef #[]
+
+/-- Render a source position for a fallback diagnostic. -/
+def frontendFallbackPositionString? (stx : Syntax) : CommandElabM (Option String) := do
+  match stx.getPos? (canonicalOnly := true) with
+  | none => pure none
+  | some pos =>
+      let p := (← getFileMap).toPosition pos
+      pure <| some s!"line {p.line}, column {p.column}"
+
+/-- Whether fallback warnings are enabled. -/
+def logInternalFrontendFallbacks : CommandElabM Bool :=
+  getBoolOption `internalLean.frontend.logFallbacks
+
+/-- Whether canonical internal declarations should compare with the legacy frontend. -/
+def compareLeanQuotedWithLegacyFrontend : CommandElabM Bool :=
+  getBoolOption `internalLean.frontend.compareLegacy
+
+/-- Record one Lean-quoted frontend fallback or compare-mode skip. -/
+def recordInternalFrontendFallback (kind : Name) (stx : Syntax) (message : MessageData) :
+    CommandElabM Unit := do
+  let fileName ← getFileName
+  let position? ← frontendFallbackPositionString? stx
+  let text ← message.toString
+  liftIO <| internalFrontendFallbackStore.modify fun entries => entries.push {
+    fileName := fileName
+    kind := kind.eraseMacroScopes
+    position?
+    message := text }
+  if ← logInternalFrontendFallbacks then
+    let positionText := position?.getD "at unknown position"
+    withRef stx <| logWarning m!"Lean-quoted frontend fallback [{kind.eraseMacroScopes}] \
+      {positionText}: {message}"
+
+/-- Record one caught exception before falling back from the Lean-quoted frontend. -/
+def recordInternalFrontendFallbackException (kind : Name) (stx : Syntax) (ex : Exception) :
+    CommandElabM Unit :=
+  recordInternalFrontendFallback kind stx ex.toMessageData
+
+/-- Remove duplicate fallback entries, useful across editor re-elaborations. -/
+def dedupeInternalFrontendFallbackEntries (entries : Array InternalFrontendFallbackEntry) :
+    Array InternalFrontendFallbackEntry := Id.run do
+  let mut out := #[]
+  for entry in entries do
+    unless out.contains entry do
+      out := out.push entry
+  return out
+
+/-- Read fallback entries recorded for the current source file. -/
+def currentFileInternalFrontendFallbackEntries : CommandElabM
+    (Array InternalFrontendFallbackEntry) := do
+  let fileName ← getFileName
+  let entries ← liftIO internalFrontendFallbackStore.get
+  pure <| dedupeInternalFrontendFallbackEntries <|
+    entries.filter fun entry => entry.fileName == fileName
+
+/-- Summarize current-file fallback counters. -/
+def internalFrontendFallbackProfileString (entries : Array InternalFrontendFallbackEntry) :
+    String := Id.run do
+  let mut kinds : Array Name := #[]
+  let mut counts : NameMap Nat := {}
+  for entry in entries do
+    let kind := entry.kind.eraseMacroScopes
+    if (counts.find? kind).isNone then
+      kinds := kinds.push kind
+    counts := counts.insert kind ((counts.find? kind).getD 0 + 1)
+  let mut lines := #["internal frontend fallback profile for current file:"]
+  if kinds.isEmpty then
+    lines := lines.push "  no fallbacks"
+  else
+    for kind in kinds do
+      lines := lines.push s!"  {kind}: {(counts.find? kind).getD 0}"
+  String.intercalate "\n" lines.toList
+
+/-- Print the current file's Lean-quoted frontend fallback counters. -/
+elab "#print_internal_frontend_fallback_profile" : command => do
+  let profile := internalFrontendFallbackProfileString
+    (← currentFileInternalFrontendFallbackEntries)
+  logInfo m!"{profile}"
+
 /-- Local Lean free variables introduced for an experimental quoted-LF elaboration. -/
 abbrev LFQuoteLocalMap := Array (FVarId × Name)
 
@@ -642,18 +748,30 @@ def elabLeanQuotedInternalTheoremCheckedExpr
     (← getRef) declNameStx
   addInternalDeclarationQuoteStub target params typeExpr
 
+/-- Run a command elaboration step with configurable state restoration. -/
+def withRestoredCommandStateCore (restoreOnSuccess : Bool) (x : CommandElabM α) :
+    CommandElabM α := do
+  let savedState ← get
+  try
+    let out ← x
+    if restoreOnSuccess then
+      set savedState
+    pure out
+  catch ex =>
+    set savedState
+    throw ex
+
 /-- Run a speculative command elaboration step, restoring command state if it fails.
 
 Prefer-mode quoted elaboration uses this wrapper before falling back to the legacy frontend.  Lean
 term elaboration and generated-declaration checks can leave messages or partial info state behind
 before throwing; those diagnostics should not survive a successful legacy fallback. -/
-def withRestoredCommandStateOnError (x : CommandElabM α) : CommandElabM α := do
-  let savedState ← get
-  try
-    x
-  catch ex =>
-    set savedState
-    throw ex
+def withRestoredCommandStateOnError (x : CommandElabM α) : CommandElabM α :=
+  withRestoredCommandStateCore false x
+
+/-- Run a command elaboration probe and restore command state whether it succeeds or fails. -/
+def withRestoredCommandState (x : CommandElabM α) : CommandElabM α :=
+  withRestoredCommandStateCore true x
 
 /-- Parse the exact source range of a raw `ttExpr` body as an ordinary Lean term. -/
 def parseLeanQuotedTermFromSource (stx : Syntax) : CommandElabM (TSyntax `term) := do
@@ -743,12 +861,15 @@ def elabLeanQuotedTheoryObjExpr (theoryName : Name) (sigPrefix : HLSignature)
   if strict then
     elabLeanQuotedObjExpr theoryName sigPrefix locals expected? stx.raw (some stagedEnv)
   else if ← ttExprSourceContainsLegacyNamedImplicit stx.raw then
+    recordInternalFrontendFallback `theoryObjExpr stx.raw
+      m!"legacy named-implicit syntax is handled by the raw frontend"
     elabObjExpr stx
   else
     try
       withRestoredCommandStateOnError <|
         elabLeanQuotedObjExpr theoryName sigPrefix locals expected? stx.raw (some stagedEnv)
-    catch _ =>
+    catch ex =>
+      recordInternalFrontendFallbackException `theoryObjExpr stx.raw ex
       elabObjExpr stx
 
 /-- Elaborate a telescope of theory-block binders through the quoted frontend. -/
@@ -1121,6 +1242,109 @@ def elabLeanQuotedTheoryBlock (theoryName : Name) (basePrefix : HLSignature)
     state ← state.pushItem theoryName item
   pure <| HLTheoryBlock.ofItems state.items
 
+/-- Shape used to run the same implicit-elaboration path as registration in compare mode. -/
+inductive InternalFrontendCompareShape where
+  /-- Compare an `internal def` body as an LF object definition. -/
+  | objectDef
+  /-- Compare an `internal theorem` body as an LF judgment theorem. -/
+  | judgmentTheorem
+
+/-- Run the direct-term placeholder elaborator used before registering internal declarations. -/
+def elaborateInternalFrontendComparePlaceholders (target : InternalDefTarget)
+    (params : Array HLBinding) (typeExpr valueExpr : ObjExpr) : CommandElabM ObjExpr := do
+  let some sig ← liftCoreM <| getTheory? target.theoryName
+    | throwError "unknown type theory '{target.theoryName}'"
+  let flatSig ← liftCoreM <| flattenSignature sig
+  match elaborateInternalDirectTermPlaceholders target flatSig params typeExpr valueExpr with
+  | .ok valueExpr => pure valueExpr
+  | .error err => throwError err
+
+/-- Elaborate a compare-mode candidate through the object-definition implicit-app path. -/
+def elaborateInternalFrontendCompareObjectDef (target : InternalDefTarget)
+    (params : Array HLBinding) (typeExpr valueExpr : ObjExpr) : CommandElabM ObjExpr := do
+  let some checked ← liftCoreM <| getCheckedTheory? target.theoryName
+    | throwError "no checked artifact stored for type theory '{target.theoryName}'"
+  let cacheLookup ← liftCoreM <| getOrBuildCompiledLFCheckCache target.theoryName checked
+  let cache := cacheLookup.cache
+  let d : LFObjectDefDecl := {
+    name := target.localName
+    typeExpr := mkInternalDefFunctionType params typeExpr
+    value := mkInternalDefLambda params valueExpr }
+  let rawBlock : HLTheoryBlock := { lfObjectDefs := #[d] }
+  let flatSigWithRaw := cache.checkedHL.appendBlock rawBlock
+  let implicitLookup := mkImplicitCallableLookupContextFromCache cache rawBlock
+  let d ← liftCoreM <|
+    elaborateImplicitAppsInLFObjectDefWithLookup implicitLookup flatSigWithRaw
+      cache.knownLFDefTypes d
+  pure d.value
+
+/-- Elaborate a compare-mode candidate through the judgment-theorem implicit-app path. -/
+def elaborateInternalFrontendCompareTheorem (target : InternalDefTarget)
+    (params : Array HLBinding) (typeExpr valueExpr : ObjExpr) : CommandElabM ObjExpr := do
+  let some checked ← liftCoreM <| getCheckedTheory? target.theoryName
+    | throwError "no checked artifact stored for type theory '{target.theoryName}'"
+  let cacheLookup ← liftCoreM <| getOrBuildCompiledLFCheckCache target.theoryName checked
+  let cache := cacheLookup.cache
+  let t : LFJudgmentTheoremDecl := {
+    name := target.localName
+    binders := params
+    judgmentExpr := typeExpr
+    proof := valueExpr }
+  let rawBlock : HLTheoryBlock := { lfJudgmentTheorems := #[t] }
+  let flatSigWithRaw := cache.checkedHL.appendBlock rawBlock
+  let implicitLookup := mkImplicitCallableLookupContextFromCache cache rawBlock
+  let t ← liftCoreM <|
+    elaborateImplicitAppsInLFJudgmentTheoremWithLookup implicitLookup flatSigWithRaw
+      cache.knownLFDefTypes t
+  pure t.proof
+
+/-- Elaborate a compare-mode body through placeholders and registration-style implicits. -/
+def elaborateInternalFrontendCompareValue (shape : InternalFrontendCompareShape)
+    (target : InternalDefTarget) (params : Array HLBinding) (typeExpr valueExpr : ObjExpr) :
+    CommandElabM ObjExpr := do
+  let valueExpr ← elaborateInternalFrontendComparePlaceholders target params typeExpr valueExpr
+  match shape with
+  | .objectDef => elaborateInternalFrontendCompareObjectDef target params typeExpr valueExpr
+  | .judgmentTheorem => elaborateInternalFrontendCompareTheorem target params typeExpr valueExpr
+
+/-- Elaborate a canonical body through the legacy frontend for compare mode, if possible. -/
+def legacyInternalFrontendBodyForCompare? (shape : InternalFrontendCompareShape)
+    (fallbackKind : Name) (target : InternalDefTarget) (params : Array HLBinding)
+    (typeExpr : ObjExpr) (bodyStx : TSyntax `ttExpr) : CommandElabM (Option ObjExpr) := do
+  try
+    let valueExpr ← withRestoredCommandState do
+      let valueExpr ← elabObjExpr bodyStx
+      elaborateInternalFrontendCompareValue shape target params typeExpr valueExpr
+    pure (some valueExpr)
+  catch ex =>
+    recordInternalFrontendFallbackException fallbackKind bodyStx.raw ex
+    pure none
+
+/-- Compare a successful Lean-quoted body with the legacy frontend when requested. -/
+def compareLeanQuotedBodyWithLegacyIfEnabled (shape : InternalFrontendCompareShape)
+    (fallbackKind : Name) (declName : Name) (target : InternalDefTarget)
+    (params : Array HLBinding) (typeExpr quotedValue : ObjExpr) (bodyStx : TSyntax `ttExpr) :
+    CommandElabM Unit := do
+  unless ← compareLeanQuotedWithLegacyFrontend do
+    return ()
+  let some quotedValue ←
+      try
+        some <$> withRestoredCommandState do
+          elaborateInternalFrontendCompareValue shape target params typeExpr quotedValue
+      catch ex =>
+        recordInternalFrontendFallbackException fallbackKind bodyStx.raw ex
+        pure none
+    | return ()
+  let some legacyValue ← legacyInternalFrontendBodyForCompare? shape fallbackKind target params
+      typeExpr bodyStx
+    | return ()
+  unless lfExprAlphaEq quotedValue legacyValue do
+    let quotedText := diagnosticObjExprString quotedValue
+    let legacyText := diagnosticObjExprString legacyValue
+    throwError "Lean-quoted frontend and legacy frontend produced different LF bodies for \
+      internal declaration '{declName.eraseMacroScopes}'.\n\nLean-quoted body:\n  \
+      {quotedText}\n\nLegacy body:\n  {legacyText}"
+
 /-- Whether canonical internal declarations should try the quoted frontend first. -/
 def preferLeanQuotedFrontend : CommandElabM Bool :=
   getBoolOption `internalLean.preferLeanQuotedFrontend
@@ -1155,8 +1379,9 @@ def elabDeclareInternalLeanQuoted (doc? : Option (TSyntax ``Parser.Command.docCo
         let basePrefix ← liftCoreM <| flattenSignature { name := nm.getId, parents, levelParams }
         let block ← elabLeanQuotedTheoryBlock nm.getId basePrefix decls strict
         elabDeclareInternalLeanWithBlock doc? nm levelParams parents decls block
-    catch _ =>
-      throwUnsupportedSyntax
+    catch ex =>
+      recordInternalFrontendFallbackException `declareTypeTheory nm.raw ex
+      elabDeclareInternalLean doc? nm levelParams parents decls
 
 /-- Try the Lean-quoted frontend for one `extend_type_theory` command. -/
 def elabExtendInternalLeanQuoted (doc? : Option (TSyntax ``Parser.Command.docComment))
@@ -1175,49 +1400,93 @@ def elabExtendInternalLeanQuoted (doc? : Option (TSyntax ``Parser.Command.docCom
           | throwUnsupportedSyntax
         let block ← elabLeanQuotedTheoryBlock nm.getId basePrefix decls strict
         elabExtendInternalLeanWithBlock doc? nm decls block
-    catch _ =>
-      throwUnsupportedSyntax
+    catch ex =>
+      recordInternalFrontendFallbackException `extendTypeTheory nm.raw ex
+      elabExtendInternalLean doc? nm decls
 
-/-- Try the experimental quoted frontend for a canonical checked `internal def` term body. -/
+/-- Try the experimental quoted frontend for a canonical checked `internal def` term body.
+
+Returns `true` when the quoted path registered the declaration and `false` when it recorded a
+fallback and registered through the legacy path directly. -/
 def elabCanonicalLeanQuotedDefChecked (doc? : Option (TSyntax ``Parser.Command.docComment))
-    (declNameStx : Syntax) (declName : Name) (params : Array HLBinding)
-    (typeStx : TSyntax `ttExpr) (bodyStx : Syntax) : CommandElabM Unit := do
+    (declNameStx : Syntax) (declName : Name) (binders : TSyntaxArray `ttBinder)
+    (params : Array HLBinding) (typeStx : TSyntax `ttExpr) (bodyStx : TSyntax `ttExpr) :
+    CommandElabM Bool := do
   unless ← preferLeanQuotedFrontend do
     throwUnsupportedSyntax
+  let fallbackLegacy : CommandElabM Bool := do
+    if binders.isEmpty then
+      elabInternalDefChecked doc? declNameStx declName #[] typeStx bodyStx
+    else
+      elabInternalDefCheckedWithBinders doc? declNameStx declName #[] binders typeStx bodyStx
+    pure false
+  let some (target, params, typeExpr, valueExpr) ←
+      try
+        some <$> withRestoredCommandStateOnError do
+          let target ← resolveInternalDefTarget declName
+          let typeExpr ← elabObjExpr typeStx
+          let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
+          let bodyTerm ← parseLeanQuotedTermFromSource bodyStx.raw
+          let valueExpr ← elabLeanQuotedLFBody target params typeExpr bodyTerm
+          pure (target, params, typeExpr, valueExpr)
+      catch ex =>
+        recordInternalFrontendFallbackException `internalDef bodyStx.raw ex
+        let _ ← fallbackLegacy
+        pure none
+    | return false
+  compareLeanQuotedBodyWithLegacyIfEnabled .objectDef `compareLegacyInternalDef declName target
+    params typeExpr valueExpr bodyStx
   try
     withRestoredCommandStateOnError do
-      let target ← resolveInternalDefTarget declName
-      let typeExpr ← elabObjExpr typeStx
-      let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
-      let bodyTerm ← parseLeanQuotedTermFromSource bodyStx
-      let valueExpr ← elabLeanQuotedLFBody target params typeExpr bodyTerm
-      saveLeanQuotedLFBodyInfo target params typeExpr bodyStx
+      saveLeanQuotedLFBodyInfo target params typeExpr bodyStx.raw
       if params.isEmpty then
         elabInternalDefCheckedExpr doc? declNameStx declName #[] typeExpr valueExpr
           "internal def (Lean-quoted)"
       else
         elabInternalDefCheckedWithBindersExpr doc? declNameStx declName #[] params typeExpr
           valueExpr "internal def (Lean-quoted)"
-  catch _ =>
-    throwUnsupportedSyntax
+    pure true
+  catch ex =>
+    recordInternalFrontendFallbackException `internalDef bodyStx.raw ex
+    fallbackLegacy
 
-/-- Try the experimental quoted frontend for a canonical checked `internal theorem` term body. -/
+/-- Try the experimental quoted frontend for a canonical checked `internal theorem` term body.
+
+Returns `true` when the quoted path registered the declaration and `false` when it recorded a
+fallback and registered through the legacy path directly. -/
 def elabCanonicalLeanQuotedTheoremChecked (doc? : Option (TSyntax ``Parser.Command.docComment))
-    (declNameStx : Syntax) (declName : Name) (params : Array HLBinding)
-    (typeStx : TSyntax `ttExpr) (bodyStx : Syntax) : CommandElabM Unit := do
+    (declNameStx : Syntax) (declName : Name) (binders : TSyntaxArray `ttBinder)
+    (params : Array HLBinding) (typeStx : TSyntax `ttExpr) (bodyStx : TSyntax `ttExpr) :
+    CommandElabM Bool := do
   unless ← preferLeanQuotedFrontend do
     throwUnsupportedSyntax
+  let fallbackLegacy : CommandElabM Bool := do
+    elabInternalTheoremCheckedWithBinders doc? declNameStx declName #[] binders typeStx bodyStx
+    pure false
+  let some (target, params, typeExpr, valueExpr) ←
+      try
+        some <$> withRestoredCommandStateOnError do
+          let target ← resolveInternalDefTarget declName
+          let typeExpr ← elabObjExpr typeStx
+          let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
+          let bodyTerm ← parseLeanQuotedTermFromSource bodyStx.raw
+          let valueExpr ← elabLeanQuotedLFBody target params typeExpr bodyTerm
+          pure (target, params, typeExpr, valueExpr)
+      catch ex =>
+        recordInternalFrontendFallbackException `internalTheorem bodyStx.raw ex
+        let _ ← fallbackLegacy
+        pure none
+    | return false
+  compareLeanQuotedBodyWithLegacyIfEnabled .judgmentTheorem `compareLegacyInternalTheorem
+    declName target params typeExpr valueExpr bodyStx
   try
     withRestoredCommandStateOnError do
-      let target ← resolveInternalDefTarget declName
-      let typeExpr ← elabObjExpr typeStx
-      let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
-      let bodyTerm ← parseLeanQuotedTermFromSource bodyStx
-      let valueExpr ← elabLeanQuotedLFBody target params typeExpr bodyTerm
-      saveLeanQuotedLFBodyInfo target params typeExpr bodyStx
+      saveLeanQuotedLFBodyInfo target params typeExpr bodyStx.raw
       elabLeanQuotedInternalTheoremCheckedExpr doc? declNameStx declName params typeExpr valueExpr
-  catch _ =>
-    throwUnsupportedSyntax
+    pure true
+  catch ex =>
+    recordInternalFrontendFallbackException `internalTheorem bodyStx.raw ex
+    fallbackLegacy
 
 syntax (name := internalLeanQuotedDef)
   docComment ? "internal_lean " "def " ident " : " ttExpr " := " term : command
@@ -1274,31 +1543,39 @@ elab_rules (kind := extendInternalLeanWhere) : command
 elab_rules (kind := internalDef) : command
   | `($[$doc?:docComment]? internal def $declName:ident : $typeStx:ttExpr :=
       $bodyStx:ttExpr) => do
-      elabCanonicalLeanQuotedDefChecked doc? declName declName.getId #[] typeStx bodyStx.raw
-      addInternalDefAnnotationNavigationInfo declName.getId #[] typeStx
+      let quoted ←
+        elabCanonicalLeanQuotedDefChecked doc? declName declName.getId #[] #[] typeStx bodyStx
+      if quoted then
+        addInternalDefAnnotationNavigationInfo declName.getId #[] typeStx
 
 elab_rules (kind := internalDefBinderUnsupported) : command
   | `($[$doc?:docComment]? internal def $declName:ident $binders:ttBinder* :
       $typeStx:ttExpr := $bodyStx:ttExpr) => do
       let params ← binders.mapM elabHLBinding
-      elabCanonicalLeanQuotedDefChecked doc? declName declName.getId params typeStx
-        bodyStx.raw
-      addInternalDefAnnotationNavigationInfo declName.getId binders typeStx
+      let quoted ←
+        elabCanonicalLeanQuotedDefChecked doc? declName declName.getId binders params typeStx
+          bodyStx
+      if quoted then
+        addInternalDefAnnotationNavigationInfo declName.getId binders typeStx
 
 elab_rules (kind := internalTheorem) : command
   | `($[$doc?:docComment]? internal theorem $declName:ident : $typeStx:ttExpr :=
       $bodyStx:ttExpr) => do
-      elabCanonicalLeanQuotedTheoremChecked doc? declName declName.getId #[] typeStx
-        bodyStx.raw
-      addInternalDefAnnotationNavigationInfo declName.getId #[] typeStx
+      let quoted ←
+        elabCanonicalLeanQuotedTheoremChecked doc? declName declName.getId #[] #[] typeStx
+          bodyStx
+      if quoted then
+        addInternalDefAnnotationNavigationInfo declName.getId #[] typeStx
 
 elab_rules (kind := internalTheoremBinder) : command
   | `($[$doc?:docComment]? internal theorem $declName:ident $binders:ttBinder* :
       $typeStx:ttExpr := $bodyStx:ttExpr) => do
       let params ← binders.mapM elabHLBinding
-      elabCanonicalLeanQuotedTheoremChecked doc? declName declName.getId params typeStx
-        bodyStx.raw
-      addInternalDefAnnotationNavigationInfo declName.getId binders typeStx
+      let quoted ←
+        elabCanonicalLeanQuotedTheoremChecked doc? declName declName.getId binders params typeStx
+          bodyStx
+      if quoted then
+        addInternalDefAnnotationNavigationInfo declName.getId binders typeStx
 
 elab_rules (kind := internalLeanQuotedDefSorry) : command
   | `($[$doc?:docComment]? internal_lean def $declName:ident : $typeStx:ttExpr := sorry) =>

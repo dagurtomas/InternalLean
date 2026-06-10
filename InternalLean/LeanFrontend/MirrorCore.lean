@@ -243,7 +243,9 @@ register_option internalLean.mirrorBackend.compareWithLF : Bool := {
 register_option internalLean.mirrorBackend.checkTheoryBodies : Bool := {
   defValue := false
   descr := "use the experimental Lean mirror backend as an opt-in fast checker for checked \
-    theory-block syntax_def and lf_def bodies"
+    theory-block syntax_def and lf_def bodies; when enabled for a covered body, mirror \
+    acceptance substitutes for the ordinary LF body check and weakens the LF trust boundary, so \
+    this option must remain opt-in"
 }
 
 register_option internalLean.mirrorBackend.compareTheoryBodiesWithLF : Bool := {
@@ -258,7 +260,11 @@ register_option internalLean.mirrorBackend.fastPathMaxHeartbeats : Nat := {
     the ceiling"
 }
 
-/-- Run an opt-in mirror fast-path action with enough heartbeat room for Lean defeq. -/
+/-- Run an opt-in mirror fast-path action with enough heartbeat room for Lean defeq.
+
+This helper is only used behind `internalLean.mirrorBackend.checkTheoryBodies`.  Enabling that
+option lets mirror acceptance stand in for the ordinary LF body check for covered declarations, so
+it weakens the LF trust boundary and must remain opt-in. -/
 def withLFMirrorFastPathHeartbeats (x : CoreM α) : CoreM α := do
   let limit ← getNatOption `internalLean.mirrorBackend.fastPathMaxHeartbeats 1000000
   if limit == 0 then

@@ -7,6 +7,7 @@ import InternalLeanTest.CorrectnessRegressionTest
 import InternalLeanTest.DocLintTest
 import InternalLeanTest.EndToEndTinyNatTest
 import InternalLeanTest.EvidencePremiseTest
+import InternalLeanTest.FrontendFallbackProfileTest
 import InternalLeanTest.FrontendMacroTest
 import InternalLeanTest.GenerationHygieneTest
 import InternalLeanTest.GenericStructuralMetatheoryTest
@@ -27,9 +28,11 @@ import InternalLeanTest.ModelStructuralEquivTest
 import InternalLeanTest.ModelUniverseLevelsTest
 import InternalLeanTest.ModelWorkflowUXTest
 import InternalLeanTest.ModelRenderingNormalizationTest
+import InternalLeanTest.MirrorOracleTest
 import InternalLeanTest.NaturalNumbersTest
 import InternalLeanTest.NavigationTest
 import InternalLeanTest.ObjectNotationTest
+import InternalLeanTest.QuotedFrontendWinsTest
 import InternalLeanTest.RawConversionCaptureTest
 import InternalLeanTest.RawConversionTest
 import InternalLeanTest.SoundnessRegressionTest
