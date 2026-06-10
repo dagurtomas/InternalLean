@@ -14,36 +14,40 @@ open Lean Elab Command
 
 namespace InternalLean
 
-/-- Convert checked LF head classes to the Phase-5b structural kernel head classes. -/
-def checkedLFHeadKindToKHeadKind : CheckedLFHeadKind → Kernel.KHeadKind
-  | .local => .primitive
-  | .syntaxSort => .syntaxSort
-  | .syntaxDef => .syntaxDef
-  | .lfDefinition => .lfDefinition
-  | .lfTheorem => .lfTheorem
-  | .lfRule => .lfRule
-  | .judgment => .judgment
-  | .primitive => .primitive
-  | .definition => .definition
-  | .theorem => .theorem
-  | .opaque => .opaque
+/-- Find a de Bruijn index for a source local in a KTerm-lowering binder stack.
 
-/-- Find a de Bruijn index for a source local in a KTerm-lowering binder stack. -/
-def findKTermLoweringBinder? (binders : Array (Option Name)) (x : Name) : Option Nat :=
-  let x := x.eraseMacroScopes
-  let rec go (i : Nat) : List (Option Name) → Option Nat
+Exact hygienic binder names win. If no exact binder exists, erased-name fallback is allowed only
+when it is unique; otherwise lowering rejects the ambiguous binder instead of guessing. -/
+def findKTermLoweringBinder? (binders : Array (Option Name)) (x : Name) :
+    Except String (Option Nat) := do
+  let rec exact (i : Nat) : List (Option Name) → Option Nat
     | [] => none
-    | none :: rest => go (i + 1) rest
-    | some y :: rest => if y.eraseMacroScopes == x then some i else go (i + 1) rest
-  go 0 binders.toList.reverse
+    | none :: rest => exact (i + 1) rest
+    | some y :: rest => if y == x then some i else exact (i + 1) rest
+  let stack := binders.toList.reverse
+  match exact 0 stack with
+  | some i => pure (some i)
+  | none =>
+      let xErased := x.eraseMacroScopes
+      let rec erasedMatches (i : Nat) : List (Option Name) → List (Nat × Name)
+        | [] => []
+        | none :: rest => erasedMatches (i + 1) rest
+        | some y :: rest =>
+            let restMatches := erasedMatches (i + 1) rest
+            if y.eraseMacroScopes == xErased then (i, y) :: restMatches else restMatches
+      match erasedMatches 0 stack with
+      | [] => pure none
+      | [(i, _)] => pure (some i)
+      | _ => throw s!"checked LF expression lowers ambiguous local '{xErased}' after erasing \
+          macro scopes"
 
 /-- Lower a checked LF expression to the Phase-5b structural kernel term. -/
 partial def checkedLFExprToKTermWithContext (metas : NameMap RawMetaSort) (freeLocals : NameSet)
     (binders : Array (Option Name)) : CheckedLFExpr → Except String Kernel.KTerm
-  | .ident h =>
+  | .ident h => do
       let name := h.name.eraseMacroScopes
       if h.kind == .local then
-        match findKTermLoweringBinder? binders name with
+        match ← findKTermLoweringBinder? binders h.name with
         | some i => pure (.bvar i)
         | none =>
             match metas.find? name with
@@ -54,10 +58,7 @@ partial def checkedLFExprToKTermWithContext (metas : NameMap RawMetaSort) (freeL
                 else
                   throw s!"checked LF expression lowers out-of-scope local '{name}'"
       else
-        pure <| .ident {
-          name := Kernel.KName.ofName name
-          kind := checkedLFHeadKindToKHeadKind h.kind
-          arity? := h.arity? }
+        pure <| .ident { name := Kernel.KName.ofName name }
   | .sort => pure (.univ .zero)
   | .univ u => pure (.univ (LevelExpr.normalize u))
   | .app f a => do

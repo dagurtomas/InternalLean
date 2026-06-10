@@ -79,17 +79,16 @@ inductive KHeadKind where
 structure KHead where
   /-- Erased global head name. -/
   name : KName
-  /-- Head class. -/
-  kind : KHeadKind := .primitive
-  /-- Optional declared arity for diagnostics and printing. -/
-  arity? : Option Nat := none
-  deriving Inhabited, Repr, BEq
+  deriving Inhabited, Repr
 
 namespace KHead
 
-/-- Semantic equality for resolved heads; arity is diagnostic side data. -/
+/-- Semantic equality for resolved heads. -/
 def alphaEq (a b : KHead) : Bool :=
-  a.name == b.name && a.kind == b.kind
+  a.name == b.name
+
+instance : BEq KHead where
+  beq := alphaEq
 
 end KHead
 
@@ -111,7 +110,7 @@ inductive KTerm where
   | snd (value : KTerm)
   | univ (level : LevelExpr)
   | jeq (lhs rhs : KTerm)
-  deriving Inhabited, Repr, BEq
+  deriving Inhabited, Repr
 
 namespace KTerm
 
@@ -150,6 +149,9 @@ partial def alphaEq : KTerm → KTerm → Bool
   | .univ a, .univ b => a == b
   | .jeq al ar, .jeq bl br => alphaEq al bl && alphaEq ar br
   | _, _ => false
+
+instance : BEq KTerm where
+  beq := alphaEq
 
 /-- Validate that a structural term has no loose de Bruijn indices. -/
 def ensureLocallyClosed (label : String) (e : KTerm) : Except String Unit := do
@@ -271,7 +273,7 @@ structure Judgment where
   head : KName
   /-- Judgment arguments. -/
   args : List KTerm := []
-  deriving Inhabited, Repr, BEq
+  deriving Inhabited, Repr
 
 namespace Judgment
 
@@ -283,6 +285,9 @@ def instantiateMetas (σ : KInstantiation) (j : Judgment) : Except String Judgme
 def alphaEq (a b : Judgment) : Bool :=
   a.head == b.head && a.args.length == b.args.length &&
     (a.args.zip b.args).all (fun pair => pair.1.alphaEq pair.2)
+
+instance : BEq Judgment where
+  beq := alphaEq
 
 /-- Whether every argument of a structural judgment is locally closed. -/
 def isLocallyClosed (j : Judgment) : Bool :=
@@ -376,6 +381,11 @@ def withRhs (stmt : ConversionStatement) (rhs : KTerm) : ConversionStatement :=
 /-- Replace the source endpoint. -/
 def withLhs (stmt : ConversionStatement) (lhs : KTerm) : ConversionStatement :=
   { stmt with lhs := lhs }
+
+/-- Semantic equality for structural conversion statements. -/
+def alphaEq (a b : ConversionStatement) : Bool :=
+  a.plugin == b.plugin && a.context? == b.context? && a.lhs.alphaEq b.lhs &&
+    a.rhs.alphaEq b.rhs
 
 /-- Validate that a conversion statement contains no loose de Bruijn indices. -/
 def ensureLocallyClosed (label : String) (stmt : ConversionStatement) : Except String Unit := do
@@ -573,7 +583,12 @@ def ofSignature (sig : Signature) : Except String ValidatedSignature := do
     if constantsByKey.contains key then
       throw s!"signature '{sig.name}' has duplicate typed LF constant '{c.name}' with \
         arity {c.params.length}"
+    let mut seenParams : Std.HashSet KName := {}
     for p in c.params do
+      if seenParams.contains p.name then
+        throw s!"typed LF constant '{c.name}' in signature '{sig.name}' has duplicate \
+          parameter '{p.name}'"
+      seenParams := seenParams.insert p.name
       if let some ty := p.type? then
         KTerm.ensureLocallyClosed s!"typed LF constant '{c.name}' parameter '{p.name}' type" ty
       if let some ev := p.evidence? then
@@ -806,7 +821,7 @@ def validatePluginStepWithContextDetailed (ctx : ValidatedReplayContext)
         | none => throwFailure .externalCertificate <|
             s!"external conversion certificate '{certName}' is not available in the checked \
               replay context"
-      if entry.statement != stmt then
+      unless entry.statement.alphaEq stmt do
         throwFailure .externalCertificate <|
           s!"external conversion certificate '{certName}' certifies a different statement"
       if entry.stepKind != kind then
@@ -826,23 +841,23 @@ partial def checkWithContextDetailedCore (ctx : ValidatedReplayContext)
     (sig : ValidatedSignature) : KernelLFConversionCertificate → ConversionStatement →
     Except ConversionCheckFailure Unit
   | .refl stmt, expected => do
-      if stmt != expected then
+      unless stmt.alphaEq expected do
         throwFailure .malformedCertificate "conversion refl has an unexpected statement"
-      unless stmt.lhs == stmt.rhs do
+      unless stmt.lhs.alphaEq stmt.rhs do
         throwFailure .malformedCertificate s!"conversion refl for plugin '{stmt.plugin}' has \
           non-identical endpoints"
   | .symm stmt child, expected => do
-      if stmt != expected then
+      unless stmt.alphaEq expected do
         throwFailure .malformedCertificate "conversion symm has an unexpected statement"
       checkWithContextDetailedCore ctx sig child stmt.symm
   | .trans stmt middle left right, expected => do
-      if stmt != expected then
+      unless stmt.alphaEq expected do
         throwFailure .malformedCertificate "conversion trans has an unexpected statement"
       checkWithContextDetailedCore ctx sig left (stmt.withRhs middle)
       checkWithContextDetailedCore ctx sig right (stmt.withLhs middle)
   | .pluginStep stmt kind externalCertificateName? sideConditionCertificateNames payload,
       expected => do
-      if stmt != expected then
+      unless stmt.alphaEq expected do
         throwFailure .malformedCertificate "conversion plugin step has an unexpected statement"
       validatePluginStepWithContextDetailed ctx sig stmt kind externalCertificateName?
         sideConditionCertificateNames payload
@@ -1323,9 +1338,8 @@ def pushAnonymousBinder (ctx : Context) : Context :=
   { ctx with binders := none :: ctx.binders }
 
 /-- Decode a non-structural old raw head kind. -/
-def oldHead (ctx : Context) (name : Name) (kind : KHeadKind := .primitive) : KTerm :=
-  let k := KName.ofName name
-  .ident { name := k, kind := (ctx.heads[k]?).getD kind }
+def oldHead (_ctx : Context) (name : Name) (_kind : KHeadKind := .primitive) : KTerm :=
+  .ident { name := KName.ofName name }
 
 /-- Decode an old raw local/metavariable reference. -/
 def lowerRef (ctx : Context) (name : Name) (_fallbackSort : RawMetaSort := .arg) : KTerm :=

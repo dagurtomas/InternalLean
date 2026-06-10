@@ -44,6 +44,38 @@ run_cmd do
   | .error err, _ | _, .error err => throwError "lambda lowering failed: {err}"
 
 run_cmd do
+  let sortHead : CheckedLFHead := { name := `SameHead, kind := .syntaxSort, arity? := some 2 }
+  let opaqueHead : CheckedLFHead := { name := `SameHead, kind := .opaque }
+  match checkedLFExprToKTerm (.ident sortHead), checkedLFExprToKTerm (.ident opaqueHead) with
+  | .ok sortTerm, .ok opaqueTerm =>
+      unless Kernel.KTerm.alphaEq sortTerm opaqueTerm && sortTerm == opaqueTerm do
+        throwError "structural KTerm equality depended on diagnostic head metadata"
+  | .error err, _ | _, .error err => throwError "head lowering failed: {err}"
+
+run_cmd do
+  let outer ← withFreshMacroScope <| MonadQuotation.addMacroScope `x
+  let inner ← withFreshMacroScope <| MonadQuotation.addMacroScope `x
+  unless outer.eraseMacroScopes == inner.eraseMacroScopes && outer != inner do
+    throwError "expected distinct hygienic binders with the same erased name"
+  let expr : CheckedLFExpr :=
+    .lam #[outer] (.lam #[inner] (.ident { name := outer, kind := .local }))
+  match checkedLFExprToKTerm expr with
+  | .ok (.lam (.lam (.bvar 1))) => pure ()
+  | .ok other => throwError "hygienic outer binder lowered to the wrong index: {repr other}"
+  | .error err => throwError "hygienic binder lowering failed: {err}"
+
+run_cmd do
+  let outer ← withFreshMacroScope <| MonadQuotation.addMacroScope `x
+  let inner ← withFreshMacroScope <| MonadQuotation.addMacroScope `x
+  let expr : CheckedLFExpr :=
+    .lam #[outer] (.lam #[inner] (.ident { name := `x, kind := .local }))
+  match checkedLFExprToKTerm expr with
+  | .ok other => throwError "ambiguous erased binder lowered instead of failing: {repr other}"
+  | .error err =>
+      unless err.contains "ambiguous local" do
+        throwError "expected ambiguous local diagnostic, got: {err}"
+
+run_cmd do
   let objHead : CheckedLFHead := { name := `Obj, kind := .syntaxSort }
   let obj : CheckedLFExpr := .ident objHead
   let namedArrow : CheckedLFExpr := .arrow (some `x) obj obj
@@ -77,6 +109,38 @@ run_cmd do
   match Kernel.ValidatedSignature.ofSignature sig with
   | .ok _ => pure ()
   | .error err => throwError "structural kernel rejected an ordinary constant named 'lam': {err}"
+
+run_cmd do
+  let dupMeta : Kernel.RuleMetaVar := {
+    name := Kernel.KName.ofName `_arg1
+    type? := some (.univ .zero) }
+  let dupConstant : Kernel.LFConstantSchema := {
+    name := Kernel.KName.ofName `DupConstant
+    params := [dupMeta, dupMeta]
+    resultType := .univ .zero }
+  let sig : Kernel.Signature := {
+    name := Kernel.KName.ofName `DuplicateConstantParamSmoke
+    constants := [dupConstant] }
+  match Kernel.ValidatedSignature.ofSignature sig with
+  | .ok _ => throwError "structural kernel accepted duplicate constant parameter names"
+  | .error err =>
+      unless err.contains "duplicate" && err.contains "parameter" do
+        throwError "expected duplicate-parameter diagnostic, got: {err}"
+
+run_cmd do
+  let dupMeta : Kernel.RuleMetaVar := { name := Kernel.KName.ofName `x }
+  let ruleSchema : Kernel.RuleSchema := {
+    name := Kernel.KName.ofName `dupRule
+    metavariables := [dupMeta, dupMeta]
+    conclusionStmt := { head := Kernel.KName.ofName `J } }
+  let sig : Kernel.Signature := {
+    name := Kernel.KName.ofName `DuplicateRuleMetaSmoke
+    rules := [ruleSchema] }
+  match Kernel.ValidatedSignature.ofSignature sig with
+  | .ok _ => throwError "structural kernel accepted duplicate rule metavariable names"
+  | .error err =>
+      unless err.contains "duplicate" && err.contains "metavariable" do
+        throwError "expected duplicate-metavariable diagnostic, got: {err}"
 
 run_cmd do
   let badStmt : Kernel.Judgment := {
