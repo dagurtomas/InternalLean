@@ -732,6 +732,48 @@ def checkedLFHead? (globalHeads : NameMap (CheckedLFHeadKind × Option Nat))
         | none => none
   | _ => none
 
+/-- Identifier head of an object expression, if any. -/
+def lfExprHeadIdent? (e : ObjExpr) : Option Name :=
+  match splitObjApp e with
+  | (.ident head, _) => some head.eraseMacroScopes
+  | _ => none
+
+/-- Names whose applications are custom-judgment statements. -/
+def lfJudgmentHeadNames (sig : HLSignature) : NameSet := Id.run do
+  let mut names : NameSet := {}
+  for j in sig.judgments do
+    names := names.insert j.name.eraseMacroScopes
+  for j in sig.judgmentAbbrevs do
+    names := names.insert j.name.eraseMacroScopes
+  return names
+
+/-- Names whose applications are object type/sort heads. -/
+def lfObjectTypeHeadNames (sig : HLSignature) : NameSet := Id.run do
+  let mut names : NameSet := {}
+  for s in sig.syntaxSorts do
+    names := names.insert s.name.eraseMacroScopes
+  for s in sig.syntaxAbbrevs do
+    names := names.insert s.name.eraseMacroScopes
+  for s in sig.syntaxDefs do
+    names := names.insert s.name.eraseMacroScopes
+  return names
+
+/-- Whether an expression is headed by a declared custom judgment or judgment abbreviation. -/
+def lfExprIsJudgmentHeaded (sig : HLSignature) (e : ObjExpr) : Bool :=
+  match lfExprHeadIdent? e with
+  | some head => (lfJudgmentHeadNames sig).contains head
+  | none => false
+
+/-- Whether an expression is visibly an object type for declaration classification. -/
+partial def lfExprIsObjectTypeLike (sig : HLSignature) : ObjExpr → Bool
+  | .sort | .univ _ => true
+  | .sigma .. => true
+  | .arrow _ _ B | .funArrow _ _ B => lfExprIsObjectTypeLike sig B
+  | e =>
+      match lfExprHeadIdent? e with
+      | some head => (lfObjectTypeHeadNames sig).contains head
+      | none => false
+
 /-- User-facing label for a checked LF head kind. -/
 def CheckedLFHeadKind.label : CheckedLFHeadKind → String
   | .local => "local"
@@ -7364,6 +7406,33 @@ def checkNoKernelReservedLFHeadNamesInSignature (sig : HLSignature) : CoreM Unit
     checkLFKernelReservedDeclarationName "LF object definition" d.name
   for d in sig.lfJudgmentTheorems do
     checkLFKernelReservedDeclarationName "LF judgment theorem" d.name
+
+/-- Desugar trailing rule binders whose types are judgment statements into premises. -/
+def desugarRuleBinderPremises (sigWithBlock : HLSignature) (r : RuleDecl) :
+    CoreM RuleDecl := do
+  let mut params := #[]
+  let mut binderPremises := #[]
+  let mut seenPremiseBinder := false
+  for b in r.params do
+    let isPremiseBinder :=
+      b.visibility == .explicit && lfExprIsJudgmentHeaded sigWithBlock b.typeExpr
+    if isPremiseBinder then
+      seenPremiseBinder := true
+      binderPremises := binderPremises.push { name := b.name, judgmentExpr := b.typeExpr }
+    else
+      if seenPremiseBinder then
+        throwError "rule '{r.name}' has judgment-headed binder premise(s) followed by \
+          non-premise binder '{b.name}'. Binder-style premises must be trailing; move \
+            interleaved premises to the `where premise` form."
+      params := params.push b
+  pure { r with params := params, premises := binderPremises ++ r.premises }
+
+/-- Desugar binder-style premises in every rule in an extension block. -/
+def desugarRuleBinderPremisesInBlock (flatBase : HLSignature) (block : HLTheoryBlock) :
+    CoreM HLTheoryBlock := do
+  let sigWithBlock := flatBase.appendBlock block
+  let rules ← block.rules.mapM (desugarRuleBinderPremises sigWithBlock)
+  pure { block with rules := rules }
 
 /-- Check that new declaration names do not collide with the already flattened baseline. -/
 def checkNoExtensionNameCollisions (flatBase : HLSignature) (block : HLTheoryBlock) :

@@ -37,6 +37,10 @@ object_role MacroSmoke rel_refl : intro for SelfRel
 /--
 error: failed to check internal LF declaration 'MacroSmoke.bad' in type theory 'MacroSmoke'
 
+Classification was ambiguous: expected type has head 'SelfRel', so it is not visibly headed by a
+judgment, judgment abbreviation, syntax sort, syntax abbreviation, syntax definition, or structural
+object type.
+
 LF object definition path:
 object_macro 'SelfRel' in type theory 'MacroSmoke' is diagnostic-only and cannot appear in checked
 LF declarations; expand it before writing type of lf_def 'bad'

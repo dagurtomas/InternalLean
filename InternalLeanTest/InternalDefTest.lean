@@ -46,13 +46,13 @@ internal def InternalDefLFSmoke.rel_aliasB : Rel aliasB aliasB := rel_refl alias
 
 /-- error: cannot infer target type theory for `internal def lonely`
 
-Write the declaration inside a theory namespace, for example:
-  namespace TinyNatUX
+Write the declaration inside a declared theory namespace, for example:
+  namespace YourTheory
   internal def lonely : ... := ...
-  end TinyNatUX
+  end YourTheory
 
 or qualify the declaration name:
-  internal def TinyNatUX.lonely : ... := ... -/
+  internal def YourTheory.lonely : ... := ... -/
 #guard_msgs (whitespace := lax) in
 internal def lonely : Obj := a
 

@@ -28,14 +28,8 @@ namespace ObjectForwardRefBatchReject
 
 /--
 error: failed to check internal LF declaration 'ObjectForwardRefBatchReject.d1' in type theory
-'ObjectForwardRefBatchReject'
-
-LF object definition path:
+'ObjectForwardRefBatchReject' as an LF object definition:
 unknown identifier 'd2' in value of lf_def 'd1' in type theory 'ObjectForwardRefBatchReject'
-
-LF judgment theorem path:
-unknown identifier 'd2' in proof of judgment_theorem 'd1' in type theory
-'ObjectForwardRefBatchReject'
 -/
 #guard_msgs (whitespace := lax) in
 internal_defs where
@@ -52,14 +46,9 @@ namespace ObjectSelfRefBatchReject
 
 /--
 error: failed to check internal LF declaration 'ObjectSelfRefBatchReject.d' in type theory
-'ObjectSelfRefBatchReject'
-
-LF object definition path:
+'ObjectSelfRefBatchReject' as an LF object definition:
 lf_def 'd' in type theory 'ObjectSelfRefBatchReject' references LF definition 'd' before it is
 available in value
-
-LF judgment theorem path:
-rule 'd' in type theory 'ObjectSelfRefBatchReject' has statement headed by unknown judgment 'Obj'
 -/
 #guard_msgs (whitespace := lax) in
 internal_defs where
@@ -78,13 +67,7 @@ namespace TheoremSelfRefFallbackReject
 
 /--
 error: failed to check internal LF declaration 'TheoremSelfRefFallbackReject.t' in type theory
-'TheoremSelfRefFallbackReject'
-
-LF object definition path:
-lf_def 't' in type theory 'TheoremSelfRefFallbackReject' has type headed by judgment 'J', expected
-an LF type expression
-
-LF judgment theorem path:
+'TheoremSelfRefFallbackReject' as an LF judgment theorem:
 judgment_theorem 't' in type theory 'TheoremSelfRefFallbackReject' uses premise theorem 't' before
 it is available
 -/

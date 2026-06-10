@@ -706,9 +706,12 @@ def findInternalAdmission? (admissions : Array InternalAdmission) (declName : Na
 
 /-- Print a concise theory/replay/model workflow status. -/
 elab "#check_theory " theory:ident : command => do
-  liftCoreM <| requireTheoryAnchor theory.getId
   let some sig ← liftCoreM <| getTheory? theory.getId
-    | throwError "unknown type theory '{theory.getId}'"
+    | do
+        if let some failed ← currentFileFailedTheoryDeclaration? theory.getId then
+          throwError (failedTheoryDeclarationMessage failed)
+        throwError "unknown type theory '{theory.getId}'"
+  liftCoreM <| requireTheoryAnchor theory.getId
   let flatSig ← liftCoreM <| flattenSignature sig
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"

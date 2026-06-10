@@ -342,8 +342,8 @@ open InternalLean
   match inst.validateAgainstWithConstants constants metas with
   | .ok _ => false
   | .error err =>
-      err.contains "argument 1 of typed LF constant 'mkShape'" &&
-      err.contains "expected 'InternalLean.Raw.tyConst `Ctx'"
+      err.contains "argument 1 of typed LF constant 'mkShape' has inferred type 'OtherCtx'" &&
+      err.contains "expected 'Ctx'"
 
 #guard
   let constants : List LFConstantSchema := [

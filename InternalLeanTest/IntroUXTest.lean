@@ -96,7 +96,7 @@ internal def have_term_mode : Reach start finish := by
   have right : Reach mid finish := reach_of_step mid finish step_mid_finish
   exact reach_trans start mid finish left right
 
-/-- error: object tactic `have` failed to elaborate nested application `reach_refl`: conclusion
+/-- error: object tactic `have` nested application `reach_refl` failed: conclusion
   Reach x x
 does not match current goal
   Reach start mid

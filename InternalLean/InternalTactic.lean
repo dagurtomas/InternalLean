@@ -431,8 +431,7 @@ def findInternalApplyCandidate? (target : InternalDefTarget) (sig : HLSignature)
     return some { name := n, params, conclusionExpr := conclusionResult }
   if let some c := sig.lfOpaqueConsts.find? (fun c => sameObjectName c.name n) then
     if let some typeExpr := c.typeExpr? then
-      let (params, conclusionResult) := splitObjectTelescope typeExpr
-      return some { name := n, params, conclusionExpr := conclusionResult }
+      return some { name := n, params := c.params, conclusionExpr := typeExpr }
   if let some thm := sig.lfJudgmentTheorems.find? (fun t => sameObjectName t.name n) then
     return some { name := n, params := thm.binders, conclusionExpr := thm.judgmentExpr }
   if let some ruleDecl := sig.rules.find? (fun r => sameObjectName r.name n) then
@@ -1709,6 +1708,27 @@ def matchInternalCandidateConclusion? (sig : HLSignature) (ctx : Array HLBinding
       let goalTarget := unfoldLFDefinitionsInExprWithLocals defs paramLocals goalTarget
       matchObjectPattern paramVars candidateConclusion goalTarget {}
 
+/-- Label for diagnostics shared by object tactics and term-mode placeholder elaboration. -/
+def internalElaborationActionLabel (tacticName : String) : String :=
+  if tacticName == "direct term" then
+    "direct internal term"
+  else
+    s!"object tactic `{tacticName}`"
+
+/-- Label for a head application in shared diagnostics. -/
+def internalElaborationHeadApplicationLabel (tacticName : String) (rawName : Name) : String :=
+  if tacticName == "direct term" then
+    s!"direct internal term `{rawName} ...`"
+  else
+    s!"object tactic `{tacticName} {rawName} ...`"
+
+/-- Label for a nested application in shared diagnostics. -/
+def internalElaborationNestedApplicationLabel (tacticName : String) (rawName : Name) : String :=
+  if tacticName == "direct term" then
+    s!"direct internal term application `{rawName}`"
+  else
+    s!"object tactic `{tacticName}` nested application `{rawName}`"
+
 /-- Diagnostic message for a failed candidate-conclusion/object-goal match. -/
 def internalCandidateConclusionMismatchMessage (sig : HLSignature) (ctx : Array HLBinding)
     (candidateConclusion goalTarget : ObjExpr) : String :=
@@ -1723,7 +1743,7 @@ def internalArgumentMismatchMessage (tacticName : String) (rawName : Name) (para
     (supplied inferred : ObjExpr) (nested : Bool := false) : String :=
   let what := if nested then "nested application" else "argument"
   String.intercalate "\n" [
-    s!"object tactic `{tacticName} {rawName}` supplied {what}",
+    s!"{internalElaborationHeadApplicationLabel tacticName rawName} supplied {what}",
     s!"  {diagnosticObjExprString supplied}",
     s!"for parameter '{paramName.eraseMacroScopes}', but the current goal inferred",
     s!"  {diagnosticObjExprString inferred}"]
@@ -1748,7 +1768,7 @@ def internalCannotInferParameterMessage (tacticName : String) (rawName paramName
   let slot := if placeholder then "placeholder `_` for parameter" else "implicit parameter"
   let nestedText := if nested then "nested " else ""
   String.intercalate "\n" [
-    s!"object tactic `{tacticName}` could not infer {nestedText}{slot} \
+    s!"{internalElaborationActionLabel tacticName} could not infer {nestedText}{slot} \
       '{paramName.eraseMacroScopes}' in application `{rawName}`",
     "",
     s!"Current parameter target:\n  {diagnosticObjExprString paramTy}"]
@@ -1832,6 +1852,9 @@ def internalObjectTacticPlaceholderAdvice (tacticName : String) : String :=
   if tacticName == "refine" then
     "Omitted explicit arguments are never turned into subgoals. Use `_` only for inferable \
       parameters, and write `?_` exactly where `refine` should create an object-theory subgoal."
+  else if tacticName == "direct term" then
+    "Omitted explicit arguments are not inferred as subgoals. `_` is infer-only; provide complete \
+      argument terms when the expected type does not determine them."
   else
     "Omitted explicit arguments are never inferred as subgoals. `_` is infer-only, and `exact` \
       does not accept `?_`; provide complete argument terms instead."
@@ -1844,20 +1867,19 @@ def checkInternalCandidateAppArity (tacticName : String) (rawName : Name)
   if internalCandidateUsesFullExplicit cand supplied then
     return ()
   let slotWord := if visible == total then "explicit" else "visible"
+  let label := internalElaborationHeadApplicationLabel tacticName rawName
   if supplied < visible then
-    throw s!"object tactic `{tacticName} {rawName} ...` supplied {supplied} argument(s)/hole(s), \
-      but {visible} {slotWord} argument slot(s) are \
-        required.\n\n{internalObjectTacticPlaceholderAdvice tacticName}"
+    throw s!"{label} supplied {supplied} argument(s)/hole(s), but {visible} {slotWord} \
+      argument slot(s) are required.\n\n{internalObjectTacticPlaceholderAdvice tacticName}"
   if supplied > visible then
     if visible == total then
-      throw s!"object tactic `{tacticName} {rawName} ...` supplied {supplied} \
-        argument(s)/hole(s), but rule or declaration '{rawName}' has only {visible} explicit \
-          argument slot(s).\n\n{internalObjectTacticPlaceholderAdvice tacticName}"
+      throw s!"{label} supplied {supplied} argument(s)/hole(s), but rule or declaration \
+        '{rawName}' has only {visible} explicit argument slot(s).\n\n\
+          {internalObjectTacticPlaceholderAdvice tacticName}"
     else
-      throw s!"object tactic `{tacticName} {rawName} ...` supplied {supplied} \
-        argument(s)/hole(s), but rule or declaration '{rawName}' has only {visible} visible \
-          argument slot(s) ({total} with implicit parameters supplied \
-            explicitly).\n\n{internalObjectTacticPlaceholderAdvice tacticName}"
+      throw s!"{label} supplied {supplied} argument(s)/hole(s), but rule or declaration \
+        '{rawName}' has only {visible} visible argument slot(s) ({total} with implicit \
+          parameters supplied explicitly).\n\n{internalObjectTacticPlaceholderAdvice tacticName}"
 
 mutual
   /-- Elaborate a nested complete tactic argument against an expected object goal.
@@ -1872,11 +1894,11 @@ mutual
     match arg with
     | .expr e => pure e
     | .inferPlaceholder =>
-        throw s!"object tactic `{tacticName}` cannot infer nested placeholder `_` without a \
-          candidate head"
+        throw s!"{internalElaborationActionLabel tacticName} cannot infer nested placeholder \
+          `_` without a candidate head"
     | .refineHole =>
-        throw s!"object tactic `{tacticName}` does not accept nested refinement hole `?_`; use \
-          `refine` or provide a complete argument"
+        throw s!"{internalElaborationActionLabel tacticName} does not accept nested refinement \
+          hole `?_`; use `refine` or provide a complete argument"
     | .app rawName args =>
         compileInternalCompleteCandidateArg target sig goal rawName args tacticName
 
@@ -1884,14 +1906,14 @@ mutual
   partial def compileInternalCompleteCandidateArg (target : InternalDefTarget) (sig : HLSignature)
       (goal : InternalObjectGoal) (rawName : Name) (suppliedArgs : Array InternalTacticArg)
       (tacticName : String) : Except String ObjExpr := do
+    let appLabel := internalElaborationNestedApplicationLabel tacticName rawName
     let some cand := findInternalApplyCandidate? target sig rawName
-      | throw s!"object tactic `{tacticName}` failed to elaborate nested application `{rawName}`: \
-        unknown rule or internal declaration '{rawName}' in type theory '{target.theoryName}'"
+      | throw s!"{appLabel} failed: unknown rule or internal declaration '{rawName}' in type \
+        theory '{target.theoryName}'"
     checkInternalCandidateAppArity tacticName rawName suppliedArgs.size cand
     let some subst0 := matchInternalCandidateConclusion? sig goal.ctx cand.params
         cand.conclusionExpr goal.target
-      | throw <| s!"object tactic `{tacticName}` failed to elaborate nested application " ++
-          s!"`{rawName}`: " ++
+      | throw <| s!"{appLabel} failed: " ++
           internalCandidateConclusionMismatchMessage sig goal.ctx cand.conclusionExpr goal.target
     let mut outArgs : Array ObjExpr := #[]
     let mut subst := subst0
@@ -1922,8 +1944,9 @@ mutual
                   throw <| internalCannotInferParameterMessage tacticName rawName param.name paramTy
                     true true
           | .refineHole =>
-              throw s!"object tactic `{tacticName}` does not accept nested refinement hole `?_` \
-                in application `{rawName}`; use `refine` or provide a complete argument"
+              throw s!"{internalElaborationActionLabel tacticName} does not accept nested \
+                refinement hole `?_` in application `{rawName}`; use `refine` or provide a \
+                  complete argument"
           | .expr e =>
               match subst.find? key with
               | some inferred =>
@@ -1949,11 +1972,12 @@ mutual
       let premiseGoal := substObjectVars subst premiseTarget
       match argSpec with
       | .inferPlaceholder =>
-          throw s!"object tactic `{tacticName}` cannot infer nested placeholder `_` for a premise \
-            in application `{rawName}`; write an explicit proof term"
+          throw s!"{internalElaborationActionLabel tacticName} cannot infer nested placeholder \
+            `_` for a premise in application `{rawName}`; write an explicit proof term"
       | .refineHole =>
-          throw s!"object tactic `{tacticName}` does not accept nested refinement hole `?_` in \
-            application `{rawName}`; use `refine` or provide a complete argument"
+          throw s!"{internalElaborationActionLabel tacticName} does not accept nested \
+            refinement hole `?_` in application `{rawName}`; use `refine` or provide a complete \
+              argument"
       | .expr e =>
           checkInternalPremiseProofExpr target sig #[] goal.ctx e premiseGoal tacticName rawName
           outArgs := outArgs.push e
@@ -3354,6 +3378,81 @@ def addInternalDefAnnotationNavigationInfo (declName : Name) (binders : TSyntaxA
   let locals ← addBinderNavigationInfos target.theoryName {} binders
   addObjExprNavigationInfo target.theoryName locals typeStx
 
+/-- Chosen LF registration path for a checked internal declaration. -/
+inductive InternalDeclarationCheckPath where
+  /-- The expected type is visibly an object/structural type. -/
+  | objectDef
+  /-- The expected type is visibly headed by a judgment or judgment abbreviation. -/
+  | judgmentTheorem
+  /-- The expected type does not determine a unique path. -/
+  | ambiguous (reason : String)
+
+/-- Classify a checked internal declaration from its expected type before registration. -/
+def classifyInternalDeclarationCheckPath (sig : HLSignature) (typeExpr : ObjExpr) :
+    InternalDeclarationCheckPath :=
+  if lfExprIsJudgmentHeaded sig typeExpr then
+    .judgmentTheorem
+  else if lfExprIsObjectTypeLike sig typeExpr then
+    .objectDef
+  else
+    let headText := match lfExprHeadIdent? typeExpr with
+      | some head => s!"head '{head}'"
+      | none => "no rigid identifier head"
+    .ambiguous s!"expected type has {headText}, so it is not visibly headed by a judgment, \
+      judgment abbreviation, syntax sort, syntax abbreviation, syntax definition, or structural \
+        object type"
+
+/-- Register through only the LF object-definition path. -/
+def registerInternalLFObjectDefPath (target : InternalDefTarget) (typeExpr valueExpr : ObjExpr) :
+    CommandElabM Unit := do
+  liftCoreM <| registerLFObjectDef target.theoryName {
+    name := target.localName
+    typeExpr := typeExpr
+    value := valueExpr }
+
+/-- Register through only the LF judgment-theorem path. -/
+def registerInternalLFJudgmentTheoremPath (target : InternalDefTarget)
+    (params : Array HLBinding) (typeExpr valueExpr : ObjExpr) : CommandElabM Unit := do
+  liftCoreM <| registerLFJudgmentTheorem target.theoryName {
+    name := target.localName
+    binders := params
+    judgmentExpr := typeExpr
+    proof := valueExpr }
+
+/-- Register a checked internal declaration after classification by expected type. -/
+def registerInternalDeclarationByClassifiedPath (target : InternalDefTarget)
+    (flatSig : HLSignature) (params : Array HLBinding)
+    (typeExpr valueExpr fullType fullValue : ObjExpr) :
+    CommandElabM InternalDeclarationEvidenceKind := do
+  match classifyInternalDeclarationCheckPath flatSig typeExpr with
+  | .objectDef =>
+      try
+        registerInternalLFObjectDefPath target fullType fullValue
+        pure .checkedObjectDef
+      catch ex =>
+        throwError "failed to check internal LF declaration '{target.anchorName}' in type theory \
+          '{target.theoryName}' as an LF object definition:\n{exceptionMessageData ex}"
+  | .judgmentTheorem =>
+      try
+        registerInternalLFJudgmentTheoremPath target params typeExpr valueExpr
+        pure .checkedJudgmentTheorem
+      catch ex =>
+        throwError "failed to check internal LF declaration '{target.anchorName}' in type theory \
+          '{target.theoryName}' as an LF judgment theorem:\n{exceptionMessageData ex}"
+  | .ambiguous reason =>
+      try
+        registerInternalLFObjectDefPath target fullType fullValue
+        pure .checkedObjectDef
+      catch lfDefEx =>
+        try
+          registerInternalLFJudgmentTheoremPath target params typeExpr valueExpr
+          pure .checkedJudgmentTheorem
+        catch lfThmEx =>
+          throwError "failed to check internal LF declaration '{target.anchorName}' in type \
+            theory '{target.theoryName}'\n\nClassification was ambiguous: {reason}.\n\nLF object \
+              definition path:\n{exceptionMessageData lfDefEx}\n\nLF judgment theorem path:\n\
+                {exceptionMessageData lfThmEx}"
+
 /-- Register a non-admitted top-level `internal def` through the current checked-artifact paths. -/
 def elabInternalDefCheckedExpr (doc? : Option (TSyntax ``Parser.Command.docComment))
     (declNameStx : Syntax) (declName : Name) (levels : Array Name)
@@ -3371,25 +3470,9 @@ def elabInternalDefCheckedExpr (doc? : Option (TSyntax ``Parser.Command.docComme
     match elaborateInternalDirectTermPlaceholders target flatSig #[] typeExpr valueExpr with
     | .ok valueExpr => pure valueExpr
     | .error err => throwError err
-  let lfDef : LFObjectDefDecl := { name := target.localName, typeExpr, value := valueExpr }
   let evidenceKind ←
-    try
-      liftCoreM <| registerLFObjectDef target.theoryName lfDef
-      pure InternalDeclarationEvidenceKind.checkedObjectDef
-    catch lfDefEx =>
-      let lfTheorem : LFJudgmentTheoremDecl := {
-        name := target.localName
-        judgmentExpr := typeExpr
-        proof := valueExpr
-      }
-      try
-        liftCoreM <| registerLFJudgmentTheorem target.theoryName lfTheorem
-        pure InternalDeclarationEvidenceKind.checkedJudgmentTheorem
-      catch lfThmEx =>
-        throwError "failed to check internal LF declaration '{target.anchorName}' in type \
-          theory '{target.theoryName}'\n\nLF object definition path:\n\
-            {exceptionMessageData lfDefEx}\n\nLF judgment theorem path:\n\
-              {exceptionMessageData lfThmEx}"
+    registerInternalDeclarationByClassifiedPath target flatSig #[] typeExpr valueExpr typeExpr
+      valueExpr
   if let some doc := sourceDoc? then
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
   addInternalDeclarationAnchor target typeExpr evidenceKind #[] (some valueExpr) sourceCommand
@@ -3428,24 +3511,8 @@ def elabInternalDefCheckedWithBindersExpr (doc? : Option (TSyntax ``Parser.Comma
   let fullType := mkInternalDefFunctionType params typeExpr
   let fullValue := mkInternalDefLambda params valueExpr
   let evidenceKind ←
-    try
-      let lfTheorem : LFJudgmentTheoremDecl := {
-        name := target.localName, binders := params, judgmentExpr := typeExpr, proof := valueExpr }
-      liftCoreM <| registerLFJudgmentTheorem target.theoryName lfTheorem
-      pure InternalDeclarationEvidenceKind.checkedJudgmentTheorem
-    catch lfThmEx =>
-      try
-        let lfDef : LFObjectDefDecl := {
-          name := target.localName,
-          typeExpr := fullType,
-          value := fullValue }
-        liftCoreM <| registerLFObjectDef target.theoryName lfDef
-        pure InternalDeclarationEvidenceKind.checkedObjectDef
-      catch lfDefEx =>
-        throwError "failed to check binder-style internal LF declaration '{target.anchorName}' in \
-          type theory '{target.theoryName}'\n\nLF judgment theorem \
-            path:\n{exceptionMessageData lfThmEx}\n\nLF object definition \
-              path:\n{exceptionMessageData lfDefEx}"
+    registerInternalDeclarationByClassifiedPath target flatSig params typeExpr valueExpr fullType
+      fullValue
   if let some doc := sourceDoc? then
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
   addInternalDeclarationAnchor target fullType evidenceKind params (some fullValue) sourceCommand

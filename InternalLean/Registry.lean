@@ -982,6 +982,59 @@ initialize sourceDocExt : SimplePersistentEnvExtension SourceDocEntry SourceDocS
               m.insert d.theoryName (docs.push d)
   }
 
+/-- A type-theory declaration that failed after its name was parsed. -/
+structure FailedTheoryDeclaration where
+  /-- Source file where the failed declaration was elaborated. -/
+  fileName : String := ""
+  /-- Parsed type-theory name. -/
+  theoryName : Name
+  /-- Source position of the failed declaration name, if available. -/
+  position? : Option String := none
+  deriving Inhabited, Repr, BEq
+
+/-- Environment entry for failed type-theory declarations. -/
+inductive FailedTheoryDeclarationEntry where
+  /-- Record one failed declaration. -/
+  | failed : FailedTheoryDeclaration → FailedTheoryDeclarationEntry
+  deriving Inhabited, Repr
+
+/-- Environment extension recording failed declarations when command state survives the error. -/
+initialize failedTheoryDeclarationExt :
+    SimplePersistentEnvExtension FailedTheoryDeclarationEntry (Array FailedTheoryDeclaration) ←
+  registerSimplePersistentEnvExtension {
+    name := `InternalLean.failedTheoryDeclarationExt
+    addEntryFn := fun entries entry =>
+      match entry with
+      | .failed failed => entries.push failed
+    addImportedFn := fun entrySets =>
+      entrySets.foldl (init := #[]) fun acc entries =>
+        entries.foldl (init := acc) fun acc entry =>
+          match entry with
+          | .failed failed => acc.push failed
+  }
+
+/-- Fallback store for failed declarations, used because failed command state may be restored. -/
+initialize failedTheoryDeclarationStore : IO.Ref (Array FailedTheoryDeclaration) ←
+  IO.mkRef #[]
+
+/-- Record a failed type-theory declaration in the environment when command state survives. -/
+def registerFailedTheoryDeclaration (failed : FailedTheoryDeclaration) : CoreM Unit := do
+  modifyEnv fun env => failedTheoryDeclarationExt.addEntry env (.failed failed)
+
+/-- Find the latest environment-backed failed declaration for `theoryName` in `fileName`. -/
+def getEnvFailedTheoryDeclaration? (fileName : String) (theoryName : Name) : CoreM
+    (Option FailedTheoryDeclaration) := do
+  let envEntries := failedTheoryDeclarationExt.getState (← getEnv)
+  let filtered := envEntries.filter (fun failed =>
+    failed.fileName == fileName &&
+      failed.theoryName.eraseMacroScopes == theoryName.eraseMacroScopes)
+  pure filtered.back?
+
+/-- User-facing message for commands that refer to a failed type-theory declaration. -/
+def failedTheoryDeclarationMessage (failed : FailedTheoryDeclaration) : String :=
+  let pos := failed.position?.getD "unknown position"
+  s!"type theory '{failed.theoryName}' failed to declare (see the earlier error at {pos})"
+
 /-- Persistent entries mapping object rewrite rules to generated semantic transport lemmas. -/
 inductive SemanticTransportEntry where
   /-- Register that `rewriteName` is semantically replayed by `lemmaName` in `theoryName`. -/

@@ -26,13 +26,8 @@ namespace DependentLambdaSmoke
 
 internal def good (Γ : Ctx) : Ty Γ := mkTy Γ
 
-/-- error: failed to check binder-style internal LF declaration 'DependentLambdaSmoke.bad' in type
- theory 'DependentLambdaSmoke'
-
-LF judgment theorem path:
-rule 'bad' in type theory 'DependentLambdaSmoke' has statement headed by unknown judgment 'Ty'
-
-LF object definition path:
+/-- error: failed to check internal LF declaration 'DependentLambdaSmoke.bad' in type theory
+'DependentLambdaSmoke' as an LF object definition:
 lf_def 'bad' in type theory 'DependentLambdaSmoke' has value with type 'Ty other', expected
 'Ty Γ' -/
 #guard_msgs (whitespace := lax) in

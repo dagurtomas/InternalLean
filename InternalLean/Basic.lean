@@ -806,6 +806,89 @@ def validateBuiltinConstructorDiscipline (owner field : String) : Judgment → E
 
 end Judgment
 
+/-- Source-ish rendering for an LF name in replay diagnostics. -/
+def lfReplayNameString (n : Name) : String :=
+  toString n.eraseMacroScopes
+
+/-- Source-ish rendering for an applied LF head in replay diagnostics. -/
+def lfReplayAppString (n : Name) (args : List String) : String :=
+  match args with
+  | [] => lfReplayNameString n
+  | _ => s!"{lfReplayNameString n} {String.intercalate " " args}"
+
+/-- Source-ish rendering for raw LF payload syntax, depth-limited for diagnostics. -/
+partial def rawSourceStringWithDepth : Nat → Raw → String
+  | 0, _ => "..."
+  | _ + 1, .ctxNil => "emptyCtx"
+  | _ + 1, .ctxMeta n => s!"?{lfReplayNameString n}"
+  | depth + 1, .ctxExt Γ A =>
+      s!"ctxExt ({rawSourceStringWithDepth depth Γ}) ({rawSourceStringWithDepth depth A})"
+  | _ + 1, .tyMeta n => s!"?{lfReplayNameString n}"
+  | _ + 1, .tyConst n => lfReplayNameString n
+  | depth + 1, .tyApp n args =>
+      lfReplayAppString n (args.map (rawSourceStringWithDepth depth))
+  | depth + 1, .tySubst Γ A =>
+      s!"tySubst ({rawSourceStringWithDepth depth Γ}) ({rawSourceStringWithDepth depth A})"
+  | _ + 1, .tmVar i => s!"#{i}"
+  | _ + 1, .tmMeta n => s!"?{lfReplayNameString n}"
+  | _ + 1, .tmConst n => lfReplayNameString n
+  | depth + 1, .tmApp n args =>
+      lfReplayAppString n (args.map (rawSourceStringWithDepth depth))
+  | depth + 1, .tmSubst Γ t =>
+      s!"tmSubst ({rawSourceStringWithDepth depth Γ}) ({rawSourceStringWithDepth depth t})"
+  | depth + 1, .substId Γ => s!"substId ({rawSourceStringWithDepth depth Γ})"
+  | _ + 1, .substMeta n => s!"?{lfReplayNameString n}"
+  | depth + 1, .substComp σ τ =>
+      s!"substComp ({rawSourceStringWithDepth depth σ}) ({rawSourceStringWithDepth depth τ})"
+  | _ + 1, .substEmpty => "emptySubst"
+  | depth + 1, .substExt σ t =>
+      s!"substExt ({rawSourceStringWithDepth depth σ}) ({rawSourceStringWithDepth depth t})"
+  | depth + 1, .scopedBind zone cls x ty body =>
+      s!"bind {lfReplayNameString x} : {rawSourceStringWithDepth depth ty} in " ++
+        s!"{rawSourceStringWithDepth depth body} [{lfReplayNameString zone}/" ++
+        s!"{lfReplayNameString cls}]"
+  | _ + 1, .leanParam n => lfReplayNameString n
+
+/-- Default source-ish raw LF rendering for diagnostics. -/
+def rawSourceString (raw : Raw) : String :=
+  rawSourceStringWithDepth 6 raw
+
+/-- Source-ish rendering for optional raw LF payload syntax. -/
+def rawOptionSourceString (raw? : Option Raw) : String :=
+  match raw? with
+  | none => "none"
+  | some raw => rawSourceString raw
+
+/-- Source-ish rendering for a kernel judgment in replay diagnostics. -/
+def judgmentSourceStringWithDepth (depth : Nat) : Judgment → String
+  | .wfCtx Γ => s!"wfCtx {rawSourceStringWithDepth depth Γ}"
+  | .wfTy Γ A =>
+      s!"wfTy ({rawSourceStringWithDepth depth Γ}) ({rawSourceStringWithDepth depth A})"
+  | .wfTm Γ t A =>
+      s!"wfTm ({rawSourceStringWithDepth depth Γ}) ({rawSourceStringWithDepth depth t}) " ++
+        s!"({rawSourceStringWithDepth depth A})"
+  | .wfSubst Δ σ Γ =>
+      s!"wfSubst ({rawSourceStringWithDepth depth Δ}) " ++
+        s!"({rawSourceStringWithDepth depth σ}) ({rawSourceStringWithDepth depth Γ})"
+  | .eqTy Γ A B =>
+      s!"eqTy ({rawSourceStringWithDepth depth Γ}) ({rawSourceStringWithDepth depth A}) " ++
+        s!"({rawSourceStringWithDepth depth B})"
+  | .eqTm Γ t u A =>
+      s!"eqTm ({rawSourceStringWithDepth depth Γ}) ({rawSourceStringWithDepth depth t}) " ++
+        s!"({rawSourceStringWithDepth depth u}) ({rawSourceStringWithDepth depth A})"
+  | .custom n args =>
+      lfReplayAppString n (args.map (rawSourceStringWithDepth depth))
+
+/-- Default source-ish kernel-judgment rendering for diagnostics. -/
+def judgmentSourceString (stmt : Judgment) : String :=
+  judgmentSourceStringWithDepth 6 stmt
+
+/-- Source-ish rendering for optional kernel judgments. -/
+def judgmentOptionSourceString (stmt? : Option Judgment) : String :=
+  match stmt? with
+  | none => "none"
+  | some stmt => judgmentSourceString stmt
+
 /-- Low-level context-zone schema for multi-zone logical-framework staging.
 
 Operationally, a zone classifies LF rule/theorem parameters whose type is headed by the
@@ -1041,6 +1124,18 @@ structure ConversionStatement where
 
 namespace ConversionStatement
 
+/-- Source-ish rendering for a conversion statement. -/
+def sourceStringWithDepth (depth : Nat) (stmt : ConversionStatement) : String :=
+  let ctx := match stmt.context? with
+    | none => ""
+    | some Γ => s!" in {rawSourceStringWithDepth depth Γ}"
+  s!"{lfReplayNameString stmt.plugin}{ctx}: {rawSourceStringWithDepth depth stmt.lhs} ≡ \
+    {rawSourceStringWithDepth depth stmt.rhs}"
+
+/-- Default source-ish conversion-statement rendering for diagnostics. -/
+def sourceString (stmt : ConversionStatement) : String :=
+  sourceStringWithDepth 6 stmt
+
 /-- Validate trusted built-in raw constructor discipline in a conversion statement. -/
 def validateBuiltinConstructorDiscipline (owner : String) (stmt : ConversionStatement) :
   Except String Unit := do
@@ -1265,7 +1360,7 @@ where
             | some inferredType =>
                 if inferredType != expectedType then
                   throw s!"argument {idx} of typed LF constant '{f}' has inferred type \
-                    '{reprStr inferredType}', expected '{reprStr expectedType}'"
+                    '{rawSourceString inferredType}', expected '{rawSourceString expectedType}'"
             | none => pure ()
           let entry : ScopedInstantiationEntry := {
             name := param.name
@@ -1372,8 +1467,9 @@ def validateAgainstWithConstants (constants : List LFConstantSchema)
             '{reprStr v.zone?}'"
         let expectedType? := v.type?.map (Raw.instantiate (instOf processed))
         if e.type? != expectedType? then
-          throw s!"scoped instantiation entry '{e.name}' has type annotation '{reprStr e.type?}', \
-            expected scoped type annotation '{reprStr expectedType?}'"
+          throw s!"scoped instantiation entry '{e.name}' has type annotation \
+            '{rawOptionSourceString e.type?}', expected scoped type annotation \
+              '{rawOptionSourceString expectedType?}'"
         if let some ty := e.type? then
           let ownBinders := (rawLamBinderNames? e.value).getD []
           checkScopedRefs e.name "type annotation" (available ++ ownBinders) ty
@@ -1394,7 +1490,7 @@ def validateAgainstWithConstants (constants : List LFConstantSchema)
         | some inferredType =>
             if e.type? != some inferredType then
               throw s!"scoped instantiation entry '{e.name}' has value with inferred type \
-                '{reprStr inferredType}', expected '{reprStr e.type?}'"
+                '{rawSourceString inferredType}', expected '{rawOptionSourceString e.type?}'"
         | none => pure ()
         if let some evidence := v.evidence? then
           checkScopedJudgmentRefs e.name "evidence annotation" (available ++ [e.name]) evidence
@@ -1408,8 +1504,9 @@ def validateAgainstWithConstants (constants : List LFConstantSchema)
                   annotation: {err}"
           | none => pure none
         if e.evidence? != expectedEvidence? then
-          throw s!"scoped instantiation entry '{e.name}' has evidence '{reprStr e.evidence?}', \
-            expected scoped evidence '{reprStr expectedEvidence?}'"
+          throw s!"scoped instantiation entry '{e.name}' has evidence \
+            '{judgmentOptionSourceString e.evidence?}', expected scoped evidence \
+              '{judgmentOptionSourceString expectedEvidence?}'"
         if let some evidence := e.evidence? then
           checkScopedJudgmentRefs e.name "evidence" available evidence
           evidence.validateBuiltinConstructorDiscipline s!"scoped instantiation entry \
@@ -1826,7 +1923,7 @@ def validateExecutableStep (pluginName : Name) (stmt : ConversionStatement)
           unless rhs.alphaEq stmt.rhs do
             throwFailure .malformedCertificate <|
               s!"checked conversion plugin '{pluginName}' beta step reduces lhs to " ++
-              s!"'{reprStr rhs}', expected rhs '{reprStr stmt.rhs}'"
+              s!"'{rawSourceString rhs}', expected rhs '{rawSourceString stmt.rhs}'"
       | none =>
           throwFailure .malformedCertificate <|
             s!"checked conversion plugin '{pluginName}' beta step expected a raw `_app` " ++
@@ -1837,7 +1934,7 @@ def validateExecutableStep (pluginName : Name) (stmt : ConversionStatement)
           unless rhs.alphaEq stmt.rhs do
             throwFailure .malformedCertificate <|
               s!"checked conversion plugin '{pluginName}' eta step contracts lhs to " ++
-              s!"'{reprStr rhs}', expected rhs '{reprStr stmt.rhs}'"
+              s!"'{rawSourceString rhs}', expected rhs '{rawSourceString stmt.rhs}'"
       | none =>
           throwFailure .malformedCertificate <|
             s!"checked conversion plugin '{pluginName}' eta step expected a raw structural " ++
@@ -1916,7 +2013,7 @@ def validatePluginStepWithContextDetailed (ctx : KernelLFCheckContext) (sig : Si
       if entry.statement != stmt then
         throwFailure .externalCertificate <|
           s!"external conversion certificate '{certName}' certifies statement " ++
-          s!"'{reprStr entry.statement}', expected '{reprStr stmt}'"
+          s!"'{entry.statement.sourceString}', expected '{stmt.sourceString}'"
       if entry.stepKind != kind then
         throwFailure .externalCertificate <|
           s!"external conversion certificate '{certName}' certifies step " ++
@@ -1947,7 +2044,8 @@ partial def checkWithContextDetailedCore (ctx : KernelLFCheckContext) (sig : Sig
   | .refl stmt, expected => do
       if stmt != expected then
         throwFailure .malformedCertificate
-          s!"conversion refl has statement '{reprStr stmt}', expected '{reprStr expected}'"
+          s!"conversion refl has statement '{stmt.sourceString}', expected \
+            '{expected.sourceString}'"
       match stmt.validateBuiltinConstructorDiscipline s!"conversion refl for '{stmt.plugin}'" with
       | .ok () => pure ()
       | .error err => throwFailure .malformedCertificate err
@@ -1957,7 +2055,8 @@ partial def checkWithContextDetailedCore (ctx : KernelLFCheckContext) (sig : Sig
   | .symm stmt child, expected => do
       if stmt != expected then
         throwFailure .malformedCertificate
-          s!"conversion symm has statement '{reprStr stmt}', expected '{reprStr expected}'"
+          s!"conversion symm has statement '{stmt.sourceString}', expected \
+            '{expected.sourceString}'"
       match stmt.validateBuiltinConstructorDiscipline s!"conversion symm for '{stmt.plugin}'" with
       | .ok () => pure ()
       | .error err => throwFailure .malformedCertificate err
@@ -1965,7 +2064,8 @@ partial def checkWithContextDetailedCore (ctx : KernelLFCheckContext) (sig : Sig
   | .trans stmt middle left right, expected => do
       if stmt != expected then
         throwFailure .malformedCertificate
-          s!"conversion trans has statement '{reprStr stmt}', expected '{reprStr expected}'"
+          s!"conversion trans has statement '{stmt.sourceString}', expected \
+            '{expected.sourceString}'"
       match stmt.validateBuiltinConstructorDiscipline s!"conversion trans for '{stmt.plugin}'" with
       | .ok () => pure ()
       | .error err => throwFailure .malformedCertificate err
@@ -1979,8 +2079,8 @@ partial def checkWithContextDetailedCore (ctx : KernelLFCheckContext) (sig : Sig
       expected => do
       if stmt != expected then
         throwFailure .malformedCertificate <|
-          s!"conversion plugin step has statement '{reprStr stmt}', expected " ++
-          s!"'{reprStr expected}'"
+          s!"conversion plugin step has statement '{stmt.sourceString}', expected " ++
+          s!"'{expected.sourceString}'"
       validatePluginStepWithContextDetailed ctx sig stmt kind externalCertificateName?
         sideConditionCertificateNames payload
 
@@ -2107,8 +2207,8 @@ def validateRuleApplicationAgainstRule (sig : Signature) (ruleName : Name) (r : 
     '{ruleName}'" "instantiated conclusion"
   conclusion.validateBuiltinConstructorDiscipline s!"rule application '{ruleName}'" "conclusion"
   if !conclusion.alphaEq expectedConclusion then
-    throw s!"rule application '{ruleName}' has conclusion '{reprStr conclusion}', expected \
-      instantiated rule conclusion '{reprStr expectedConclusion}'"
+    throw s!"rule application '{ruleName}' has conclusion '{judgmentSourceString conclusion}', \
+      expected instantiated rule conclusion '{judgmentSourceString expectedConclusion}'"
   if premiseCount != r.premises.length then
     throw s!"rule application '{ruleName}' has {premiseCount} premise(s), expected \
       {r.premises.length}"
@@ -2188,8 +2288,8 @@ def validateAssumptionWithContext (ctx : KernelLFCheckContext) (name : Name)
       throw s!"local theorem assumption '{name}' is ambiguous: checked replay context contains \
         duplicate assumption entries"
   if !entry.statement.alphaEq stmt then
-    throw s!"local theorem assumption '{name}' has statement '{reprStr stmt}', but replay context \
-      records '{reprStr entry.statement}'"
+    throw s!"local theorem assumption '{name}' has statement '{judgmentSourceString stmt}', but \
+      replay context records '{judgmentSourceString entry.statement}'"
 
 /-- Common validation for a theorem-reference replay leaf against an explicit replay context. -/
 def validateTheoremReferenceWithContext (ctx : KernelLFCheckContext) (name : Name)
@@ -2204,8 +2304,8 @@ def validateTheoremReferenceWithContext (ctx : KernelLFCheckContext) (name : Nam
       throw s!"theorem reference '{name}' is ambiguous: checked replay context contains duplicate \
         theorem entries"
   if !entry.statement.alphaEq stmt then
-    throw s!"theorem reference '{name}' has statement '{reprStr stmt}', but replay context \
-      records '{reprStr entry.statement}'"
+    throw s!"theorem reference '{name}' has statement '{judgmentSourceString stmt}', but replay \
+      context records '{judgmentSourceString entry.statement}'"
 
 /-- Common validation for a certificate-backed replay leaf against an explicit certificate context.
 -/
@@ -2223,8 +2323,9 @@ def validateCertificateWithContext (ctx : KernelLFCheckContext) (name : Name)
       throw s!"certificate-backed derivation '{name}' is ambiguous: checked certificate context \
         contains duplicate entries"
   if !entry.statement.alphaEq stmt then
-    throw s!"certificate-backed derivation '{name}' has statement '{reprStr stmt}', but \
-      certificate context records '{reprStr entry.statement}'"
+    throw s!"certificate-backed derivation '{name}' has statement \
+      '{judgmentSourceString stmt}', but certificate context records \
+        '{judgmentSourceString entry.statement}'"
   if entry.certificateName != certificateName then
     throw s!"certificate-backed derivation '{name}' uses certificate '{certificateName}', \
       expected '{entry.certificateName}'"
@@ -2238,23 +2339,23 @@ partial def checkWithContextCore (ctx : KernelLFCheckContext) (sig : Signature) 
     KernelLFDerivation → Judgment → Except String Unit
   | .assumption name stmt, expected => do
       if !stmt.alphaEq expected then
-        throw s!"local theorem assumption '{name}' has statement '{reprStr stmt}', expected \
-          '{reprStr expected}'"
+        throw s!"local theorem assumption '{name}' has statement \
+          '{judgmentSourceString stmt}', expected '{judgmentSourceString expected}'"
       validateAssumptionWithContext ctx name stmt
   | .theoremRef name stmt, expected => do
       if !stmt.alphaEq expected then
-        throw s!"theorem reference '{name}' has statement '{reprStr stmt}', expected \
-          '{reprStr expected}'"
+        throw s!"theorem reference '{name}' has statement '{judgmentSourceString stmt}', \
+          expected '{judgmentSourceString expected}'"
       validateTheoremReferenceWithContext ctx name stmt
   | .certificate name stmt certificateName, expected => do
       if !stmt.alphaEq expected then
-        throw s!"certificate-backed derivation '{name}' has statement '{reprStr stmt}', expected \
-          '{reprStr expected}'"
+        throw s!"certificate-backed derivation '{name}' has statement \
+          '{judgmentSourceString stmt}', expected '{judgmentSourceString expected}'"
       validateCertificateWithContext ctx name stmt certificateName
   | .ruleApp ruleName conclusion inst premises certificateNames, expected => do
       if !conclusion.alphaEq expected then
-        throw s!"rule application '{ruleName}' has conclusion '{reprStr conclusion}', expected \
-          '{reprStr expected}'"
+        throw s!"rule application '{ruleName}' has conclusion \
+          '{judgmentSourceString conclusion}', expected '{judgmentSourceString expected}'"
       let some r := findRule? sig ruleName
         | throw s!"rule application uses unknown rule '{ruleName}'"
       validateRuleApplicationAgainstRule sig ruleName r conclusion inst premises.length
@@ -2476,8 +2577,9 @@ mutual
         if h : entry.statement = stmt then
           pure (h ▸ ContextDeriv.assumption entry hmem)
         else
-          throw s!"local theorem assumption '{name}' has statement '{reprStr stmt}', but replay \
-            context records '{reprStr entry.statement}'"
+          throw s!"local theorem assumption '{name}' has statement \
+            '{judgmentSourceString stmt}', but replay context records \
+              '{judgmentSourceString entry.statement}'"
     | .theoremRef name stmt => do
         match validateTheoremReferenceWithContext ctx name stmt with
         | .ok () => pure PUnit.unit
@@ -2488,8 +2590,8 @@ mutual
         if h : entry.statement = stmt then
           pure (h ▸ ContextDeriv.theorem entry hmem)
         else
-          throw s!"theorem reference '{name}' has statement '{reprStr stmt}', but replay context \
-            records '{reprStr entry.statement}'"
+          throw s!"theorem reference '{name}' has statement '{judgmentSourceString stmt}', but \
+            replay context records '{judgmentSourceString entry.statement}'"
     | .certificate name stmt certificateName => do
         match validateCertificateWithContext ctx name stmt certificateName with
         | .ok () => pure PUnit.unit
@@ -2501,8 +2603,9 @@ mutual
         if h : entry.statement = stmt then
           pure (h ▸ ContextDeriv.certificate entry hmem)
         else
-          throw s!"certificate-backed derivation '{name}' has statement '{reprStr stmt}', but \
-            certificate context records '{reprStr entry.statement}'"
+          throw s!"certificate-backed derivation '{name}' has statement \
+            '{judgmentSourceString stmt}', but certificate context records \
+              '{judgmentSourceString entry.statement}'"
     | .ruleApp ruleName conclusion inst premises certificateNames => do
         let some ⟨r, hr⟩ := findRuleWithProof? sig ruleName
           | throw s!"rule application uses unknown rule '{ruleName}'"
@@ -2516,8 +2619,9 @@ mutual
         if h : r.instantiateConclusion σ = conclusion then
           pure (h ▸ ContextDeriv.rule r σ hr premiseDerivs)
         else
-          throw s!"rule application '{ruleName}' has conclusion '{reprStr conclusion}', expected \
-            instantiated rule conclusion '{reprStr (r.instantiateConclusion σ)}'"
+          throw s!"rule application '{ruleName}' has conclusion \
+            '{judgmentSourceString conclusion}', expected instantiated rule conclusion \
+              '{judgmentSourceString (r.instantiateConclusion σ)}'"
 
   /-- Convert a list of replay premise trees into trusted context-relative premise evidence. -/
   partial def toContextDerivList? (ctx : KernelLFCheckContext) (sig : Signature) (σ :
@@ -2536,8 +2640,8 @@ mutual
         if h : statement d = p.instantiate σ then
           pure (ContextDerivList.cons (h ▸ dDeriv) rest)
         else
-          throw s!"premise replay has statement '{reprStr (statement d)}', expected \
-            '{reprStr (p.instantiate σ)}'"
+          throw s!"premise replay has statement '{judgmentSourceString (statement d)}', \
+            expected '{judgmentSourceString (p.instantiate σ)}'"
     | ds, ps =>
         throw s!"context derivation producer has {ds.length} premise derivation(s), expected \
           {ps.length}"
@@ -2569,8 +2673,8 @@ def toContextDeriv? (checked : CheckedKernelLFDerivation) :
       else
         let carried := KernelLFDerivation.statement checked.derivation
         throw <|
-          s!"checked replay wrapper has statement '{reprStr checked.statement}', " ++
-            s!"but its derivation carries '{reprStr carried}'"
+          s!"checked replay wrapper has statement '{judgmentSourceString checked.statement}', " ++
+            s!"but its derivation carries '{judgmentSourceString carried}'"
 
 end ContextDerivProducer
 

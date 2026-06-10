@@ -1363,7 +1363,10 @@ def CheckedSignature.summary (checked : CheckedSignature) : MessageData :=
 /-- Check one registered type theory with the direct-LF checker and persist the checked artifact. -/
 elab "#check_type_theory " nm:ident : command => do
   let some sig ← liftCoreM <| getTheory? nm.getId
-    | throwError "unknown type theory '{nm.getId}'"
+    | do
+        if let some failed ← currentFileFailedTheoryDeclaration? nm.getId then
+          throwError (failedTheoryDeclarationMessage failed)
+        throwError "unknown type theory '{nm.getId}'"
   let checked ← liftCoreM <| checkSignatureForRegistration sig
   liftCoreM <| registerCheckedTheory checked
   logInfo m!"type theory {checked.name} checks with the direct-LF checker ({checked.summary})"

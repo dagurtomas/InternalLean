@@ -89,7 +89,9 @@ Notes:
   parameters. Use it when you want to avoid suggesting an internal function former.
 - `fun x => body` builds an internal lambda.
 - `A × B` and `Σ x : A, B` are structural product/record type expressions.
-- `⟨a, b⟩`, `fst p`, and `snd p` build and project structural record values.
+- `⟨a, b⟩`, `fst p`, and `snd p` build and project structural record values. The tokens
+  `fst` and `snd` are reserved structural projection syntax, so they cannot be used as declaration
+  names. Use a different LF head name such as `first` or `second` when declaring projections.
 - `lhs ≡ rhs` is internal syntax for judgmental-equality-shaped expressions.
 - `{x := value}` is an explicit implicit-argument marker used by the LF elaborator.
 

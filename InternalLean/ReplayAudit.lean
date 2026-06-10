@@ -180,66 +180,6 @@ def nameSetSummary (names : NameSet) : String :=
   let xs := names.toList.map (fun n => toString n.eraseMacroScopes)
   if xs.isEmpty then "none" else String.intercalate ", " xs
 
-/-- Source-ish rendering for an LF name in replay diagnostics. -/
-def lfReplayNameString (n : Name) : String :=
-  toString n.eraseMacroScopes
-
-/-- Source-ish rendering for raw LF payload syntax, depth-limited for diagnostics. -/
-partial def rawSourceStringWithDepth : Nat → Raw → String
-  | 0, _ => "..."
-  | _ + 1, .ctxNil => "emptyCtx"
-  | _ + 1, .ctxMeta n => s!"?{lfReplayNameString n}"
-  | depth + 1, .ctxExt Γ A =>
-      s!"ctxExt ({rawSourceStringWithDepth depth Γ}) ({rawSourceStringWithDepth depth A})"
-  | _ + 1, .tyMeta n => s!"?{lfReplayNameString n}"
-  | _ + 1, .tyConst n => lfReplayNameString n
-  | depth + 1, .tyApp n args =>
-      let rendered := args.map (rawSourceStringWithDepth depth)
-      s!"{lfReplayNameString n} {String.intercalate " " rendered}"
-  | depth + 1, .tySubst Γ A =>
-      s!"tySubst ({rawSourceStringWithDepth depth Γ}) ({rawSourceStringWithDepth depth A})"
-  | _ + 1, .tmVar i => s!"#{i}"
-  | _ + 1, .tmMeta n => s!"?{lfReplayNameString n}"
-  | _ + 1, .tmConst n => lfReplayNameString n
-  | depth + 1, .tmApp n args =>
-      let rendered := args.map (rawSourceStringWithDepth depth)
-      s!"{lfReplayNameString n} {String.intercalate " " rendered}"
-  | depth + 1, .tmSubst Γ t =>
-      s!"tmSubst ({rawSourceStringWithDepth depth Γ}) ({rawSourceStringWithDepth depth t})"
-  | depth + 1, .substId Γ => s!"substId ({rawSourceStringWithDepth depth Γ})"
-  | _ + 1, .substMeta n => s!"?{lfReplayNameString n}"
-  | depth + 1, .substComp σ τ =>
-      s!"substComp ({rawSourceStringWithDepth depth σ}) ({rawSourceStringWithDepth depth τ})"
-  | _ + 1, .substEmpty => "emptySubst"
-  | depth + 1, .substExt σ t =>
-      s!"substExt ({rawSourceStringWithDepth depth σ}) ({rawSourceStringWithDepth depth t})"
-  | depth + 1, .scopedBind zone cls x ty body =>
-      s!"bind {lfReplayNameString x} : {rawSourceStringWithDepth depth ty} in " ++
-        s!"{rawSourceStringWithDepth depth body} [{lfReplayNameString zone}/" ++
-        s!"{lfReplayNameString cls}]"
-  | _ + 1, .leanParam n => lfReplayNameString n
-
-/-- Source-ish rendering for a kernel judgment in replay diagnostics. -/
-def judgmentSourceStringWithDepth (depth : Nat) : Judgment → String
-  | .wfCtx Γ => s!"wfCtx {rawSourceStringWithDepth depth Γ}"
-  | .wfTy Γ A =>
-      s!"wfTy ({rawSourceStringWithDepth depth Γ}) ({rawSourceStringWithDepth depth A})"
-  | .wfTm Γ t A =>
-      s!"wfTm ({rawSourceStringWithDepth depth Γ}) ({rawSourceStringWithDepth depth t}) " ++
-        s!"({rawSourceStringWithDepth depth A})"
-  | .wfSubst Δ σ Γ =>
-      s!"wfSubst ({rawSourceStringWithDepth depth Δ}) " ++
-        s!"({rawSourceStringWithDepth depth σ}) ({rawSourceStringWithDepth depth Γ})"
-  | .eqTy Γ A B =>
-      s!"eqTy ({rawSourceStringWithDepth depth Γ}) ({rawSourceStringWithDepth depth A}) " ++
-        s!"({rawSourceStringWithDepth depth B})"
-  | .eqTm Γ t u A =>
-      s!"eqTm ({rawSourceStringWithDepth depth Γ}) ({rawSourceStringWithDepth depth t}) " ++
-        s!"({rawSourceStringWithDepth depth u}) ({rawSourceStringWithDepth depth A})"
-  | .custom n args =>
-      let rendered := args.map (rawSourceStringWithDepth depth)
-      s!"{lfReplayNameString n} {String.intercalate " " rendered}"
-
 /-- Compact source-ish replay-tree rendering with a depth and size budget. -/
 partial def kernelLFDerivationSourceStringWithDepth : Nat → KernelLFDerivation → String
   | 0, _ => "..."

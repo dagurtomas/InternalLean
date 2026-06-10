@@ -927,6 +927,43 @@ def nameLastComponent : Name → Name
   | .str _ s => .str .anonymous s
   | .num _ i => .num .anonymous i
 
+/-- Render a source position for failed-declaration diagnostics. -/
+def failedTheoryDeclarationPositionString? (stx : Syntax) : CommandElabM (Option String) := do
+  match stx.getPos? (canonicalOnly := true) with
+  | none => pure none
+  | some pos =>
+      let p := (← getFileMap).toPosition pos
+      pure <| some s!"line {p.line}, column {p.column}"
+
+/-- Record a failed type-theory declaration so later commands can point to the earlier error. -/
+def recordFailedTheoryDeclarationFromSyntax (nm : Ident) : CommandElabM Unit := do
+  let fileName ← getFileName
+  let position? ← failedTheoryDeclarationPositionString? nm.raw
+  let failed : FailedTheoryDeclaration := {
+    fileName := fileName
+    theoryName := nm.getId.eraseMacroScopes
+    position? := position? }
+  liftCoreM <| registerFailedTheoryDeclaration failed
+  liftIO <| failedTheoryDeclarationStore.modify fun entries => entries.push failed
+
+/-- Find a failed type-theory declaration in the current file. -/
+def currentFileFailedTheoryDeclaration? (theoryName : Name) : CommandElabM
+    (Option FailedTheoryDeclaration) := do
+  let fileName ← getFileName
+  let envFailed? ← liftCoreM <| getEnvFailedTheoryDeclaration? fileName theoryName
+  let refEntries ← liftIO failedTheoryDeclarationStore.get
+  let refMatches := refEntries.filter (fun failed =>
+    failed.fileName == fileName &&
+      failed.theoryName.eraseMacroScopes == theoryName.eraseMacroScopes)
+  match refMatches.back? with
+  | some failed => pure (some failed)
+  | none => pure envFailed?
+
+/-- Throw the failed-theory pointer message when `theoryName` failed earlier in this file. -/
+def throwIfCurrentFileFailedTheory (theoryName : Name) : CommandElabM Unit := do
+  if let some failed ← currentFileFailedTheoryDeclaration? theoryName then
+    throwError (failedTheoryDeclarationMessage failed)
+
 /-- Resolve the target theory and local name for a top-level `internal def`. -/
 def resolveInternalDefTarget (declName : Name) : CommandElabM InternalDefTarget := do
   let currentNs ← getCurrNamespace
@@ -941,6 +978,7 @@ def resolveInternalDefTarget (declName : Name) : CommandElabM InternalDefTarget 
   if qualified then
     let theoryName := declName.getPrefix
     unless ← liftCoreM (hasTheoryAnchor theoryName) do
+      throwIfCurrentFileFailedTheory theoryName
       throwError "unknown type theory '{theoryName}'\n\nNo theory anchor named \
         '{theoryAnchorName theoryName}' is available in the current environment. Use \
           `declare_type_theory {theoryName} where ...` first, import the module that declares it, \
@@ -958,10 +996,19 @@ def resolveInternalDefTarget (declName : Name) : CommandElabM InternalDefTarget 
     return { theoryName, localName, anchorName := declName }
   else
     let some theoryName := currentTheory?
-      | throwError "cannot infer target type theory for `internal def {declName}`\n\nWrite the \
-        declaration inside a theory namespace, for example:\n  namespace TinyNatUX\n  internal \
-          def {declName} : ... := ...\n  end TinyNatUX\n\nor qualify the declaration name:\n  \
-            internal def TinyNatUX.{declName} : ... := ..."
+      | do
+          if !currentNs.isAnonymous then
+            throwIfCurrentFileFailedTheory currentNs
+          let exampleTheory :=
+            if currentNs.isAnonymous then
+              `YourTheory
+            else
+              currentNs.eraseMacroScopes
+          throwError "cannot infer target type theory for `internal def {declName}`\n\nWrite the \
+            declaration inside a declared theory namespace, for example:\n  namespace \
+              {exampleTheory}\n  internal def {declName} : ... := ...\n  end {exampleTheory}\n\nor \
+                qualify the declaration name:\n  internal def {exampleTheory}.{declName} : ... \
+                  := ..."
     return { theoryName, localName := declName, anchorName := theoryName ++ declName }
 
 /-- Check internal declaration registry and generated-anchor names before registration. -/
@@ -2387,8 +2434,11 @@ syntax (name := extendInternalLeanWhere)
 def elabDeclareInternalLeanWithBlock (doc? : Option (TSyntax ``Parser.Command.docComment))
     (nm : Ident) (levelParams parents : Array Name) (decls : TSyntaxArray `ttDecl)
     (block : HLTheoryBlock) : CommandElabM Unit := do
+  let baseSig : HLSignature := { name := nm.getId, parents, levelParams }
+  let flatBase ← liftCoreM <| flattenSignature baseSig
+  let block ← liftCoreM <| desugarRuleBinderPremisesInBlock flatBase block
   checkNoDuplicateBlockNames block
-  let sig := signatureWithBlock { name := nm.getId, parents, levelParams } block
+  let sig := signatureWithBlock baseSig block
   ensureTheoryRegistrationNamesAvailable sig.name
   let sourceDoc? ← optDocCommentString? doc?
   let mut sourceDocs ← sourceDocsFromTheoryBlock sig.name decls
@@ -2412,16 +2462,22 @@ def elabDeclareInternalLeanWithBlock (doc? : Option (TSyntax ``Parser.Command.do
 /-- Shared elaboration path for all `declare_type_theory` syntactic variants. -/
 def elabDeclareInternalLean (doc? : Option (TSyntax ``Parser.Command.docComment)) (nm : Ident)
     (levelParams parents : Array Name) (decls : TSyntaxArray `ttDecl) : CommandElabM Unit := do
-  let block ← elabHLTheoryBlock decls
-  elabDeclareInternalLeanWithBlock doc? nm levelParams parents decls block
+  try
+    let block ← elabHLTheoryBlock decls
+    elabDeclareInternalLeanWithBlock doc? nm levelParams parents decls block
+  catch ex =>
+    recordFailedTheoryDeclarationFromSyntax nm
+    throw ex
 
 /-- Register an already elaborated `extend_type_theory` block and add source/navigation data. -/
 def elabExtendInternalLeanWithBlock (doc? : Option (TSyntax ``Parser.Command.docComment))
     (nm : Ident) (decls : TSyntaxArray `ttDecl) (block : HLTheoryBlock) : CommandElabM Unit := do
+  let some sig ← liftCoreM <| getTheory? nm.getId
+    | throwError "unknown type theory '{nm.getId}'; use `declare_type_theory {nm.getId} where \
+        ...` before `extend_type_theory`"
+  let flatBase ← liftCoreM <| flattenSignature sig
+  let block ← liftCoreM <| desugarRuleBinderPremisesInBlock flatBase block
   checkNoDuplicateBlockNames block
-  unless (← liftCoreM <| getTheory? nm.getId).isSome do
-    throwError "unknown type theory '{nm.getId}'; use `declare_type_theory {nm.getId} where ...` \
-      before `extend_type_theory`"
   let sourceDoc? ← optDocCommentString? doc?
   let mut sourceDocs ← sourceDocsFromTheoryBlock nm.getId decls
   if let some doc := sourceDoc? then

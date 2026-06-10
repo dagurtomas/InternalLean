@@ -5,6 +5,7 @@ import InternalLeanTest.CheckerHardeningTest
 import InternalLeanTest.CheckerPerformanceSmokeTest
 import InternalLeanTest.CorrectnessRegressionTest
 import InternalLeanTest.DocLintTest
+import InternalLeanTest.DiagnosticsPhase2Test
 import InternalLeanTest.EndToEndTinyNatTest
 import InternalLeanTest.EvidencePremiseTest
 import InternalLeanTest.FrontendFallbackProfileTest
