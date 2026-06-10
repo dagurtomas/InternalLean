@@ -225,6 +225,115 @@ elab "#print_type_theory_side_conditions" theory:ident : command => do
   let flatSig ← liftCoreM <| flattenSignature sig
   logInfo m!"{internalLeanSideConditionSummaryString flatSig}"
 
+/-- Render a declaration name for generic structural-metatheory diagnostics. -/
+def structuralMetaNameString (n : Name) : String :=
+  toString n.eraseMacroScopes
+
+/-- Render a list of declaration names for generic structural-metatheory diagnostics. -/
+def structuralMetaNameList (names : Array Name) : String :=
+  String.intercalate ", " (names.toList.map structuralMetaNameString)
+
+/-- Render one checked LF binder for generic rule-induction diagnostics. -/
+def renderInductionBinder (b : CheckedLFBinding) : String :=
+  let rendered := s!"{structuralMetaNameString b.name} : {b.typeExpr}"
+  match b.visibility with
+  | .explicit => s!"({rendered})"
+  | .implicit => "{" ++ rendered ++ "}"
+
+/-- Render a nonempty list of binders, or `none`. -/
+def renderInductionBinders (bs : Array CheckedLFBinding) : String :=
+  if bs.isEmpty then "none" else String.intercalate " " (bs.toList.map renderInductionBinder)
+
+/-- Render one rule-induction premise line. -/
+def renderInductionPremise (p : LFJudgmentInductionPremise) : String :=
+  if p.recursive then
+    s!"recursive premise {structuralMetaNameString p.name} : {p.judgmentExpr}"
+  else
+    s!"premise {structuralMetaNameString p.name} : {p.judgmentExpr}"
+
+/-- Render one parameter-evidence entry for a rule-induction case. -/
+def renderInductionParamEvidence (ev : CheckedLFRuleParamEvidence) : String :=
+  s!"evidence {structuralMetaNameString ev.name} for \
+    {structuralMetaNameString ev.paramName} : {ev.judgmentExpr}"
+
+/-- Render one side-condition entry for a rule-induction case. -/
+def renderInductionSideCondition (sc : CheckedLFRuleSideCondition) : String :=
+  s!"side_condition {structuralMetaNameString sc.name} by \
+    {structuralMetaNameString sc.solver} : {sc.input}"
+
+/-- Render generic rule-induction metadata as a user-facing diagnostic. -/
+def LFJudgmentInductionPrinciple.render (p : LFJudgmentInductionPrinciple) : String :=
+  Id.run do
+    let mut lines := #[]
+    lines := lines.push s!"rule induction for {structuralMetaNameString p.theoryName} over \
+      {structuralMetaNameList p.judgmentNames}"
+    lines := lines.push s!"cases: {p.cases.size}"
+    lines := lines.push s!"recursive premises: {p.recursivePremiseCount}"
+    if !p.diagnostics.isEmpty then
+      lines := lines.push "diagnostics:"
+      for d in p.diagnostics do
+        lines := lines.push s!"- {d.kind.label}: {d.message}"
+    for c in p.cases do
+      lines := lines.push ""
+      lines := lines.push s!"case {structuralMetaNameString c.ruleName}"
+      lines := lines.push s!"  parameters: {renderInductionBinders c.params}"
+      for ev in c.paramEvidences do
+        lines := lines.push s!"  {renderInductionParamEvidence ev}"
+      for prem in c.premises do
+        lines := lines.push s!"  {renderInductionPremise prem}"
+      for sc in c.sideConditions do
+        lines := lines.push s!"  {renderInductionSideCondition sc}"
+      lines := lines.push s!"  conclusion: {c.conclusionExpr}"
+    return String.intercalate "\n" lines.toList
+
+/-- Fetch the checked theory artifact used by generic structural-metatheory diagnostics. -/
+def getCheckedStructuralMetatheoryTheory (theory : Name) : CommandElabM CheckedSignature := do
+  let some checked ← liftCoreM <| getCheckedTheory? theory
+    | throwError "no checked artifact stored for type theory '{theory}'"
+  pure checked
+
+/-- Throw if rule-induction metadata has blocking diagnostics. -/
+def ensureUsableInductionPrinciple (p : LFJudgmentInductionPrinciple) : CommandElabM Unit := do
+  unless p.isUsable do
+    throwError "rule-induction metadata for type theory '{p.theoryName}' is not usable:\n\
+      {String.intercalate "\n" (p.diagnostics.toList.map (·.message))}"
+
+/-- Print generic rule-induction metadata for one judgment family. -/
+elab "#print_judgment_induction " theory:ident judgmentName:ident : command => do
+  let checked ← getCheckedStructuralMetatheoryTheory theory.getId
+  let principle := checked.judgmentInductionPrinciple #[judgmentName.getId]
+  logInfo m!"{principle.render}"
+
+/-- Check that generic rule-induction metadata is available for one judgment family. -/
+elab "#check_judgment_induction " theory:ident judgmentName:ident : command => do
+  let checked ← getCheckedStructuralMetatheoryTheory theory.getId
+  let principle := checked.judgmentInductionPrinciple #[judgmentName.getId]
+  ensureUsableInductionPrinciple principle
+  logInfo m!"judgment induction metadata for {structuralMetaNameString checked.name}.\
+    {structuralMetaNameString judgmentName.getId}: {principle.cases.size} case(s), \
+    {principle.recursivePremiseCount} recursive premise(s)"
+
+/-- Print generic mutual rule-induction metadata for one or more judgment families. -/
+elab "#print_rule_induction " theory:ident " for " judgments:ident,* : command => do
+  let checked ← getCheckedStructuralMetatheoryTheory theory.getId
+  let names := judgments.getElems.map (·.getId)
+  if names.isEmpty then
+    throwError "#print_rule_induction requires at least one judgment after `for`"
+  let principle := checked.judgmentInductionPrinciple names
+  logInfo m!"{principle.render}"
+
+/-- Check generic mutual rule-induction metadata for one or more judgment families. -/
+elab "#check_rule_induction " theory:ident " for " judgments:ident,* : command => do
+  let checked ← getCheckedStructuralMetatheoryTheory theory.getId
+  let names := judgments.getElems.map (·.getId)
+  if names.isEmpty then
+    throwError "#check_rule_induction requires at least one judgment after `for`"
+  let principle := checked.judgmentInductionPrinciple names
+  ensureUsableInductionPrinciple principle
+  logInfo m!"rule induction metadata for {structuralMetaNameString checked.name} over \
+    {structuralMetaNameList principle.judgmentNames}: {principle.cases.size} case(s), \
+    {principle.recursivePremiseCount} recursive premise(s)"
+
 /-- User-facing name rendering for documentation/admission lints. -/
 def docLintNameString (n : Name) : String :=
   toString n.eraseMacroScopes

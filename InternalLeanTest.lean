@@ -9,6 +9,7 @@ import InternalLeanTest.EndToEndTinyNatTest
 import InternalLeanTest.EvidencePremiseTest
 import InternalLeanTest.FrontendMacroTest
 import InternalLeanTest.GenerationHygieneTest
+import InternalLeanTest.GenericStructuralMetatheoryTest
 import InternalLeanTest.ImplicitVariablesTest
 import InternalLeanTest.IncrementalCacheTest
 import InternalLeanTest.InternalDefScalabilityTest

@@ -1432,6 +1432,144 @@ structure CheckedSignature where
 def pushIfMissing [BEq α] (xs : Array α) (x : α) : Array α :=
   if xs.contains x then xs else xs.push x
 
+/-- Diagnostic class for generic rule-induction metadata. -/
+inductive LFJudgmentInductionDiagnosticKind where
+  /-- A requested judgment is not present in the checked theory. -/
+  | unknownJudgment
+  /-- No checked rule concludes in one of the requested judgments. -/
+  | noRuleCases
+  deriving Inhabited, Repr, BEq
+
+namespace LFJudgmentInductionDiagnosticKind
+
+/-- User-facing label for a rule-induction metadata diagnostic. -/
+def label : LFJudgmentInductionDiagnosticKind → String
+  | .unknownJudgment => "unknown_judgment"
+  | .noRuleCases => "no_rule_cases"
+
+end LFJudgmentInductionDiagnosticKind
+
+/-- Diagnostic emitted while assembling generic rule-induction metadata. -/
+structure LFJudgmentInductionDiagnostic where
+  /-- Diagnostic class. -/
+  kind : LFJudgmentInductionDiagnosticKind
+  /-- Judgment affected by this diagnostic, when the diagnostic is judgment-specific. -/
+  judgment? : Option Name := none
+  /-- Human-readable message. -/
+  message : String
+  deriving Inhabited, Repr, BEq
+
+/-- Premise entry for one generic rule-induction case. -/
+structure LFJudgmentInductionPremise where
+  /-- Source premise/evidence name. -/
+  name : Name
+  /-- Source premise type. -/
+  judgmentExpr : ObjExpr
+  /-- Resolved premise head, when available. -/
+  head? : Option CheckedLFHead := none
+  /-- Whether this premise becomes a recursive hypothesis for the covered judgment family. -/
+  recursive : Bool := false
+  deriving Inhabited, Repr, BEq
+
+/-- One rule case in a generic rule-induction principle. -/
+structure LFJudgmentInductionCase where
+  /-- Rule whose conclusion supplies this induction case. -/
+  ruleName : Name
+  /-- Rule parameter telescope. -/
+  params : Array CheckedLFBinding := #[]
+  /-- Evidence obligations attached to rule parameters. -/
+  paramEvidences : Array CheckedLFRuleParamEvidence := #[]
+  /-- Rule premises, annotated with recursive-hypothesis eligibility. -/
+  premises : Array LFJudgmentInductionPremise := #[]
+  /-- Rule side conditions. -/
+  sideConditions : Array CheckedLFRuleSideCondition := #[]
+  /-- Source rule conclusion. -/
+  conclusionExpr : ObjExpr
+  /-- Resolved conclusion judgment head. -/
+  conclusionHead : CheckedLFHead
+  deriving Inhabited, Repr, BEq
+
+namespace LFJudgmentInductionCase
+
+/-- Recursive premises exposed as induction hypotheses in this case. -/
+def recursivePremises (c : LFJudgmentInductionCase) : Array LFJudgmentInductionPremise :=
+  c.premises.filter (·.recursive)
+
+end LFJudgmentInductionCase
+
+/-- Generic rule-induction metadata for one or more mutually covered judgments. -/
+structure LFJudgmentInductionPrinciple where
+  /-- Checked type theory owning the principle. -/
+  theoryName : Name
+  /-- Judgment families covered by this induction principle. -/
+  judgmentNames : Array Name := #[]
+  /-- Rule cases whose conclusions target the covered judgments. -/
+  cases : Array LFJudgmentInductionCase := #[]
+  /-- Metadata diagnostics. A nonempty list means the principle is not usable yet. -/
+  diagnostics : Array LFJudgmentInductionDiagnostic := #[]
+  deriving Inhabited, Repr, BEq
+
+namespace LFJudgmentInductionPrinciple
+
+/-- Total number of recursive premises exposed by the principle. -/
+def recursivePremiseCount (p : LFJudgmentInductionPrinciple) : Nat :=
+  p.cases.foldl (init := 0) fun n c => n + c.recursivePremises.size
+
+/-- Whether the principle has no blocking diagnostics. -/
+def isUsable (p : LFJudgmentInductionPrinciple) : Bool :=
+  p.diagnostics.isEmpty
+
+end LFJudgmentInductionPrinciple
+
+namespace CheckedSignature
+
+/-- Construct generic rule-induction metadata for one or more checked judgment families. -/
+def judgmentInductionPrinciple (checked : CheckedSignature) (judgmentNames : Array Name) :
+    LFJudgmentInductionPrinciple := Id.run do
+  let mut targets : Array Name := #[]
+  for j in judgmentNames do
+    targets := pushIfMissing targets j.eraseMacroScopes
+  let hasTarget (n : Name) : Bool :=
+    targets.any fun target => target.eraseMacroScopes == n.eraseMacroScopes
+  let mut diagnostics : Array LFJudgmentInductionDiagnostic := #[]
+  for target in targets do
+    unless checked.lfJudgments.any (fun j => j.name.eraseMacroScopes == target) do
+      diagnostics := diagnostics.push {
+        kind := .unknownJudgment
+        judgment? := some target
+        message := s!"unknown judgment '{target}' in checked type theory '{checked.name}'" }
+  let mut cases : Array LFJudgmentInductionCase := #[]
+  for r in checked.lfRules do
+    if hasTarget r.conclusionHead.name then
+      let premises := r.premises.map fun p =>
+        let recursive := match p.head? with
+          | some h => h.kind == .judgment && hasTarget h.name
+          | none => false
+        ({ name := p.name
+           judgmentExpr := p.judgmentExpr
+           head? := p.head?
+           recursive := recursive } : LFJudgmentInductionPremise)
+      cases := cases.push {
+        ruleName := r.name
+        params := r.params
+        paramEvidences := r.paramEvidences
+        premises := premises
+        sideConditions := r.sideConditions
+        conclusionExpr := r.conclusionExpr
+        conclusionHead := r.conclusionHead }
+  if diagnostics.isEmpty && cases.isEmpty then
+    diagnostics := diagnostics.push {
+      kind := .noRuleCases
+      message := s!"no checked rule in type theory '{checked.name}' concludes in covered \
+        judgment(s) {String.intercalate ", " (targets.toList.map toString)}" }
+  return {
+    theoryName := checked.name
+    judgmentNames := targets
+    cases := cases
+    diagnostics := diagnostics }
+
+end CheckedSignature
+
 /-- Rule classes consumed by generic role-driven automation. -/
 inductive LFRuleAutomationClass where
   /-- A formation rule constructs a type/sort/classification judgment. -/
