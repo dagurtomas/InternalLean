@@ -763,7 +763,7 @@ def lfMirrorTheoryBodySyntaxDefCheckNodeLimit : Nat := 0
 def lfMirrorBestEffortSyntaxDefNodeLimit : Nat := 10000
 
 /-- `lf_def` bodies above this size are left to the ordinary LF checker in fast-path mode. -/
-def lfMirrorBestEffortObjectDefNodeLimit : Nat := 120
+def lfMirrorBestEffortObjectDefNodeLimit : Nat := 10000
 
 /-- Add one mirror declaration in best-effort mode. -/
 def addLFMirrorPendingDeclBestEffort (theoryName : Name) (levelParams : List Name)
