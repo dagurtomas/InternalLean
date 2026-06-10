@@ -305,13 +305,20 @@ def sourceDeclSummaryFromCheckedHL? (theoryName : Name) (ref : SourceDeclSyntaxR
           {d.judgmentExpr} := {d.proof}"
   | _ => return none
 
+/-- Markdown lines for the checked source declaration summary in source-anchor hovers. -/
+def sourceAnchorDeclarationSummaryLines (summary : String) : List String :=
+  if summary.contains '\n' then
+    ["", "InternalLean declaration:", "```", summary, "```"]
+  else
+    ["", s!"InternalLean declaration: `{summary}`"]
+
 /-- User-facing docstring for hidden source declaration anchors. -/
 def internalTheoryDeclarationAnchorDocString (theoryName : Name) (ref : SourceDeclSyntaxRef) :
     CoreM String := do
   let summary? ← sourceDeclSummaryFromCheckedHL? theoryName ref
   let summaryLines :=
     match summary? with
-    | some summary => ["", "InternalLean declaration:", summary]
+    | some summary => sourceAnchorDeclarationSummaryLines summary
     | none => []
   return String.intercalate "\n" <|
     [ s!"Source declaration `{ref.sourceName.eraseMacroScopes}` in type theory \
@@ -441,6 +448,26 @@ def lfQuoteAppSuppliesStubBinders (env : Environment) (theoryName : Name) (e : O
       | none => true
   | _ => true
 
+/-- Return whether one of the consumed binders of a quote stub still has the unindexed marker
+`LFQuoteTerm` type. Applications through such a stub cannot safely appear inside precise
+`LFQuoteOf` indices: later syntax-abbreviation expansion may give the actual argument a more
+precise type than the old marker binder accepts. -/
+partial def lfQuoteHasUntypedStubBinderWithin : Expr → Nat → Bool
+  | _, 0 => false
+  | .forallE _ domain body _, n + 1 =>
+      domain == mkConst ``LFQuoteTerm || lfQuoteHasUntypedStubBinderWithin body n
+  | _, _ => false
+
+/-- Return whether an application consumes an unindexed-marker binder from its current stub. -/
+def lfQuoteAppConsumesUntypedStubBinder (env : Environment) (theoryName : Name)
+    (e : ObjExpr) : Bool :=
+  match lfQuoteObjExprAppHeadArgs e with
+  | (.ident n, args) =>
+      match env.find? (lfQuoteDeclName theoryName n) with
+      | some info => lfQuoteHasUntypedStubBinderWithin info.type args.size
+      | none => false
+  | _ => false
+
 /-- Return whether an identifier is currently represented only by the unindexed quote marker. -/
 def lfQuoteIsUntypedMarkerIdent (env : Environment) (theoryName : Name) (locals : NameSet)
     (name : Name) : Bool :=
@@ -489,6 +516,7 @@ partial def lfQuoteSupportsIndexedQuoteType (env : Environment) (theoryName : Na
             locals.contains n.eraseMacroScopes || env.contains (lfQuoteDeclName theoryName n)
         | _ => lfQuoteSupportsIndexedQuoteType env theoryName locals head
       headOk && lfQuoteAppSuppliesStubBinders env theoryName e &&
+        !lfQuoteAppConsumesUntypedStubBinder env theoryName e &&
         args.all (fun arg =>
           !lfQuoteContainsUntypedMarkerIdent env theoryName locals arg &&
             lfQuoteSupportsIndexedQuoteType env theoryName locals arg)

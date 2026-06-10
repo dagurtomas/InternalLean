@@ -40,12 +40,13 @@ declare_type_theory AnchorSmoke where
   let eqAnchorName := InternalLean.internalTheoryDeclarationAnchorName `AnchorSmoke `EqTm
   let some eqDoc ← findDocString? (← getEnv) eqAnchorName
     | throwError "missing docstring for source anchor {eqAnchorName}"
-  unless eqDoc.contains "judgment EqTm {Γ : Ctx} (a : Tm Γ) (b : Tm Γ) (A : Tm Γ)" do
+  let expectedEq := "`judgment EqTm {Γ : Ctx} (a : Tm Γ) (b : Tm Γ) (A : Tm Γ)`"
+  unless eqDoc.contains expectedEq do
     throwError "unexpected docstring for judgment source anchor {eqAnchorName}: {eqDoc}"
   let aliasAnchorName := InternalLean.internalTheoryDeclarationAnchorName `AnchorSmoke `objAlias
   let some aliasDoc ← findDocString? (← getEnv) aliasAnchorName
     | throwError "missing docstring for source anchor {aliasAnchorName}"
-  unless aliasDoc.contains "lf_def objAlias : Tm emptyCtx := obj" do
+  unless aliasDoc.contains "`lf_def objAlias : Tm emptyCtx := obj`" do
     throwError "unexpected docstring for LF definition source anchor {aliasAnchorName}: \
       {aliasDoc}"
 
