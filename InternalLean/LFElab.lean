@@ -5447,11 +5447,8 @@ def checkLFObjectDefInContextWithMirror (ctx : IntraBlockLFCheckContext) (d : LF
       checkLFObjectDefInContext ctx d
     else
       checkedLFObjectDefAfterExternalBodyCheck ctx d
-  catch ex =>
-    if compareWithLF then
-      throw ex
-    else
-      checkLFObjectDefInContext ctx d
+  catch _ =>
+    checkLFObjectDefInContext ctx d
 
 /-- Check one LF object definition with the selected theory-body backend. -/
 def checkLFObjectDefInContextSelected (ctx : IntraBlockLFCheckContext) (d : LFObjectDefDecl) :
@@ -5775,12 +5772,9 @@ def checkOneSyntaxDefMetadataInSignatureSelected (mirrorSig : HLSignature)
       if compareWithLF then
         checkOneSyntaxDefMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
           syntaxSortArities globalHeads d
-    catch ex =>
-      if compareWithLF then
-        throw ex
-      else
-        checkOneSyntaxDefMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
-          syntaxSortArities globalHeads d
+    catch _ =>
+      checkOneSyntaxDefMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
+        syntaxSortArities globalHeads d
   else
     checkOneSyntaxDefMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
       syntaxSortArities globalHeads d

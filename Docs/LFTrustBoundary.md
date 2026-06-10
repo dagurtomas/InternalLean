@@ -198,9 +198,10 @@ With `checkTheoryBodies`, checked `syntax_def` and `lf_def` bodies in `declare_t
 `extend_type_theory` may be accepted by the mirror backend and then registered in the ordinary
 checked LF artifacts. The fast path uses a separate heartbeat ceiling,
 `internalLean.mirrorBackend.fastPathMaxHeartbeats`, for Lean defeq checks inside the mirror; set it
-to `0` only when deliberately removing that ceiling. With `compareTheoryBodiesWithLF`, the ordinary
-LF body checker also runs after mirror acceptance; this is useful while validating coverage, but it
-does not provide the fast path's build speedup.
+to `0` only when deliberately removing that ceiling. If the mirror rejects a best-effort body, the
+ordinary LF checker handles that declaration. With `compareTheoryBodiesWithLF`, the ordinary LF body
+checker also runs after mirror acceptance; this is useful while validating coverage, but it does not
+provide the fast path's build speedup.
 
 ## Rewriting and transport metadata
 
