@@ -155,6 +155,14 @@ object_role GenericStructuralMetadataSmoke substTy : structural_substitution for
 #print_congruence_obligations GenericStructuralMetadataSmoke
 #check_congruence_obligations GenericStructuralMetadataSmoke
 
+external_param GenericStructuralMetadataSmoke Index : Type := Nat
+external_const GenericStructuralMetadataSmoke zeroIndex : Nat := 0
+external_const GenericStructuralMetadataSmoke succIndex : Nat → Nat := Nat.succ
+external_rel GenericStructuralMetadataSmoke leIndex : Nat → Nat → Prop := fun i j => i ≤ j
+
+#print_external_lf_parameters GenericStructuralMetadataSmoke
+#check_external_lf_parameters GenericStructuralMetadataSmoke
+
 /--
 error: generic structural metadata for type theory 'GenericInductionSimpleSmoke' is incomplete:
 no syntax_sort_role ... : context metadata is registered

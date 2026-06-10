@@ -656,6 +656,132 @@ elab "#check_congruence_obligations " theory:ident : command => do
       {String.intercalate "\n" diagnostics.toList}"
   logInfo m!"generic congruence obligations for {structuralMetaNameString checked.name}: ready"
 
+/-- Class of a theory-local external Lean parameter declaration. -/
+inductive ExternalLeanDeclarationKind where
+  /-- External type/parameter family available to the LF metadata layer. -/
+  | param
+  /-- External Lean constant available in explicitly external metadata. -/
+  | const
+  /-- External Lean proposition-valued relation or side-condition predicate. -/
+  | rel
+  deriving Inhabited, Repr, BEq
+
+namespace ExternalLeanDeclarationKind
+
+/-- User-facing external Lean declaration label. -/
+def label : ExternalLeanDeclarationKind → String
+  | .param => "external_param"
+  | .const => "external_const"
+  | .rel => "external_rel"
+
+end ExternalLeanDeclarationKind
+
+/-- Stored source for an external Lean parameter/constant declaration.
+
+This is Phase-6 trust-boundary metadata.  The Lean terms are parsed by Lean's parser at the command
+site and stored as source strings; future LF telescope integration should elaborate these through
+Lean's kernel rather than adding an InternalLean evaluator for external terms. -/
+structure ExternalLeanDeclaration where
+  /-- Theory that owns this external metadata. -/
+  theoryName : Name
+  /-- Theory-local external declaration name. -/
+  name : Name
+  /-- Declaration class. -/
+  kind : ExternalLeanDeclarationKind
+  /-- Parsed Lean type expression, rendered as source. -/
+  typeSource : String
+  /-- Parsed Lean value/expression, rendered as source. -/
+  valueSource : String
+  deriving Inhabited, Repr, BEq
+
+/-- Persistent external Lean metadata declarations, keyed by owning theory in diagnostics. -/
+initialize externalLeanDeclExt : SimplePersistentEnvExtension ExternalLeanDeclaration
+    (Array ExternalLeanDeclaration) ←
+  registerSimplePersistentEnvExtension {
+    name := `InternalLean.externalLeanDeclExt
+    addEntryFn := fun decls d => decls.push d
+    addImportedFn := fun imported => imported.foldl (· ++ ·) #[] }
+
+/-- Render a parsed Lean term syntax as a compact source string for metadata reports. -/
+def leanTermSourceString (stx : TSyntax `term) : CommandElabM String := do
+  let fmt ← liftCoreM <| Lean.PrettyPrinter.ppTerm stx
+  pure fmt.pretty
+
+/-- Registered external Lean metadata for a theory. -/
+def externalLeanDeclarationsFor (env : Environment) (theoryName : Name) :
+    Array ExternalLeanDeclaration :=
+  externalLeanDeclExt.getState env |>.filter fun d =>
+    d.theoryName.eraseMacroScopes == theoryName.eraseMacroScopes
+
+/-- Register one external Lean declaration after checking the owning theory and duplicates. -/
+def registerExternalLeanDeclaration (d : ExternalLeanDeclaration) : CommandElabM Unit := do
+  let some _sig ← liftCoreM <| getTheory? d.theoryName
+    | throwError "unknown type theory '{d.theoryName}'"
+  let old := externalLeanDeclarationsFor (← getEnv) d.theoryName
+  if old.any (fun old => old.name.eraseMacroScopes == d.name.eraseMacroScopes) then
+    throwError "external Lean metadata '{d.name}' is already registered for type theory \
+      '{d.theoryName}'"
+  modifyEnv fun env => externalLeanDeclExt.addEntry env d
+
+/-- Register an external Lean type/parameter alias for a checked type theory. -/
+elab "external_param " theory:ident name:ident " : " ty:term " := " value:term : command => do
+  registerExternalLeanDeclaration {
+    theoryName := theory.getId.eraseMacroScopes
+    name := name.getId.eraseMacroScopes
+    kind := .param
+    typeSource := (← leanTermSourceString ty)
+    valueSource := (← leanTermSourceString value) }
+
+/-- Register an external Lean constant for a checked type theory. -/
+elab "external_const " theory:ident name:ident " : " ty:term " := " value:term : command => do
+  registerExternalLeanDeclaration {
+    theoryName := theory.getId.eraseMacroScopes
+    name := name.getId.eraseMacroScopes
+    kind := .const
+    typeSource := (← leanTermSourceString ty)
+    valueSource := (← leanTermSourceString value) }
+
+/-- Register an external Lean relation or side-condition predicate for a checked type theory. -/
+elab "external_rel " theory:ident name:ident " : " ty:term " := " value:term : command => do
+  registerExternalLeanDeclaration {
+    theoryName := theory.getId.eraseMacroScopes
+    name := name.getId.eraseMacroScopes
+    kind := .rel
+    typeSource := (← leanTermSourceString ty)
+    valueSource := (← leanTermSourceString value) }
+
+/-- Render external Lean parameter metadata for diagnostics. -/
+def externalLeanMetadataReport (theoryName : Name) (decls : Array ExternalLeanDeclaration) :
+    String := Id.run do
+  let mut lines := #[s!"external Lean metadata for {structuralMetaNameString theoryName}: \
+    {decls.size} declaration(s)",
+    "external terms are Lean-side metadata; future LF telescope support must elaborate them \
+      through Lean's kernel"]
+  if decls.isEmpty then
+    lines := lines.push "none"
+  else
+    for d in decls do
+      lines := lines.push s!"{d.kind.label} {structuralMetaNameString d.name} : \
+        {d.typeSource} := {d.valueSource}"
+  return String.intercalate "\n" lines.toList
+
+/-- Print external Lean metadata registered for a type theory. -/
+elab "#print_external_lf_parameters " theory:ident : command => do
+  let some _sig ← liftCoreM <| getTheory? theory.getId
+    | throwError "unknown type theory '{theory.getId}'"
+  let decls := externalLeanDeclarationsFor (← getEnv) theory.getId
+  logInfo m!"{externalLeanMetadataReport theory.getId decls}"
+
+/-- Check that at least one external Lean metadata declaration is registered for a theory. -/
+elab "#check_external_lf_parameters " theory:ident : command => do
+  let some _sig ← liftCoreM <| getTheory? theory.getId
+    | throwError "unknown type theory '{theory.getId}'"
+  let decls := externalLeanDeclarationsFor (← getEnv) theory.getId
+  if decls.isEmpty then
+    throwError "no external Lean metadata registered for type theory '{theory.getId}'"
+  logInfo m!"external Lean metadata for {structuralMetaNameString theory.getId}: \
+    {decls.size} declaration(s)"
+
 /-- User-facing name rendering for documentation/admission lints. -/
 def docLintNameString (n : Name) : String :=
   toString n.eraseMacroScopes
