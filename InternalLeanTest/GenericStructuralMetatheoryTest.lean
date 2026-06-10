@@ -180,6 +180,17 @@ external_const GenericStructuralMetadataSmoke zeroIndex : Nat := 0
 external_const GenericStructuralMetadataSmoke succIndex : Nat → Nat := Nat.succ
 external_rel GenericStructuralMetadataSmoke leIndex : Nat → Nat → Prop := fun i j => i ≤ j
 
+/--
+error: failed to elaborate external_const 'badIndex' for type theory
+  'GenericStructuralMetadataSmoke' through Lean's kernel:
+  external Lean value has type
+    Bool
+  expected type
+    Nat
+-/
+#guard_msgs (whitespace := lax) in
+external_const GenericStructuralMetadataSmoke badIndex : Nat := true
+
 #print_external_lf_parameters GenericStructuralMetadataSmoke
 #check_external_lf_parameters GenericStructuralMetadataSmoke
 

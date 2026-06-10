@@ -940,11 +940,25 @@ def label : ExternalLeanDeclarationKind → String
 
 end ExternalLeanDeclarationKind
 
+/-- Trust-boundary status for an external Lean metadata declaration. -/
+inductive ExternalLeanDeclarationTrust where
+  /-- The type/value pair elaborated successfully through Lean's term elaborator. -/
+  | leanKernelChecked
+  deriving Inhabited, Repr, BEq
+
+namespace ExternalLeanDeclarationTrust
+
+/-- User-facing trust-boundary label for external Lean metadata. -/
+def label : ExternalLeanDeclarationTrust → String
+  | .leanKernelChecked => "Lean-kernel checked"
+
+end ExternalLeanDeclarationTrust
+
 /-- Stored source for an external Lean parameter/constant declaration.
 
-This is Phase-6 trust-boundary metadata.  The Lean terms are parsed by Lean's parser at the command
-site and stored as source strings; future LF telescope integration should elaborate these through
-Lean's kernel rather than adding an InternalLean evaluator for external terms. -/
+This is Phase-6 trust-boundary metadata. The Lean terms are elaborated by Lean at the command site
+and stored as source strings; future LF telescope integration should retain the elaborated kernel
+expressions rather than adding an InternalLean evaluator for external terms. -/
 structure ExternalLeanDeclaration where
   /-- Theory that owns this external metadata. -/
   theoryName : Name
@@ -956,6 +970,8 @@ structure ExternalLeanDeclaration where
   typeSource : String
   /-- Parsed Lean value/expression, rendered as source. -/
   valueSource : String
+  /-- Trust-boundary status for the stored Lean source. -/
+  trust : ExternalLeanDeclarationTrust := .leanKernelChecked
   deriving Inhabited, Repr, BEq
 
 /-- Persistent external Lean metadata declarations, keyed by owning theory in diagnostics. -/
@@ -977,6 +993,27 @@ def externalLeanDeclarationsFor (env : Environment) (theoryName : Name) :
   externalLeanDeclExt.getState env |>.filter fun d =>
     d.theoryName.eraseMacroScopes == theoryName.eraseMacroScopes
 
+/-- Check an external Lean type/value pair through Lean's kernel-facing elaborator. -/
+def checkExternalLeanTerm (kind : ExternalLeanDeclarationKind) (theoryName name : Name)
+    (ty value : TSyntax `term) : CommandElabM Unit := do
+  try
+    liftTermElabM <| Term.withoutErrToSorry do
+      let tyExpr ← Term.elabType ty
+      Term.synthesizeSyntheticMVarsNoPostponing
+      if (← instantiateMVars tyExpr).hasSyntheticSorry then
+        throwError "external Lean type elaboration produced a synthetic sorry"
+      let valueExpr ← Term.elabTerm value (some tyExpr)
+      Term.synthesizeSyntheticMVarsNoPostponing
+      if (← instantiateMVars valueExpr).hasSyntheticSorry then
+        throwError "external Lean value elaboration produced a synthetic sorry"
+      let valueType ← Meta.inferType valueExpr
+      unless ← Meta.isDefEq valueType tyExpr do
+        throwError "external Lean value has type{indentExpr valueType}\nexpected type\
+          {indentExpr tyExpr}"
+  catch ex =>
+    throwError "failed to elaborate {kind.label} '{name}' for type theory '{theoryName}' \
+      through Lean's kernel:{indentD ex.toMessageData}"
+
 /-- Register one external Lean declaration after checking the owning theory and duplicates. -/
 def registerExternalLeanDeclaration (d : ExternalLeanDeclaration) : CommandElabM Unit := do
   let some _sig ← liftCoreM <| getTheory? d.theoryName
@@ -989,6 +1026,7 @@ def registerExternalLeanDeclaration (d : ExternalLeanDeclaration) : CommandElabM
 
 /-- Register an external Lean type/parameter alias for a checked type theory. -/
 elab "external_param " theory:ident name:ident " : " ty:term " := " value:term : command => do
+  checkExternalLeanTerm .param theory.getId name.getId ty value
   registerExternalLeanDeclaration {
     theoryName := theory.getId.eraseMacroScopes
     name := name.getId.eraseMacroScopes
@@ -998,6 +1036,7 @@ elab "external_param " theory:ident name:ident " : " ty:term " := " value:term :
 
 /-- Register an external Lean constant for a checked type theory. -/
 elab "external_const " theory:ident name:ident " : " ty:term " := " value:term : command => do
+  checkExternalLeanTerm .const theory.getId name.getId ty value
   registerExternalLeanDeclaration {
     theoryName := theory.getId.eraseMacroScopes
     name := name.getId.eraseMacroScopes
@@ -1007,6 +1046,7 @@ elab "external_const " theory:ident name:ident " : " ty:term " := " value:term :
 
 /-- Register an external Lean relation or side-condition predicate for a checked type theory. -/
 elab "external_rel " theory:ident name:ident " : " ty:term " := " value:term : command => do
+  checkExternalLeanTerm .rel theory.getId name.getId ty value
   registerExternalLeanDeclaration {
     theoryName := theory.getId.eraseMacroScopes
     name := name.getId.eraseMacroScopes
@@ -1025,8 +1065,8 @@ def externalLeanMetadataReport (theoryName : Name) (decls : Array ExternalLeanDe
     lines := lines.push "none"
   else
     for d in decls do
-      lines := lines.push s!"{d.kind.label} {structuralMetaNameString d.name} : \
-        {d.typeSource} := {d.valueSource}"
+      lines := lines.push s!"{d.kind.label} {structuralMetaNameString d.name} \
+        [{d.trust.label}] : {d.typeSource} := {d.valueSource}"
   return String.intercalate "\n" lines.toList
 
 /-- Print external Lean metadata registered for a type theory. -/
