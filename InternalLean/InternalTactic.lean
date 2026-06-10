@@ -3357,7 +3357,8 @@ def addInternalDefAnnotationNavigationInfo (declName : Name) (binders : TSyntaxA
 /-- Register a non-admitted top-level `internal def` through the current checked-artifact paths. -/
 def elabInternalDefCheckedExpr (doc? : Option (TSyntax ``Parser.Command.docComment))
     (declNameStx : Syntax) (declName : Name) (levels : Array Name)
-    (typeExpr valueExpr : ObjExpr) : CommandElabM Unit := do
+    (typeExpr valueExpr : ObjExpr) (sourceCommand : String := "internal def") :
+    CommandElabM Unit := do
   let target ← resolveInternalDefTarget declName
   ensureInternalDeclarationNamesAvailable target
   let sourceDoc? ← optDocCommentString? doc?
@@ -3371,24 +3372,29 @@ def elabInternalDefCheckedExpr (doc? : Option (TSyntax ``Parser.Command.docComme
     | .ok valueExpr => pure valueExpr
     | .error err => throwError err
   let lfDef : LFObjectDefDecl := { name := target.localName, typeExpr, value := valueExpr }
-  try
-    liftCoreM <| registerLFObjectDef target.theoryName lfDef
-  catch lfDefEx =>
-    let lfTheorem : LFJudgmentTheoremDecl := {
-      name := target.localName
-      judgmentExpr := typeExpr
-      proof := valueExpr
-    }
+  let evidenceKind ←
     try
-      liftCoreM <| registerLFJudgmentTheorem target.theoryName lfTheorem
-    catch lfThmEx =>
-      throwError "failed to check internal LF declaration '{target.anchorName}' in type theory \
-        '{target.theoryName}'\n\nLF object definition path:\n{exceptionMessageData lfDefEx}\n\nLF \
-          judgment theorem path:\n{exceptionMessageData lfThmEx}"
+      liftCoreM <| registerLFObjectDef target.theoryName lfDef
+      pure InternalDeclarationEvidenceKind.checkedObjectDef
+    catch lfDefEx =>
+      let lfTheorem : LFJudgmentTheoremDecl := {
+        name := target.localName
+        judgmentExpr := typeExpr
+        proof := valueExpr
+      }
+      try
+        liftCoreM <| registerLFJudgmentTheorem target.theoryName lfTheorem
+        pure InternalDeclarationEvidenceKind.checkedJudgmentTheorem
+      catch lfThmEx =>
+        throwError "failed to check internal LF declaration '{target.anchorName}' in type \
+          theory '{target.theoryName}'\n\nLF object definition path:\n\
+            {exceptionMessageData lfDefEx}\n\nLF judgment theorem path:\n\
+              {exceptionMessageData lfThmEx}"
   if let some doc := sourceDoc? then
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
-  addInternalDeclarationAnchor target typeExpr false sourceDoc? (← getRef) declNameStx
-  addInternalDeclarationQuoteStub target #[]
+  addInternalDeclarationAnchor target typeExpr evidenceKind #[] (some valueExpr) sourceCommand
+    sourceDoc? (← getRef) declNameStx
+  addInternalDeclarationQuoteStub target #[] typeExpr
 
 /-- Parse and register a non-admitted top-level `internal def`. -/
 def elabInternalDefChecked (doc? : Option (TSyntax ``Parser.Command.docComment))
@@ -3405,7 +3411,8 @@ of a `judgment_theorem`. Otherwise the same surface sugar elaborates to an LF fu
 object definition. -/
 def elabInternalDefCheckedWithBindersExpr (doc? : Option (TSyntax ``Parser.Command.docComment))
     (declNameStx : Syntax) (declName : Name) (levels : Array Name)
-    (params : Array HLBinding) (typeExpr valueExpr : ObjExpr) : CommandElabM Unit := do
+    (params : Array HLBinding) (typeExpr valueExpr : ObjExpr)
+    (sourceCommand : String := "internal def") : CommandElabM Unit := do
   let target ← resolveInternalDefTarget declName
   ensureInternalDeclarationNamesAvailable target
   let sourceDoc? ← optDocCommentString? doc?
@@ -3420,26 +3427,30 @@ def elabInternalDefCheckedWithBindersExpr (doc? : Option (TSyntax ``Parser.Comma
     | .error err => throwError err
   let fullType := mkInternalDefFunctionType params typeExpr
   let fullValue := mkInternalDefLambda params valueExpr
-  try
-    let lfTheorem : LFJudgmentTheoremDecl := {
-      name := target.localName, binders := params, judgmentExpr := typeExpr, proof := valueExpr }
-    liftCoreM <| registerLFJudgmentTheorem target.theoryName lfTheorem
-  catch lfThmEx =>
+  let evidenceKind ←
     try
-      let lfDef : LFObjectDefDecl := {
-        name := target.localName,
-        typeExpr := fullType,
-        value := fullValue }
-      liftCoreM <| registerLFObjectDef target.theoryName lfDef
-    catch lfDefEx =>
-      throwError "failed to check binder-style internal LF declaration '{target.anchorName}' in \
-        type theory '{target.theoryName}'\n\nLF judgment theorem \
-          path:\n{exceptionMessageData lfThmEx}\n\nLF object definition \
-            path:\n{exceptionMessageData lfDefEx}"
+      let lfTheorem : LFJudgmentTheoremDecl := {
+        name := target.localName, binders := params, judgmentExpr := typeExpr, proof := valueExpr }
+      liftCoreM <| registerLFJudgmentTheorem target.theoryName lfTheorem
+      pure InternalDeclarationEvidenceKind.checkedJudgmentTheorem
+    catch lfThmEx =>
+      try
+        let lfDef : LFObjectDefDecl := {
+          name := target.localName,
+          typeExpr := fullType,
+          value := fullValue }
+        liftCoreM <| registerLFObjectDef target.theoryName lfDef
+        pure InternalDeclarationEvidenceKind.checkedObjectDef
+      catch lfDefEx =>
+        throwError "failed to check binder-style internal LF declaration '{target.anchorName}' in \
+          type theory '{target.theoryName}'\n\nLF judgment theorem \
+            path:\n{exceptionMessageData lfThmEx}\n\nLF object definition \
+              path:\n{exceptionMessageData lfDefEx}"
   if let some doc := sourceDoc? then
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
-  addInternalDeclarationAnchor target fullType false sourceDoc? (← getRef) declNameStx
-  addInternalDeclarationQuoteStub target params
+  addInternalDeclarationAnchor target fullType evidenceKind params (some fullValue) sourceCommand
+    sourceDoc? (← getRef) declNameStx
+  addInternalDeclarationQuoteStub target params typeExpr
 
 /-- Elaborate a binder-style checked `internal def`. -/
 def elabInternalDefCheckedWithBinders (doc? : Option (TSyntax ``Parser.Command.docComment))
@@ -3465,23 +3476,27 @@ def elabInternalDefSorryWithBinders (doc? : Option (TSyntax ``Parser.Command.doc
   if !levels.isEmpty then
     throwError "admitted internal declarations do not support declaration-local universe \
       parameters"
-  match ← liftCoreM <| classifyInternalSorryAdmissionShape target.theoryName target.localName
-      params typeExpr with
-  | .lfOpaque =>
-      liftCoreM <| registerAdmittedInternalLFOpaque target.theoryName target.anchorName
-        target.localName params typeExpr
-  | .judgmentTheorem =>
-      liftCoreM <| registerAdmittedInternalLFJudgmentTheorem target.theoryName
-        target.anchorName target.localName params typeExpr
-  | .unsupported reason =>
-      throwError "failed to classify admitted internal LF declaration '{target.anchorName}' in \
-        type theory '{target.theoryName}': {reason}\n\nAccepted forms are object-shaped \
-        admissions such as `internal def c : Obj := sorry` and theorem-shaped admissions such as \
-        `internal theorem h : J a := sorry`."
+  let evidenceKind ←
+    match ← liftCoreM <| classifyInternalSorryAdmissionShape target.theoryName target.localName
+        params typeExpr with
+    | .lfOpaque =>
+        liftCoreM <| registerAdmittedInternalLFOpaque target.theoryName target.anchorName
+          target.localName params typeExpr
+        pure InternalDeclarationEvidenceKind.admittedLFOpaque
+    | .judgmentTheorem =>
+        liftCoreM <| registerAdmittedInternalLFJudgmentTheorem target.theoryName
+          target.anchorName target.localName params typeExpr
+        pure InternalDeclarationEvidenceKind.admittedJudgmentTheorem
+    | .unsupported reason =>
+        throwError "failed to classify admitted internal LF declaration '{target.anchorName}' in \
+          type theory '{target.theoryName}': {reason}\n\nAccepted forms are object-shaped \
+          admissions such as `internal def c : Obj := sorry` and theorem-shaped admissions such \
+            as `internal theorem h : J a := sorry`."
   if let some doc := sourceDoc? then
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
-  addInternalDeclarationAnchor target typeExpr true sourceDoc? (← getRef) declNameStx
-  addInternalDeclarationQuoteStub target params
+  addInternalDeclarationAnchor target typeExpr evidenceKind params none "internal def := sorry"
+    sourceDoc? (← getRef) declNameStx
+  addInternalDeclarationQuoteStub target params typeExpr
   addInternalDefAnnotationNavigationInfo declName binders typeStx
   logWarning m!"internal declaration '{target.anchorName}' was admitted by `sorry`; the \
     annotation was checked in theory '{target.theoryName}', but the body was not checked. Use \
@@ -3523,9 +3538,10 @@ def elabInternalTheoremCheckedWithBinders (doc? : Option (TSyntax ``Parser.Comma
   liftCoreM <| registerLFJudgmentTheorem target.theoryName lfTheorem
   if let some doc := sourceDoc? then
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
-  addInternalDeclarationAnchor target (mkInternalDefFunctionType params typeExpr) false sourceDoc?
-    (← getRef) declNameStx
-  addInternalDeclarationQuoteStub target params
+  addInternalDeclarationAnchor target (mkInternalDefFunctionType params typeExpr)
+    .checkedJudgmentTheorem params (some valueExpr) "internal theorem" sourceDoc? (← getRef)
+    declNameStx
+  addInternalDeclarationQuoteStub target params typeExpr
   addInternalDefExprNavigationInfo declName binders typeStx valueStx
 
 /-- Register an explicit non-model-facing admitted internal theorem. -/
@@ -3544,9 +3560,10 @@ def elabInternalTheoremSorryWithBinders (doc? : Option (TSyntax ``Parser.Command
     target.localName params typeExpr
   if let some doc := sourceDoc? then
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
-  addInternalDeclarationAnchor target (mkInternalDefFunctionType params typeExpr) true sourceDoc?
-    (← getRef) declNameStx
-  addInternalDeclarationQuoteStub target params
+  addInternalDeclarationAnchor target (mkInternalDefFunctionType params typeExpr)
+    .admittedJudgmentTheorem params none "internal theorem := sorry" sourceDoc? (← getRef)
+    declNameStx
+  addInternalDeclarationQuoteStub target params typeExpr
   addInternalDefAnnotationNavigationInfo declName binders typeStx
   logWarning m!"internal theorem '{target.anchorName}' was admitted by `sorry`; the statement was \
     checked in theory '{target.theoryName}', but the proof was not checked. Use \
@@ -3571,6 +3588,7 @@ def elabInternalDefBy (doc? : Option (TSyntax ``Parser.Command.docComment))
     let valueExpr ← compileInternalObjectTactics target flatSig levels typeExpr steps
       (tactics.map (·.raw))
     elabInternalDefCheckedExpr doc? declNameStx declName levels typeExpr valueExpr
+      "internal def := by"
     addInternalDefAnnotationNavigationInfo declName #[] typeStx
 
 /-- Elaborate and register a binder-style `internal def ... := by` object tactic script. -/
@@ -3596,6 +3614,7 @@ def elabInternalDefByWithBinders (doc? : Option (TSyntax ``Parser.Command.docCom
     let valueExpr ← compileInternalObjectTacticsWithGoal target flatSig levels goal steps
       (tactics.map (·.raw))
     elabInternalDefCheckedWithBindersExpr doc? declNameStx declName levels params typeExpr valueExpr
+      "internal def := by"
     addInternalDefAnnotationNavigationInfo declName binders typeStx
 
 /-- Recognize `sorry` when it was parsed through the object-expression identifier syntax. -/
@@ -3671,6 +3690,8 @@ structure InternalDefsCheckedObjectBatchItem where
   params : Array HLBinding := #[]
   /-- User-facing anchor type. -/
   anchorTypeExpr : ObjExpr
+  /-- Source result type after the explicit declaration binders. -/
+  resultTypeExpr : ObjExpr
   /-- LF object definition to register. -/
   lfDef : LFObjectDefDecl
   deriving Inhabited
@@ -3701,6 +3722,7 @@ def elabInternalDefsCheckedObjectBatchItem? (decl : TSyntax `internalDefsDecl) :
       sourceDoc? := sourceDoc?
       params := params
       anchorTypeExpr := fullType
+      resultTypeExpr := typeExpr
       lfDef := { name := target.localName, typeExpr := fullType, value := fullValue } })
   match decl with
   | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr :=
@@ -3774,9 +3796,10 @@ def tryElabInternalDefsCheckedObjectBatch (decls : Array (TSyntax `internalDefsD
     if let some doc := item.sourceDoc? then
       liftCoreM <| registerSourceDoc item.target.theoryName .internalDef
         item.target.localName doc
-    addInternalDeclarationAnchor item.target item.anchorTypeExpr false item.sourceDoc?
-      item.declStx item.declNameStx
-    addInternalDeclarationQuoteStub item.target item.params
+    addInternalDeclarationAnchor item.target item.anchorTypeExpr .checkedObjectDef item.params
+      (some item.lfDef.value) "internal_defs checked object batch" item.sourceDoc? item.declStx
+      item.declNameStx
+    addInternalDeclarationQuoteStub item.target item.params item.resultTypeExpr
     addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
   return true
 
@@ -3827,10 +3850,10 @@ def tryElabInternalDefsSorryOpaqueBatch (decls : Array (TSyntax `internalDefsDec
       profileInternalLeanCommandPhase "admitted opaque source doc" do
         liftCoreM <| registerSourceDoc item.target.theoryName .internalDef item.target.localName doc
     profileInternalLeanCommandPhase "admitted opaque source anchor" do
-      addInternalDeclarationAnchor item.target item.typeExpr true item.sourceDoc? item.declStx
-        item.declNameStx
+      addInternalDeclarationAnchor item.target item.typeExpr .admittedLFOpaque item.params none
+        "internal_defs admitted opaque batch" item.sourceDoc? item.declStx item.declNameStx
     profileInternalLeanCommandPhase "admitted opaque quote stub" do
-      addInternalDeclarationQuoteStub item.target item.params
+      addInternalDeclarationQuoteStub item.target item.params item.typeExpr
     profileInternalLeanCommandPhase "admitted opaque navigation info" do
       addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
     profileInternalLeanCommandPhase "admitted opaque warning" do
@@ -3883,8 +3906,8 @@ def elabInternalDefsDeclsWithSorryOpaqueBatches (decls : Array (TSyntax `interna
       if let some doc := item.sourceDoc? then
         liftCoreM <| registerSourceDoc item.target.theoryName .internalDef
           item.target.localName doc
-      addInternalDeclarationAnchor item.target item.typeExpr true item.sourceDoc? item.declStx
-        item.declNameStx
+      addInternalDeclarationAnchor item.target item.typeExpr .admittedLFOpaque item.params none
+        "internal_defs admitted opaque batch" item.sourceDoc? item.declStx item.declNameStx
       addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
       logWarning m!"internal declaration '{item.target.anchorName}' was admitted by `sorry`; the \
         annotation was checked in theory '{item.target.theoryName}', but the body was not \

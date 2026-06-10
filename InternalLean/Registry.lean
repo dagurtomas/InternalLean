@@ -18,37 +18,90 @@ documentation, admissions, and semantic-transport metadata.
 
 namespace InternalLean
 
-/-- Lean-visible marker type for a declared object type theory.
+/-- Evidence class for a generated top-level internal declaration anchor. -/
+public inductive InternalDeclarationEvidenceKind where
+  /-- A checked LF object definition. -/
+  | checkedObjectDef : InternalDeclarationEvidenceKind
+  /-- A checked LF judgment theorem. -/
+  | checkedJudgmentTheorem : InternalDeclarationEvidenceKind
+  /-- An admitted LF opaque constant. -/
+  | admittedLFOpaque : InternalDeclarationEvidenceKind
+  /-- An admitted LF judgment theorem. -/
+  | admittedJudgmentTheorem : InternalDeclarationEvidenceKind
+  deriving Inhabited, Repr, BEq
 
-A generated declaration such as `TinyNat.theory : InternalLean.TheoryAnchor` is an
-editor/navigation anchor and registry handle. The trusted semantics of a theory remain
-in the checked artifacts stored by the registry and replay validators. -/
-public inductive TheoryAnchor where
-  /-- The unique marker value for a theory anchor. -/
-  | mk : TheoryAnchor
-  deriving Inhabited
+namespace InternalDeclarationEvidenceKind
+
+/-- User-facing label for an internal declaration evidence kind. -/
+public def label : InternalDeclarationEvidenceKind → String
+  | .checkedObjectDef => "checked LF object definition"
+  | .checkedJudgmentTheorem => "checked LF judgment theorem"
+  | .admittedLFOpaque => "admitted LF opaque constant"
+  | .admittedJudgmentTheorem => "admitted LF judgment theorem"
+
+/-- Whether this evidence kind represents an explicit admission. -/
+public def isAdmitted : InternalDeclarationEvidenceKind → Bool
+  | .admittedLFOpaque | .admittedJudgmentTheorem => true
+  | .checkedObjectDef | .checkedJudgmentTheorem => false
+
+end InternalDeclarationEvidenceKind
+
+/-- Lean-side evidence that a type-theory declaration passed registration.
+
+Generated theory anchors are indexed by a declaration-specific evidence constant of this type.
+The detailed checked theory remains in the persistent registries. -/
+public opaque TheoryEvidence : Lean.Name → Type
+
+/-- Lean-visible handle for a declared object type theory.
+
+A generated declaration such as `TinyNat.theory` is an editor/navigation anchor and registry
+handle. Its type is indexed by generated registration evidence rather than a nullary marker. -/
+public inductive TheoryAnchor : {theoryName : Lean.Name} → TheoryEvidence theoryName → Type where
+  /-- Build an anchor from declaration-specific theory evidence. -/
+  | mk {theoryName : Lean.Name} (ev : TheoryEvidence theoryName) : TheoryAnchor ev
 
 /-- Canonical Lean declaration name for the editor/navigation anchor of a theory. -/
 public meta def theoryAnchorName (theoryName : Lean.Name) : Lean.Name :=
   theoryName ++ `theory
 
-/-- Lean-visible marker type for a top-level internal object declaration.
+/-- Canonical generated evidence name for a type-theory anchor. -/
+public meta def theoryEvidenceName (theoryName : Lean.Name) : Lean.Name :=
+  theoryName ++ `_internalLeanEvidence ++ `theory
 
-Generated declarations such as `TinyNat.double : InternalLean.InternalDeclarationAnchor`
-are editor/navigation handles for object-theory declarations. They do not interpret the
-object declaration as a Lean definition or theorem. -/
-public inductive InternalDeclarationAnchor where
-  /-- The unique marker value for an internal declaration anchor. -/
-  | mk : InternalDeclarationAnchor
-  deriving Inhabited
+/-- Lean-side evidence that a top-level internal declaration was checked or admitted by
+InternalLean's registration pipeline. -/
+public opaque InternalDeclarationEvidence : Lean.Name → Lean.Name →
+  InternalDeclarationEvidenceKind → Type
 
-/-- Lean-visible marker type used for editor navigation to declarations inside a type-theory
-block. The generated declarations are hidden implementation anchors; the checked artifacts remain
-in the InternalLean registries. -/
-public inductive InternalTheoryDeclarationAnchor where
-  /-- The unique marker value for an internal type-theory declaration anchor. -/
-  | mk : InternalTheoryDeclarationAnchor
-  deriving Inhabited
+/-- Lean-visible handle for a top-level internal object declaration.
+
+Generated declarations such as `TinyNat.double` are editor/navigation handles. Their types are
+indexed by declaration-specific evidence, so the visible Lean declaration depends on a checked or
+admitted InternalLean artifact rather than on a nullary marker. -/
+public inductive InternalDeclarationAnchor : {theoryName localName : Lean.Name} →
+    {kind : InternalDeclarationEvidenceKind} →
+    InternalDeclarationEvidence theoryName localName kind → Type where
+  /-- Build an anchor from declaration-specific internal-declaration evidence. -/
+  | mk {theoryName localName : Lean.Name} {kind : InternalDeclarationEvidenceKind}
+      (ev : InternalDeclarationEvidence theoryName localName kind) :
+      InternalDeclarationAnchor ev
+
+/-- Canonical generated evidence name for a top-level internal declaration anchor. -/
+public meta def internalDeclarationEvidenceName (theoryName localName : Lean.Name) : Lean.Name :=
+  theoryName ++ `_internalLeanEvidence ++ localName.eraseMacroScopes
+
+/-- Lean-side evidence for a source declaration inside a type-theory block. -/
+public opaque InternalTheoryDeclarationEvidence : Lean.Name → Lean.Name → Type
+
+/-- Lean-visible handle used for editor navigation to declarations inside a type-theory block.
+The generated declarations are hidden implementation anchors, indexed by source-declaration
+evidence. Checked artifacts remain in the InternalLean registries. -/
+public inductive InternalTheoryDeclarationAnchor : {theoryName sourceName : Lean.Name} →
+    InternalTheoryDeclarationEvidence theoryName sourceName → Type where
+  /-- Build a source anchor from declaration-specific theory-block source evidence. -/
+  | mk {theoryName sourceName : Lean.Name}
+      (ev : InternalTheoryDeclarationEvidence theoryName sourceName) :
+      InternalTheoryDeclarationAnchor ev
 
 /-- Lean-visible marker type for experimental quoted LF terms.
 
@@ -60,6 +113,15 @@ public inductive LFQuoteTerm where
   | mk : LFQuoteTerm
   deriving Inhabited
 
+/-- Lean-side type of quoted LF inhabitants of an LF type or judgment marker.
+
+The index is still only quotation metadata: the reflected expression is checked by InternalLean's
+LF checker before registration.  Using an indexed Lean type lets Lean's ordinary elaborator infer
+implicit LF parameters from dependent quote-stub argument types. -/
+public inductive LFQuoteOf : LFQuoteTerm → Type where
+  /-- Dummy inhabitant used by generated quote-stub definitions. -/
+  | mk {type : LFQuoteTerm} : LFQuoteOf type
+
 /- Built-in quoted LF syntax constructors available to the Lean-elaborated frontend. -/
 namespace LFQuote
 
@@ -70,7 +132,7 @@ public def sort : LFQuoteTerm := LFQuoteTerm.mk
 public def arrow (_domain _codomain : LFQuoteTerm) : LFQuoteTerm := LFQuoteTerm.mk
 
 /-- Quoted dependent framework/internal arrow. -/
-public def arrowDep (_domain : LFQuoteTerm) (_codomain : LFQuoteTerm → LFQuoteTerm) :
+public def arrowDep (domain : LFQuoteTerm) (_codomain : LFQuoteOf domain → LFQuoteTerm) :
     LFQuoteTerm :=
   LFQuoteTerm.mk
 
@@ -78,7 +140,7 @@ public def arrowDep (_domain : LFQuoteTerm) (_codomain : LFQuoteTerm → LFQuote
 public def funArrow (_domain _codomain : LFQuoteTerm) : LFQuoteTerm := LFQuoteTerm.mk
 
 /-- Quoted dependent function-family arrow. -/
-public def funArrowDep (_domain : LFQuoteTerm) (_codomain : LFQuoteTerm → LFQuoteTerm) :
+public def funArrowDep (domain : LFQuoteTerm) (_codomain : LFQuoteOf domain → LFQuoteTerm) :
     LFQuoteTerm :=
   LFQuoteTerm.mk
 
@@ -86,17 +148,24 @@ public def funArrowDep (_domain : LFQuoteTerm) (_codomain : LFQuoteTerm → LFQu
 public def prod (_fst _snd : LFQuoteTerm) : LFQuoteTerm := LFQuoteTerm.mk
 
 /-- Quoted dependent Sigma type. -/
-public def sigma (_fst : LFQuoteTerm) (_snd : LFQuoteTerm → LFQuoteTerm) : LFQuoteTerm :=
+public def sigma (fstTy : LFQuoteTerm) (_snd : LFQuoteOf fstTy → LFQuoteTerm) :
+    LFQuoteTerm :=
   LFQuoteTerm.mk
 
 /-- Quoted pair constructor. -/
-public def pair (_fst _snd : LFQuoteTerm) : LFQuoteTerm := LFQuoteTerm.mk
+public def pair {fstTy sndTy : LFQuoteTerm} (_fst : LFQuoteOf fstTy) (_snd : LFQuoteOf sndTy) :
+    LFQuoteOf (prod fstTy sndTy) :=
+  LFQuoteOf.mk
 
 /-- Quoted first projection. -/
-public def projFst (_value : LFQuoteTerm) : LFQuoteTerm := LFQuoteTerm.mk
+public def projFst {fstTy sndTy : LFQuoteTerm} (_value : LFQuoteOf (prod fstTy sndTy)) :
+    LFQuoteOf fstTy :=
+  LFQuoteOf.mk
 
 /-- Quoted second projection. -/
-public def projSnd (_value : LFQuoteTerm) : LFQuoteTerm := LFQuoteTerm.mk
+public def projSnd {fstTy sndTy : LFQuoteTerm} (_value : LFQuoteOf (prod fstTy sndTy)) :
+    LFQuoteOf sndTy :=
+  LFQuoteOf.mk
 
 end LFQuote
 
@@ -115,6 +184,11 @@ public meta def lfMirrorNamespace (theoryName : Lean.Name) : Lean.Name :=
 /-- Lean declaration name for an experimental mirror checker constant. -/
 public meta def lfMirrorDeclName (theoryName sourceName : Lean.Name) : Lean.Name :=
   lfMirrorNamespace theoryName ++ sourceName.eraseMacroScopes
+
+/-- Canonical generated evidence name for an object-theory source declaration anchor. -/
+public meta def internalTheoryDeclarationEvidenceName (theoryName sourceName : Lean.Name) :
+    Lean.Name :=
+  theoryName ++ `_internalLeanDeclEvidence ++ sourceName.eraseMacroScopes
 
 /-- Canonical hidden Lean declaration name for an object-theory source declaration anchor. -/
 public meta def internalTheoryDeclarationAnchorName (theoryName sourceName : Lean.Name) :
@@ -398,6 +472,48 @@ initialize checkedHLSignatureExt :
         es.foldl (init := m) fun m e =>
           match e with
           | .sig theoryName sig => m.insert theoryName sig
+  }
+
+/-- Registry record for a generated top-level internal-declaration evidence constant. -/
+structure InternalDeclarationEvidenceRecord where
+  /-- Owning type theory. -/
+  theoryName : Name
+  /-- Theory-local source declaration name. -/
+  localName : Name
+  /-- Lean-visible source anchor name. -/
+  anchorName : Name
+  /-- Generated evidence constant name. -/
+  evidenceName : Name
+  /-- Checked/admitted evidence kind. -/
+  kind : InternalDeclarationEvidenceKind
+  /-- Source binder telescope, when the command had explicit binders. -/
+  params : Array HLBinding := #[]
+  /-- Checked annotation, statement, or user-facing function type. -/
+  typeExpr : ObjExpr
+  /-- Checked body/proof when present; admissions keep this field empty. -/
+  valueExpr? : Option ObjExpr := none
+  /-- Source command class that generated the evidence. -/
+  sourceCommand : String := "internal declaration"
+
+/-- Persistent entries for internal-declaration evidence records. -/
+inductive InternalDeclarationEvidenceEntry where
+  /-- Register one generated evidence record, keyed by the public anchor name. -/
+  | record : InternalDeclarationEvidenceRecord → InternalDeclarationEvidenceEntry
+
+/-- Environment extension storing generated internal-declaration evidence records. -/
+initialize internalDeclarationEvidenceExt :
+  SimplePersistentEnvExtension InternalDeclarationEvidenceEntry
+    (NameMap InternalDeclarationEvidenceRecord) ←
+  registerSimplePersistentEnvExtension {
+    name := `InternalLean.internalDeclarationEvidenceExt
+    addEntryFn := fun m e =>
+      match e with
+      | .record r => m.insert r.anchorName.eraseMacroScopes r
+    addImportedFn := fun entries =>
+      entries.foldl (init := {}) fun m es =>
+        es.foldl (init := m) fun m e =>
+          match e with
+          | .record r => m.insert r.anchorName.eraseMacroScopes r
   }
 
 /-- Cheap consistency stamp for a derived compiled LF checking cache. -/
@@ -921,6 +1037,26 @@ def getCheckedHLSignature? (nm : Name) : CoreM (Option HLSignature) := do
 /-- Register or replace a cached checked high-level signature. -/
 def registerCheckedHLSignature (theoryName : Name) (sig : HLSignature) : CoreM Unit := do
   modifyEnv fun env => checkedHLSignatureExt.addEntry env (.sig theoryName sig)
+
+/-- Return generated internal-declaration evidence records keyed by public anchor name. -/
+def getInternalDeclarationEvidenceRecords : CoreM (NameMap InternalDeclarationEvidenceRecord) := do
+  return internalDeclarationEvidenceExt.getState (← getEnv)
+
+/-- Find an internal-declaration evidence record by public anchor name. -/
+def findInternalDeclarationEvidenceByAnchor? (anchorName : Name) :
+    CoreM (Option InternalDeclarationEvidenceRecord) := do
+  return (← getInternalDeclarationEvidenceRecords).find? anchorName.eraseMacroScopes
+
+/-- Find an internal-declaration evidence record by object-theory and local source name. -/
+def findInternalDeclarationEvidence? (theoryName localName : Name) :
+    CoreM (Option InternalDeclarationEvidenceRecord) := do
+  let anchorName := theoryName.eraseMacroScopes ++ localName.eraseMacroScopes
+  findInternalDeclarationEvidenceByAnchor? anchorName
+
+/-- Register a generated internal-declaration evidence record. -/
+def registerInternalDeclarationEvidenceRecord (record : InternalDeclarationEvidenceRecord) :
+    CoreM Unit := do
+  modifyEnv fun env => internalDeclarationEvidenceExt.addEntry env (.record record)
 
 /-- Return registration profile entries. -/
 def getInternalRegistrationProfiles : CoreM InternalRegistrationProfileState := do

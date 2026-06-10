@@ -131,14 +131,58 @@ def ensureTheoryRegistrationNamesAvailable (theoryName : Name) : CommandElabM Un
   if (← getEnv).contains anchorName then
     throwError "cannot create Lean-visible anchor '{anchorName}' for type theory '{theoryName}': \
       a Lean declaration with that name already exists"
+  let evidenceName := theoryEvidenceName theoryName
+  if (← getEnv).contains evidenceName then
+    throwError "cannot create Lean-visible evidence '{evidenceName}' for type theory \
+      '{theoryName}': a Lean declaration with that name already exists"
+
+/-- Lean expression for an internal-declaration evidence kind. -/
+def internalDeclarationEvidenceKindExpr : InternalDeclarationEvidenceKind → Expr
+  | .checkedObjectDef => mkConst ``InternalDeclarationEvidenceKind.checkedObjectDef
+  | .checkedJudgmentTheorem => mkConst ``InternalDeclarationEvidenceKind.checkedJudgmentTheorem
+  | .admittedLFOpaque => mkConst ``InternalDeclarationEvidenceKind.admittedLFOpaque
+  | .admittedJudgmentTheorem => mkConst ``InternalDeclarationEvidenceKind.admittedJudgmentTheorem
+
+/-- Lean type of a generated theory-evidence constant. -/
+def theoryEvidenceTypeExpr (theoryName : Name) : Expr :=
+  mkApp (mkConst ``TheoryEvidence) (toExpr theoryName.eraseMacroScopes)
+
+/-- Lean type of a generated type-theory source-declaration evidence constant. -/
+def internalTheoryDeclarationEvidenceTypeExpr (theoryName sourceName : Name) : Expr :=
+  mkApp2 (mkConst ``InternalTheoryDeclarationEvidence) (toExpr theoryName.eraseMacroScopes)
+    (toExpr sourceName.eraseMacroScopes)
+
+/-- Lean type of a generated internal-declaration evidence constant. -/
+def internalDeclarationEvidenceTypeExpr (theoryName localName : Name)
+    (kind : InternalDeclarationEvidenceKind) : Expr :=
+  mkApp3 (mkConst ``InternalDeclarationEvidence) (toExpr theoryName.eraseMacroScopes)
+    (toExpr localName.eraseMacroScopes) (internalDeclarationEvidenceKindExpr kind)
+
+/-- Add a compact generated evidence axiom.  The command path controls when this is called. -/
+def addGeneratedEvidenceAxiom (declName : Name) (type : Expr) (doc : String) :
+    CommandElabM Unit := do
+  if (← getEnv).contains declName then
+    throwError "cannot create InternalLean evidence declaration '{declName}': a Lean declaration \
+      with that name already exists"
+  liftCoreM <| addAndCompile (Declaration.axiomDecl {
+    name := declName
+    levelParams := []
+    type := type
+    isUnsafe := false })
+  addDocStringCore declName doc
 
 /-- Add the generated Lean-visible anchor declaration for a type theory. -/
 def addTheoryAnchorDeclaration (sig : HLSignature) (sourceDoc? : Option String) (
   rangeStx selectionRangeStx : Syntax) : CommandElabM Unit := do
   let anchorName := theoryAnchorName sig.name
+  let evidenceName := theoryEvidenceName sig.name
+  addGeneratedEvidenceAxiom evidenceName (theoryEvidenceTypeExpr sig.name)
+    s!"InternalLean registration evidence for type theory `{sig.name.eraseMacroScopes}`."
   liftCoreM do
-    let ty := mkConst ``TheoryAnchor
-    let value := mkConst ``TheoryAnchor.mk
+    let theory := toExpr sig.name.eraseMacroScopes
+    let ev := mkConst evidenceName
+    let ty := mkAppN (mkConst ``TheoryAnchor) #[theory, ev]
+    let value := mkAppN (mkConst ``TheoryAnchor.mk) #[theory, ev]
     let defVal ← mkDefinitionValInferringUnsafe anchorName [] ty value ReducibilityHints.abbrev
     addAndCompile (Declaration.defnDecl defVal)
   addDocStringCore anchorName (theoryAnchorSummaryString sig sourceDoc?)
@@ -183,9 +227,17 @@ def addInternalTheoryDeclarationAnchor (theoryName : Name) (ref : SourceDeclSynt
     throwError "cannot create Lean-visible source anchor '{anchorName}' for declaration \
       '{ref.sourceName}' in type theory '{theoryName}': a Lean declaration with that name already \
         exists"
+  let evidenceName := internalTheoryDeclarationEvidenceName theoryName ref.sourceName
+  addGeneratedEvidenceAxiom evidenceName
+    (internalTheoryDeclarationEvidenceTypeExpr theoryName ref.sourceName)
+    s!"InternalLean source-declaration evidence for `{theoryName.eraseMacroScopes}.\
+      {ref.sourceName.eraseMacroScopes}`."
   liftCoreM do
-    let ty := mkConst ``InternalTheoryDeclarationAnchor
-    let value := mkConst ``InternalTheoryDeclarationAnchor.mk
+    let theory := toExpr theoryName.eraseMacroScopes
+    let source := toExpr ref.sourceName.eraseMacroScopes
+    let ev := mkConst evidenceName
+    let ty := mkAppN (mkConst ``InternalTheoryDeclarationAnchor) #[theory, source, ev]
+    let value := mkAppN (mkConst ``InternalTheoryDeclarationAnchor.mk) #[theory, source, ev]
     let defVal ← mkDefinitionValInferringUnsafe anchorName [] ty value ReducibilityHints.abbrev
     addAndCompile (Declaration.defnDecl defVal)
   addDocStringCore anchorName (internalTheoryDeclarationAnchorDocString theoryName ref)
@@ -234,37 +286,266 @@ def addInternalSourceDeclTermInfo? (theoryName sourceName : Name) (stx : Syntax)
     isBinder := isBinder
     isDisplayableTerm := false }
 
-/-- Translate an LF object type expression to the Lean type used by experimental quote stubs.
+/-- Local Lean expressions available while generating dependent quote-stub types. -/
+abbrev LFQuoteLeanLocalMap := Array (Name × Expr)
 
-Structural/function arrows become Lean functions so Lean elaboration can handle higher-order
-quoted arguments and lambdas. Other LF object types are represented by the opaque quote marker
-`LFQuoteTerm`; LF well-formedness and conversion remain checked by InternalLean after reflection. -/
-partial def lfQuoteLeanTypeOfObjType : ObjExpr → Expr
-  | .arrow binder? A B | .funArrow binder? A B =>
-      let binderName := (binder?.getD `_arg).eraseMacroScopes
-      mkForall binderName .default (lfQuoteLeanTypeOfObjType A) (lfQuoteLeanTypeOfObjType B)
-  | _ => mkConst ``LFQuoteTerm
+/-- Find the Lean expression for an LF source-local name in generated quote-stub types. -/
+def findLFQuoteLeanLocal? (locals : LFQuoteLeanLocalMap) (name : Name) : Option Expr :=
+  Id.run do
+  let name := name.eraseMacroScopes
+  for (localName, value) in locals.reverse do
+    if localName.eraseMacroScopes == name then
+      return some value
+  return none
+
+/-- Shift local de-Bruijn references when building the body of a generated binder. -/
+def shiftLFQuoteLeanLocals (locals : LFQuoteLeanLocalMap) : LFQuoteLeanLocalMap :=
+  locals.map fun (name, value) => (name, value.liftLooseBVars 0 1)
+
+/-- Extend generated quote-stub locals with a newly introduced binder. -/
+def pushLFQuoteLeanLocal (locals : LFQuoteLeanLocalMap) (name : Name) : LFQuoteLeanLocalMap :=
+  (shiftLFQuoteLeanLocals locals).push (name.eraseMacroScopes, mkBVar 0)
 
 /-- Lean binder info corresponding to an LF source-binder visibility for quote stubs. -/
 def lfQuoteBinderInfoOfVisibility : BinderVisibility → BinderInfo
   | .explicit => .default
   | .implicit => .implicit
 
+/-- Source-local names available in a generated quote-stub type expression. -/
+def lfQuoteLeanLocalNames (locals : LFQuoteLeanLocalMap) : NameSet :=
+  locals.foldl (init := {}) fun names (name, _) => names.insert name.eraseMacroScopes
+
+/-- Decompose a source LF application spine. -/
+partial def lfQuoteObjExprAppHeadArgs : ObjExpr → ObjExpr × Array ObjExpr
+  | .app f a =>
+      let (head, args) := lfQuoteObjExprAppHeadArgs f
+      (head, args.push a)
+  | e => (e, #[])
+
+/-- Count leading Lean binders in a generated quote-stub type. -/
+partial def lfQuoteLeanForallArity : Expr → Nat
+  | .forallE _ _ body _ => 1 + lfQuoteLeanForallArity body
+  | _ => 0
+
+/-- Return whether an application has supplied enough arguments for the current Lean stub. -/
+def lfQuoteAppSuppliesStubBinders (env : Environment) (theoryName : Name) (e : ObjExpr) : Bool :=
+  match lfQuoteObjExprAppHeadArgs e with
+  | (.ident n, args) =>
+      match env.find? (lfQuoteDeclName theoryName n) with
+      | some info => lfQuoteLeanForallArity info.type <= args.size
+      | none => true
+  | _ => true
+
+/-- Return whether an identifier is currently represented only by the unindexed quote marker. -/
+def lfQuoteIsUntypedMarkerIdent (env : Environment) (theoryName : Name) (locals : NameSet)
+    (name : Name) : Bool :=
+  if locals.contains name.eraseMacroScopes then
+    false
+  else
+    match env.find? (lfQuoteDeclName theoryName name) with
+    | some info => info.type == mkConst ``LFQuoteTerm
+    | none => false
+
+/-- Return whether an expression uses an unindexed marker as an application argument. -/
+partial def lfQuoteContainsUntypedMarkerIdent (env : Environment) (theoryName : Name)
+    (locals : NameSet) : ObjExpr → Bool
+  | .ident n => lfQuoteIsUntypedMarkerIdent env theoryName locals n
+  | .app f a =>
+      lfQuoteContainsUntypedMarkerIdent env theoryName locals f ||
+        lfQuoteContainsUntypedMarkerIdent env theoryName locals a
+  | .arrow binder? A B | .funArrow binder? A B | .sigma binder? A B =>
+      let bodyLocals :=
+        match binder? with
+        | some name => locals.insert name.eraseMacroScopes
+        | none => locals
+      lfQuoteContainsUntypedMarkerIdent env theoryName locals A ||
+        lfQuoteContainsUntypedMarkerIdent env theoryName bodyLocals B
+  | .pair a b | .jeq a b =>
+      lfQuoteContainsUntypedMarkerIdent env theoryName locals a ||
+        lfQuoteContainsUntypedMarkerIdent env theoryName locals b
+  | .fst e | .snd e => lfQuoteContainsUntypedMarkerIdent env theoryName locals e
+  | .lam names body =>
+      let locals := names.foldl (fun locals name => locals.insert name.eraseMacroScopes) locals
+      lfQuoteContainsUntypedMarkerIdent env theoryName locals body
+  | .sort | .univ _ => false
+
+/-- Return whether an LF expression is in the first-order fragment represented precisely by
+indexed quote-stub types, using only quote stubs that already exist.
+
+More expressive, forward-referencing, or implicit-omitting LF expressions still get quote stubs,
+but with the old unindexed marker type so stub generation remains total. -/
+partial def lfQuoteSupportsIndexedQuoteType (env : Environment) (theoryName : Name)
+    (locals : NameSet) : ObjExpr → Bool
+  | e@(.app ..) =>
+      let (head, args) := lfQuoteObjExprAppHeadArgs e
+      let headOk :=
+        match head with
+        | .ident n =>
+            locals.contains n.eraseMacroScopes || env.contains (lfQuoteDeclName theoryName n)
+        | _ => lfQuoteSupportsIndexedQuoteType env theoryName locals head
+      headOk && lfQuoteAppSuppliesStubBinders env theoryName e &&
+        args.all (fun arg =>
+          !lfQuoteContainsUntypedMarkerIdent env theoryName locals arg &&
+            lfQuoteSupportsIndexedQuoteType env theoryName locals arg)
+  | .ident n =>
+      locals.contains n.eraseMacroScopes || env.contains (lfQuoteDeclName theoryName n)
+  | .sort | .univ _ => true
+  | .arrow binder? A B | .funArrow binder? A B | .sigma binder? A B =>
+      let bodyLocals :=
+        match binder? with
+        | some name => locals.insert name.eraseMacroScopes
+        | none => locals
+      lfQuoteSupportsIndexedQuoteType env theoryName locals A &&
+        lfQuoteSupportsIndexedQuoteType env theoryName bodyLocals B
+  | .pair _ _ | .fst _ | .snd _ | .lam _ _ | .jeq _ _ => false
+
+mutual
+
+/-- Translate an LF object expression to the Lean quote expression used in generated stub types. -/
+partial def lfQuoteLeanTermOfObjExpr (env : Environment) (theoryName : Name)
+    (locals : LFQuoteLeanLocalMap) : ObjExpr → Expr
+  | .ident n =>
+      match findLFQuoteLeanLocal? locals n with
+      | some value => value
+      | none => mkConst (lfQuoteDeclName theoryName n)
+  | .sort | .univ _ => mkConst ``InternalLean.LFQuote.sort
+  | .app f a =>
+      mkApp (lfQuoteLeanTermOfObjExpr env theoryName locals f)
+        (lfQuoteLeanTermOfObjExpr env theoryName locals a)
+  | .arrow none A B =>
+      mkApp2 (mkConst ``InternalLean.LFQuote.arrow)
+        (lfQuoteLeanTermOfObjExpr env theoryName locals A)
+        (lfQuoteLeanTermOfObjExpr env theoryName locals B)
+  | .arrow (some binderName) A B =>
+      let domain := lfQuoteLeanTermOfObjExpr env theoryName locals A
+      let locals := pushLFQuoteLeanLocal locals binderName
+      let binderType := mkApp (mkConst ``LFQuoteOf) domain
+      mkApp2 (mkConst ``InternalLean.LFQuote.arrowDep) domain
+        (mkLambda binderName.eraseMacroScopes .default binderType
+          (lfQuoteLeanTermOfObjExpr env theoryName locals B))
+  | .funArrow none A B =>
+      mkApp2 (mkConst ``InternalLean.LFQuote.funArrow)
+        (lfQuoteLeanTermOfObjExpr env theoryName locals A)
+        (lfQuoteLeanTermOfObjExpr env theoryName locals B)
+  | .funArrow (some binderName) A B =>
+      let domain := lfQuoteLeanTermOfObjExpr env theoryName locals A
+      let locals := pushLFQuoteLeanLocal locals binderName
+      let binderType := mkApp (mkConst ``LFQuoteOf) domain
+      mkApp2 (mkConst ``InternalLean.LFQuote.funArrowDep) domain
+        (mkLambda binderName.eraseMacroScopes .default binderType
+          (lfQuoteLeanTermOfObjExpr env theoryName locals B))
+  | .sigma none A B =>
+      mkApp2 (mkConst ``InternalLean.LFQuote.prod)
+        (lfQuoteLeanTermOfObjExpr env theoryName locals A)
+        (lfQuoteLeanTermOfObjExpr env theoryName locals B)
+  | .sigma (some binderName) A B =>
+      let domain := lfQuoteLeanTermOfObjExpr env theoryName locals A
+      let locals := pushLFQuoteLeanLocal locals binderName
+      let binderType := mkApp (mkConst ``LFQuoteOf) domain
+      mkApp2 (mkConst ``InternalLean.LFQuote.sigma) domain
+        (mkLambda binderName.eraseMacroScopes .default binderType
+          (lfQuoteLeanTermOfObjExpr env theoryName locals B))
+  | .pair a b =>
+      mkApp2 (mkConst ``InternalLean.LFQuote.pair)
+        (lfQuoteLeanTermOfObjExpr env theoryName locals a)
+        (lfQuoteLeanTermOfObjExpr env theoryName locals b)
+  | .fst e =>
+      mkApp (mkConst ``InternalLean.LFQuote.projFst)
+        (lfQuoteLeanTermOfObjExpr env theoryName locals e)
+  | .snd e =>
+      mkApp (mkConst ``InternalLean.LFQuote.projSnd)
+        (lfQuoteLeanTermOfObjExpr env theoryName locals e)
+  | .lam names body =>
+      names.foldr (init := lfQuoteLeanTermOfObjExpr env theoryName locals body) fun name body =>
+        mkLambda name.eraseMacroScopes .default (mkConst ``LFQuoteTerm) body
+  | .jeq lhs rhs =>
+      mkApp2 (mkConst ``InternalLean.LFQuote.prod)
+        (lfQuoteLeanTermOfObjExpr env theoryName locals lhs)
+        (lfQuoteLeanTermOfObjExpr env theoryName locals rhs)
+
+/-- Translate an LF object type expression to the Lean type used by quote stubs.
+
+Structural/function arrows become Lean functions, and ordinary LF types or judgments become an
+indexed quote type.  The index gives Lean enough dependency information to infer implicit LF
+arguments before InternalLean reflects and checks the term.  Expressions outside the supported
+index fragment fall back to `LFQuoteTerm`. -/
+partial def lfQuoteLeanTypeOfObjType (env : Environment) (theoryName : Name)
+    (locals : LFQuoteLeanLocalMap) (typeExpr : ObjExpr) : Expr :=
+  if !lfQuoteSupportsIndexedQuoteType env theoryName (lfQuoteLeanLocalNames locals) typeExpr then
+    mkConst ``LFQuoteTerm
+  else
+    match typeExpr with
+    | .sort | .univ _ => mkConst ``LFQuoteTerm
+    | .arrow binder? A B | .funArrow binder? A B =>
+        let binderName := (binder?.getD `_arg).eraseMacroScopes
+        let domain := lfQuoteLeanTypeOfObjType env theoryName locals A
+        let locals :=
+          match binder? with
+          | some name => pushLFQuoteLeanLocal locals name
+          | none => shiftLFQuoteLeanLocals locals
+        mkForall binderName .default domain (lfQuoteLeanTypeOfObjType env theoryName locals B)
+    | typeExpr =>
+        mkApp (mkConst ``LFQuoteOf) (lfQuoteLeanTermOfObjExpr env theoryName locals typeExpr)
+
+end
+
 /-- Lean type of one generated quote-stub parameter. -/
-def lfQuoteLeanTypeOfBinding (b : HLBinding) : Expr :=
-  lfQuoteLeanTypeOfObjType b.typeExpr
+def lfQuoteLeanTypeOfBinding (env : Environment) (theoryName : Name)
+    (locals : LFQuoteLeanLocalMap) (b : HLBinding) : Expr :=
+  lfQuoteLeanTypeOfObjType env theoryName locals b.typeExpr
 
 /-- Lean function type for a generated quoted-LF frontend stub. -/
-def lfQuoteStubType (params : Array HLBinding) : Expr :=
-  params.foldr (init := mkConst ``LFQuoteTerm) fun p acc =>
-    mkForall p.name.eraseMacroScopes (lfQuoteBinderInfoOfVisibility p.visibility)
-      (lfQuoteLeanTypeOfBinding p) acc
+def lfQuoteStubType (env : Environment) (theoryName : Name) (params : Array HLBinding)
+    (resultType? : Option ObjExpr) : Expr :=
+  let rec go (i : Nat) (locals : LFQuoteLeanLocalMap) : Expr :=
+    if h : i < params.size then
+      let p := params[i]
+      let binderInfo := lfQuoteBinderInfoOfVisibility p.visibility
+      let domain := lfQuoteLeanTypeOfBinding env theoryName locals p
+      mkForall p.name.eraseMacroScopes binderInfo domain
+        (go (i + 1) (pushLFQuoteLeanLocal locals p.name))
+    else
+      match resultType? with
+      | some resultType => lfQuoteLeanTypeOfObjType env theoryName locals resultType
+      | none => mkConst ``LFQuoteTerm
+  go 0 #[]
+
+/-- Dummy Lean value for an object of a generated quoted-LF frontend type. -/
+partial def lfQuoteDummyValueOfObjType (env : Environment) (theoryName : Name)
+    (locals : LFQuoteLeanLocalMap) (typeExpr : ObjExpr) : Expr :=
+  if !lfQuoteSupportsIndexedQuoteType env theoryName (lfQuoteLeanLocalNames locals) typeExpr then
+    mkConst ``LFQuoteTerm.mk
+  else
+    match typeExpr with
+    | .sort | .univ _ => mkConst ``LFQuoteTerm.mk
+    | .arrow binder? A B | .funArrow binder? A B =>
+        let binderName := (binder?.getD `_arg).eraseMacroScopes
+        let domain := lfQuoteLeanTypeOfObjType env theoryName locals A
+        let locals :=
+          match binder? with
+          | some name => pushLFQuoteLeanLocal locals name
+          | none => shiftLFQuoteLeanLocals locals
+        mkLambda binderName .default domain
+          (lfQuoteDummyValueOfObjType env theoryName locals B)
+    | typeExpr =>
+        mkApp (mkConst ``LFQuoteOf.mk)
+          (lfQuoteLeanTermOfObjExpr env theoryName locals typeExpr)
 
 /-- Dummy Lean value for a generated quoted-LF frontend stub. -/
-def lfQuoteStubValue (params : Array HLBinding) : Expr :=
-  params.foldr (init := mkConst ``LFQuoteTerm.mk) fun p acc =>
-    mkLambda p.name.eraseMacroScopes (lfQuoteBinderInfoOfVisibility p.visibility)
-      (lfQuoteLeanTypeOfBinding p) acc
+def lfQuoteStubValue (env : Environment) (theoryName : Name) (params : Array HLBinding)
+    (resultType? : Option ObjExpr) : Expr :=
+  let rec go (i : Nat) (locals : LFQuoteLeanLocalMap) : Expr :=
+    if h : i < params.size then
+      let p := params[i]
+      let binderInfo := lfQuoteBinderInfoOfVisibility p.visibility
+      let domain := lfQuoteLeanTypeOfBinding env theoryName locals p
+      mkLambda p.name.eraseMacroScopes binderInfo domain
+        (go (i + 1) (pushLFQuoteLeanLocal locals p.name))
+    else
+      match resultType? with
+      | some resultType => lfQuoteDummyValueOfObjType env theoryName locals resultType
+      | none => mkConst ``LFQuoteTerm.mk
+  go 0 #[]
 
 /-- Dummy quote-stub parameters for an untyped LF opaque arity. -/
 def lfQuoteArityParams (arity : Nat) : Array HLBinding := Id.run do
@@ -285,27 +566,88 @@ def lfQuoteParamsOfRule (r : RuleDecl) : Array HLBinding :=
   r.params ++ r.premises.map fun p =>
     ({ name := p.name, typeExpr := p.judgmentExpr, visibility := .explicit } : HLBinding)
 
-/-- Add one Lean-visible generated quote stub for an LF source declaration. -/
-def addLFQuoteStubDeclaration (theoryName sourceName : Name) (params : Array HLBinding) :
-    CommandElabM Unit := do
+/-- Return whether a name can be registered as a namespace prefix. -/
+def lfQuoteIsNamespaceName : Name → Bool
+  | .str .anonymous _ => true
+  | .str p _ => lfQuoteIsNamespaceName p
+  | _ => false
+
+/-- Register namespace prefixes needed by a staged quote-stub declaration. -/
+def registerLFQuoteStubNamePrefixes (env : Environment) (name : Name) : Environment :=
+  match name with
+  | .str _ s =>
+      if s.front == '_' then
+        env
+      else
+        let rec go (env : Environment) : Name → Environment
+          | .str p _ =>
+              if lfQuoteIsNamespaceName p then go (env.registerNamespace p) p else env
+          | _ => env
+        go env name
+  | _ => env
+
+/-- Build a Lean declaration for a generated quote stub against a supplied environment. -/
+def mkLFQuoteStubDeclaration (env : Environment) (theoryName sourceName : Name)
+    (params : Array HLBinding) (resultType? : Option ObjExpr := none) : CoreM Declaration := do
   let declName := lfQuoteDeclName theoryName sourceName
-  if (← getEnv).contains declName then
+  if env.contains declName then
     throwError "cannot create quoted-LF frontend stub '{declName}' for declaration \
       '{sourceName}' in type theory '{theoryName}': a Lean declaration with that name already \
         exists"
-  liftCoreM do
-    let type := lfQuoteStubType params
-    let value := lfQuoteStubValue params
+  withEnv env do
+    let type := lfQuoteStubType env theoryName params resultType?
+    let value := lfQuoteStubValue env theoryName params resultType?
     let defVal ← mkDefinitionValInferringUnsafe declName [] type value ReducibilityHints.abbrev
-    addAndCompile (Declaration.defnDecl defVal)
-  addDocStringCore declName
-    s!"Experimental quoted-LF frontend stub for `{theoryName}.{sourceName}`."
+    pure (Declaration.defnDecl defVal)
+
+/-- Add a generated quote-stub declaration to a supplied environment without committing it. -/
+def addLFQuoteStubToEnv (env : Environment) (decl : Declaration) : CoreM Environment := do
+  let env := decl.getNames.foldl registerLFQuoteStubNamePrefixes env
+  let opts ← getOptions
+  ofExceptKernelException <|
+    env.addDeclCore (Core.getMaxHeartbeats opts).toUSize decl (← read).cancelTk?
+
+/-- Add one generated quote stub to a supplied environment without committing it. -/
+def addLFQuoteStubDeclarationToEnv (env : Environment) (theoryName sourceName : Name)
+    (params : Array HLBinding) (resultType? : Option ObjExpr := none) : CoreM Environment := do
+  let decl ← mkLFQuoteStubDeclaration env theoryName sourceName params resultType?
+  addLFQuoteStubToEnv env decl
+
+/-- User-facing docstring for a generated quote-stub declaration. -/
+def lfQuoteStubDocString (theoryName sourceName : Name) (params : Array HLBinding)
+    (resultType? : Option ObjExpr) : String :=
+  let paramsText := String.intercalate " " (params.toList.map HLBinding.summary)
+  let paramsLine :=
+    if paramsText.isEmpty then "Source parameters: none" else s!"Source parameters: {paramsText}"
+  let resultLine :=
+    match resultType? with
+    | some resultType => s!"Quoted result: {resultType}"
+    | none => "Quoted result: unindexed LF quote marker"
+  String.intercalate "\n" [
+    s!"Quoted-LF frontend stub for `{theoryName.eraseMacroScopes}.\
+      {sourceName.eraseMacroScopes}`.",
+    paramsLine,
+    resultLine,
+    "",
+    "This Lean declaration exists only for term elaboration and editor navigation. The \
+      reflected expression is still checked by InternalLean's LF checker." ]
+
+/-- Add one Lean-visible generated quote stub for an LF source declaration. -/
+def addLFQuoteStubDeclaration (theoryName sourceName : Name) (params : Array HLBinding)
+    (resultType? : Option ObjExpr := none) : CommandElabM Unit := do
+  let env ← getEnv
+  let decl ← liftCoreM <| mkLFQuoteStubDeclaration env theoryName sourceName params resultType?
+  liftCoreM <| addAndCompile decl
+  let declName := lfQuoteDeclName theoryName sourceName
+  addDocStringCore declName (lfQuoteStubDocString theoryName sourceName params resultType?)
+  liftCoreM <| addDeclarationRangesFromInternalSourceAnchorIfSameModule declName theoryName
+    sourceName
 
 /-- Add one generated quote stub unless the target Lean stub name already exists. -/
 def addLFQuoteStubDeclarationIfMissing (theoryName sourceName : Name)
-    (params : Array HLBinding) : CommandElabM Unit := do
+    (params : Array HLBinding) (resultType? : Option ObjExpr := none) : CommandElabM Unit := do
   unless (← getEnv).contains (lfQuoteDeclName theoryName sourceName) do
-    addLFQuoteStubDeclaration theoryName sourceName params
+    addLFQuoteStubDeclaration theoryName sourceName params resultType?
 
 /-- Add generated quote stubs for all term/proof heads in a checked high-level signature. -/
 def addLFQuoteStubsForHLSignatureIfMissing (theoryName : Name) (sig : HLSignature) :
@@ -318,16 +660,18 @@ def addLFQuoteStubsForHLSignatureIfMissing (theoryName : Name) (sig : HLSignatur
     addLFQuoteStubDeclarationIfMissing theoryName d.name d.params
   for d in sig.judgmentAbbrevs do
     addLFQuoteStubDeclarationIfMissing theoryName d.name d.params
+  for d in sig.lfOpaqueConsts do
+    addLFQuoteStubDeclarationIfMissing theoryName d.name (lfQuoteParamsOfLFOpaqueConst d)
+      d.typeExpr?
   for d in sig.judgments do
     addLFQuoteStubDeclarationIfMissing theoryName d.name d.params
   for d in sig.rules do
     addLFQuoteStubDeclarationIfMissing theoryName d.name (lfQuoteParamsOfRule d)
-  for d in sig.lfOpaqueConsts do
-    addLFQuoteStubDeclarationIfMissing theoryName d.name (lfQuoteParamsOfLFOpaqueConst d)
+      (some d.conclusionExpr)
   for d in sig.lfObjectDefs do
-    addLFQuoteStubDeclarationIfMissing theoryName d.name #[]
+    addLFQuoteStubDeclarationIfMissing theoryName d.name #[] (some d.typeExpr)
   for d in sig.lfJudgmentTheorems do
-    addLFQuoteStubDeclarationIfMissing theoryName d.name d.binders
+    addLFQuoteStubDeclarationIfMissing theoryName d.name d.binders (some d.judgmentExpr)
 
 /-- Add generated quote stubs for all term/proof heads introduced by one theory block. -/
 def addLFQuoteStubsForTheoryBlock (theoryName : Name) (block : HLTheoryBlock) :
@@ -340,16 +684,16 @@ def addLFQuoteStubsForTheoryBlock (theoryName : Name) (block : HLTheoryBlock) :
     addLFQuoteStubDeclaration theoryName d.name d.params
   for d in block.judgmentAbbrevs do
     addLFQuoteStubDeclaration theoryName d.name d.params
+  for d in block.lfOpaqueConsts do
+    addLFQuoteStubDeclaration theoryName d.name (lfQuoteParamsOfLFOpaqueConst d) d.typeExpr?
   for d in block.judgments do
     addLFQuoteStubDeclaration theoryName d.name d.params
   for d in block.rules do
-    addLFQuoteStubDeclaration theoryName d.name (lfQuoteParamsOfRule d)
-  for d in block.lfOpaqueConsts do
-    addLFQuoteStubDeclaration theoryName d.name (lfQuoteParamsOfLFOpaqueConst d)
+    addLFQuoteStubDeclaration theoryName d.name (lfQuoteParamsOfRule d) (some d.conclusionExpr)
   for d in block.lfObjectDefs do
-    addLFQuoteStubDeclaration theoryName d.name #[]
+    addLFQuoteStubDeclaration theoryName d.name #[] (some d.typeExpr)
   for d in block.lfJudgmentTheorems do
-    addLFQuoteStubDeclaration theoryName d.name d.binders
+    addLFQuoteStubDeclaration theoryName d.name d.binders (some d.judgmentExpr)
 
 /-- Resolved target information for a top-level `internal def`. -/
 structure InternalDefTarget where
@@ -362,9 +706,9 @@ structure InternalDefTarget where
   deriving Inhabited, Repr
 
 /-- Add a generated quote stub for a top-level internal declaration. -/
-def addInternalDeclarationQuoteStub (target : InternalDefTarget) (params : Array HLBinding) :
-    CommandElabM Unit := do
-  addLFQuoteStubDeclaration target.theoryName target.localName params
+def addInternalDeclarationQuoteStub (target : InternalDefTarget) (params : Array HLBinding)
+    (resultType : ObjExpr) : CommandElabM Unit := do
+  addLFQuoteStubDeclaration target.theoryName target.localName params (some resultType)
 
 /-- Return true when a parsed identifier is syntactically qualified. -/
 def isQualifiedIdentName (n : Name) : Bool :=
@@ -427,17 +771,43 @@ def ensureInternalDeclarationNamesAvailable (target : InternalDefTarget) : Comma
   if (← getEnv).contains target.anchorName then
     throwError "cannot create Lean-visible internal declaration anchor '{target.anchorName}': a \
       Lean declaration with that name already exists"
+  let evidenceName := internalDeclarationEvidenceName target.theoryName target.localName
+  if (← getEnv).contains evidenceName then
+    throwError "cannot create Lean-visible internal declaration evidence '{evidenceName}': a \
+      Lean declaration with that name already exists"
+
+/-- Render a compact docstring for a generated internal-declaration evidence constant. -/
+def internalDeclarationEvidenceDocString (target : InternalDefTarget)
+    (kind : InternalDeclarationEvidenceKind) (params : Array HLBinding) (typeExpr : ObjExpr)
+    (valueExpr? : Option ObjExpr) (sourceCommand : String) : String :=
+  let paramsText := String.intercalate " " (params.toList.map HLBinding.summary)
+  let paramsLine :=
+    if paramsText.isEmpty then "Source binders: none" else s!"Source binders: {paramsText}"
+  let valueLine :=
+    match valueExpr? with
+    | some valueExpr => s!"Checked body/proof: {valueExpr}"
+    | none => "Checked body/proof: explicit admission; no checked body was fabricated"
+  String.intercalate "\n" [
+    s!"InternalLean evidence for `{target.anchorName.eraseMacroScopes}`.",
+    s!"Kind: {kind.label}.",
+    s!"Source command: {sourceCommand}.",
+    paramsLine,
+    s!"Checked annotation/type: {typeExpr}",
+    valueLine,
+    "",
+    "This compact evidence constant is generated only after the InternalLean registration path \
+      accepts the checked declaration or records an explicit admission." ]
 
 /-- Render a compact docstring for a generated internal declaration anchor. -/
-def internalDeclarationAnchorDocString (target : InternalDefTarget) (typeExpr : ObjExpr) (
-  admitted : Bool)
-    (sourceDoc? : Option String := none) : String :=
+def internalDeclarationAnchorDocString (target : InternalDefTarget) (typeExpr : ObjExpr)
+    (kind : InternalDeclarationEvidenceKind) (evidenceName : Name)
+    (sourceCommand : String) (sourceDoc? : Option String := none) : String :=
   let sourceDocLines :=
     match sourceDoc? with
     | some doc => ["Source documentation:", trimCapturedDoc doc, ""]
     | none => []
   let admissionLines :=
-    if admitted then
+    if kind.isAdmitted then
       [ "",
         "Admission: body is `sorry`.",
         "Annotation status: checked as an object-theory judgment/type.",
@@ -452,26 +822,58 @@ def internalDeclarationAnchorDocString (target : InternalDefTarget) (typeExpr : 
     [ s!"Internal declaration `{target.anchorName.eraseMacroScopes}` in type theory \
       `{target.theoryName.eraseMacroScopes}`.",
       "",
+      s!"Evidence: `{evidenceName.eraseMacroScopes}` ({kind.label}).",
       s!"Object judgment/type: {typeExpr}",
-      "Source command: `internal def`.",
+      s!"Source command: {sourceCommand}.",
       "This generated Lean declaration is an editor/navigation anchor, not the object declaration \
         as a Lean term." ] ++
     admissionLines ++
     ["",
-      s!"Useful diagnostics: `#print_type_theory {target.theoryName.eraseMacroScopes}`, \
-        `#lint_type_theory_sorries {target.theoryName.eraseMacroScopes}`."]
+      s!"Useful diagnostics: `#print_internal_declaration_anchor \
+        {target.anchorName.eraseMacroScopes}`, `#print_type_theory \
+          {target.theoryName.eraseMacroScopes}`, `#lint_type_theory_sorries \
+            {target.theoryName.eraseMacroScopes}`."]
+
+/-- Add generated evidence for a top-level internal object declaration. -/
+def addInternalDeclarationEvidence (target : InternalDefTarget)
+    (kind : InternalDeclarationEvidenceKind) (params : Array HLBinding) (typeExpr : ObjExpr)
+    (valueExpr? : Option ObjExpr) (sourceCommand : String) : CommandElabM Name := do
+  let evidenceName := internalDeclarationEvidenceName target.theoryName target.localName
+  addGeneratedEvidenceAxiom evidenceName
+    (internalDeclarationEvidenceTypeExpr target.theoryName target.localName kind)
+    (internalDeclarationEvidenceDocString target kind params typeExpr valueExpr? sourceCommand)
+  liftCoreM <| registerInternalDeclarationEvidenceRecord {
+    theoryName := target.theoryName.eraseMacroScopes
+    localName := target.localName.eraseMacroScopes
+    anchorName := target.anchorName.eraseMacroScopes
+    evidenceName := evidenceName.eraseMacroScopes
+    kind := kind
+    params := params
+    typeExpr := typeExpr
+    valueExpr? := valueExpr?
+    sourceCommand := sourceCommand }
+  pure evidenceName
 
 /-- Add a Lean-visible anchor for a top-level internal object declaration. -/
-def addInternalDeclarationAnchor (target : InternalDefTarget) (typeExpr : ObjExpr) (admitted : Bool)
-    (sourceDoc? : Option String) (rangeStx selectionRangeStx : Syntax) : CommandElabM Unit := do
+def addInternalDeclarationAnchor (target : InternalDefTarget) (typeExpr : ObjExpr)
+    (kind : InternalDeclarationEvidenceKind) (params : Array HLBinding)
+    (valueExpr? : Option ObjExpr) (sourceCommand : String) (sourceDoc? : Option String)
+    (rangeStx selectionRangeStx : Syntax) : CommandElabM Unit := do
+  let evidenceName ←
+    addInternalDeclarationEvidence target kind params typeExpr valueExpr? sourceCommand
   liftCoreM do
-    let ty := mkConst ``InternalDeclarationAnchor
-    let value := mkConst ``InternalDeclarationAnchor.mk
+    let theory := toExpr target.theoryName.eraseMacroScopes
+    let localExpr := toExpr target.localName.eraseMacroScopes
+    let kindExpr := internalDeclarationEvidenceKindExpr kind
+    let ev := mkConst evidenceName
+    let ty := mkAppN (mkConst ``InternalDeclarationAnchor) #[theory, localExpr, kindExpr, ev]
+    let value :=
+      mkAppN (mkConst ``InternalDeclarationAnchor.mk) #[theory, localExpr, kindExpr, ev]
     let defVal ←
       mkDefinitionValInferringUnsafe target.anchorName [] ty value ReducibilityHints.abbrev
     addAndCompile (Declaration.defnDecl defVal)
-  addDocStringCore target.anchorName (internalDeclarationAnchorDocString target typeExpr admitted
-    sourceDoc?)
+  addDocStringCore target.anchorName (internalDeclarationAnchorDocString target typeExpr kind
+    evidenceName sourceCommand sourceDoc?)
   addDeclarationRangesFromSyntax target.anchorName rangeStx selectionRangeStx
   pushInfoLeaf <| .ofTermInfo {
     elaborator := `InternalLean.sourceNavigation
@@ -1641,10 +2043,10 @@ syntax (name := declareInternalLeanLevelExtendsWhere)
 syntax (name := extendInternalLeanWhere)
   docComment ? "extend_type_theory " ident " where" ppLine ttDecl* : command
 
-/-- Shared elaboration path for all `declare_type_theory` syntactic variants. -/
-def elabDeclareInternalLean (doc? : Option (TSyntax ``Parser.Command.docComment)) (nm : Ident)
-    (levelParams parents : Array Name) (decls : TSyntaxArray `ttDecl) : CommandElabM Unit := do
-  let block ← elabHLTheoryBlock decls
+/-- Register an already elaborated `declare_type_theory` block and add source/navigation data. -/
+def elabDeclareInternalLeanWithBlock (doc? : Option (TSyntax ``Parser.Command.docComment))
+    (nm : Ident) (levelParams parents : Array Name) (decls : TSyntaxArray `ttDecl)
+    (block : HLTheoryBlock) : CommandElabM Unit := do
   checkNoDuplicateBlockNames block
   let sig := signatureWithBlock { name := nm.getId, parents, levelParams } block
   ensureTheoryRegistrationNamesAvailable sig.name
@@ -1661,20 +2063,21 @@ def elabDeclareInternalLean (doc? : Option (TSyntax ``Parser.Command.docComment)
     registerTheory sig
     registerSourceDocs sourceDocs
   addInternalTheoryDeclarationAnchors sig.name decls
-  if parents.isEmpty then
-    addLFQuoteStubsForTheoryBlock sig.name block
-  else
-    let some checkedHL ← liftCoreM <| getCheckedHLSignature? sig.name
-      | throwError "no checked high-level signature stored for type theory '{sig.name}'"
-    addLFQuoteStubsForHLSignatureIfMissing sig.name checkedHL
+  let some checkedHL ← liftCoreM <| getCheckedHLSignature? sig.name
+    | throwError "no checked high-level signature stored for type theory '{sig.name}'"
+  addLFQuoteStubsForHLSignatureIfMissing sig.name checkedHL
   addTheoryAnchorDeclaration sig sourceDoc? (← getRef) nm
   addTheoryBlockNavigationInfo sig.name decls
 
-/-- Shared elaboration path for `extend_type_theory`, preserving the original Lean-visible
-theory anchor while registration uses the incremental checker or a full fallback. -/
-def elabExtendInternalLean (doc? : Option (TSyntax ``Parser.Command.docComment)) (nm : Ident)
-    (decls : TSyntaxArray `ttDecl) : CommandElabM Unit := do
+/-- Shared elaboration path for all `declare_type_theory` syntactic variants. -/
+def elabDeclareInternalLean (doc? : Option (TSyntax ``Parser.Command.docComment)) (nm : Ident)
+    (levelParams parents : Array Name) (decls : TSyntaxArray `ttDecl) : CommandElabM Unit := do
   let block ← elabHLTheoryBlock decls
+  elabDeclareInternalLeanWithBlock doc? nm levelParams parents decls block
+
+/-- Register an already elaborated `extend_type_theory` block and add source/navigation data. -/
+def elabExtendInternalLeanWithBlock (doc? : Option (TSyntax ``Parser.Command.docComment))
+    (nm : Ident) (decls : TSyntaxArray `ttDecl) (block : HLTheoryBlock) : CommandElabM Unit := do
   checkNoDuplicateBlockNames block
   unless (← liftCoreM <| getTheory? nm.getId).isSome do
     throwError "unknown type theory '{nm.getId}'; use `declare_type_theory {nm.getId} where ...` \
@@ -1692,8 +2095,17 @@ def elabExtendInternalLean (doc? : Option (TSyntax ``Parser.Command.docComment))
     registerTheoryBlockExtension nm.getId block
     registerSourceDocs sourceDocs
   addInternalTheoryDeclarationAnchors nm.getId decls
-  addLFQuoteStubsForTheoryBlock nm.getId block
+  let some checkedHL ← liftCoreM <| getCheckedHLSignature? nm.getId
+    | throwError "no checked high-level signature stored for type theory '{nm.getId}'"
+  addLFQuoteStubsForHLSignatureIfMissing nm.getId checkedHL
   addTheoryBlockNavigationInfo nm.getId decls
+
+/-- Shared elaboration path for `extend_type_theory`, preserving the original Lean-visible
+theory anchor while registration uses the incremental checker or a full fallback. -/
+def elabExtendInternalLean (doc? : Option (TSyntax ``Parser.Command.docComment)) (nm : Ident)
+    (decls : TSyntaxArray `ttDecl) : CommandElabM Unit := do
+  let block ← elabHLTheoryBlock decls
+  elabExtendInternalLeanWithBlock doc? nm decls block
 
 elab_rules : command
   | `($[$doc?:docComment]? declare_type_theory $nm:ident where $decls:ttDecl*) => do

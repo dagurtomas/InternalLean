@@ -1227,10 +1227,50 @@ elab "#print_type_theory_anchor " nm:ident : command => do
     | throwError "unknown type theory '{nm.getId}'"
   liftCoreM <| requireTheoryAnchor sig.name
   let anchorName := theoryAnchorName sig.name
-  logInfo m!"{anchorName} : InternalLean.TheoryAnchor"
+  let evidenceName := theoryEvidenceName sig.name
+  logInfo m!"{anchorName} : InternalLean.TheoryAnchor {evidenceName}"
   match ← findDocString? (← getEnv) anchorName with
   | some doc => logInfo m!"{doc}"
   | none => logInfo m!"no docstring found for '{anchorName}'"
+
+/-- Print one generated internal-declaration anchor and its evidence registry record. -/
+elab "#print_internal_declaration_anchor " anchor:ident : command => do
+  let anchorName := anchor.getId
+  let some record ← liftCoreM <| findInternalDeclarationEvidenceByAnchor? anchorName
+    | throwError "unknown InternalLean internal declaration anchor '{anchorName}'"
+  let paramsText := String.intercalate " " (record.params.toList.map HLBinding.summary)
+  let paramsText := if paramsText.isEmpty then "none" else paramsText
+  let valueText :=
+    match record.valueExpr? with
+    | some valueExpr => toString valueExpr
+    | none => "explicit admission; no checked body"
+  let env ← getEnv
+  let anchorStatus := if env.contains record.anchorName then "present" else "missing"
+  let evidenceStatus := if env.contains record.evidenceName then "present" else "missing"
+  let checkedHL? ← liftCoreM <| getCheckedHLSignature? record.theoryName
+  let checkedStatus :=
+    match checkedHL? with
+    | some sig => if sig.containsName record.localName then "present" else "missing"
+    | none => "missing checked signature"
+  let admissionStatus ← liftCoreM do
+    if record.kind.isAdmitted then
+      let admissions ← getInternalAdmissionsFor record.theoryName
+      pure <| if admissions.any (fun a => a.declName.eraseMacroScopes ==
+          record.localName.eraseMacroScopes) then "present" else "missing"
+    else
+      pure "not an admission"
+  logInfo m!"internal declaration anchor {record.anchorName}"
+  logInfo m!"  theory: {record.theoryName}"
+  logInfo m!"  local name: {record.localName}"
+  logInfo m!"  kind: {record.kind.label}"
+  logInfo m!"  source command: {record.sourceCommand}"
+  logInfo m!"  evidence: {record.evidenceName} [{evidenceStatus}]"
+  logInfo m!"  anchor declaration: {anchorStatus}"
+  logInfo m!"  checked registry entry: {checkedStatus}"
+  logInfo m!"  admission registry entry: {admissionStatus}"
+  logInfo m!"  source binders: {paramsText}"
+  logInfo m!"  checked annotation/type: {record.typeExpr}"
+  logInfo m!"  checked body/proof: {valueText}"
 
 /-- Print one registered type theory's high-level declarations. -/
 elab "#print_type_theory " nm:ident : command => do

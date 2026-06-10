@@ -31,6 +31,22 @@ declare_type_theory LeanQuotedFrontendSmoke where
 #check LeanQuotedFrontendSmoke.LFQuote.id
 #check LeanQuotedFrontendSmoke.LFQuote.mkObj
 
+run_cmd do
+  let env ← Lean.getEnv
+  let theoryName := `LeanQuotedStagedOnly
+  let sourceName := `Obj
+  let decl ← Lean.Elab.Command.liftCoreM <|
+    mkLFQuoteStubDeclaration env theoryName sourceName #[] none
+  let stagedEnv ← Lean.Elab.Command.liftCoreM <| addLFQuoteStubToEnv env decl
+  let declName := lfQuoteDeclName theoryName sourceName
+  unless Lean.Environment.contains stagedEnv declName do
+    throwError "staged quote-stub environment did not contain '{declName}'"
+  unless Lean.Environment.isNamespace stagedEnv (lfQuoteNamespace theoryName) do
+    throwError "staged quote-stub environment did not register namespace \
+      '{lfQuoteNamespace theoryName}'"
+  if Lean.Environment.contains (← Lean.getEnv) declName then
+    throwError "staged quote stub '{declName}' was committed to the command environment"
+
 /--
 info: quoted LF stubs for LeanQuotedFrontendSmoke:
 syntax_sort Obj -> LeanQuotedFrontendSmoke.LFQuote.Obj / 0 parameter(s)
@@ -77,6 +93,64 @@ info: reflected LF term in type theory 'LeanQuotedFrontendSmoke':
 #guard_msgs (whitespace := lax) in
 #reflect_lf_quote LeanQuotedFrontendSmoke : arrow Obj Obj
 
+declare_type_theory LeanQuotedImplicitSmoke where
+  syntax_sort Obj
+  syntax_sort El (A : Obj)
+  judgment Has (A : Obj) (x : El A)
+  lf_opaque A : Obj
+  lf_opaque a : El A
+  lf_opaque id {A : Obj} (x : El A) : El A
+  rule has_id {A : Obj} (x : El A) : Has A (id x)
+
+/--
+info: reflected LF term in type theory 'LeanQuotedImplicitSmoke':
+  id A a
+-/
+#guard_msgs (whitespace := lax) in
+#reflect_lf_quote LeanQuotedImplicitSmoke : id a
+
+run_cmd do
+  let some sig ← Lean.Elab.Command.liftCoreM <| getCheckedHLSignature? `LeanQuotedImplicitSmoke
+    | throwError "missing checked signature for LeanQuotedImplicitSmoke"
+  let term ← `(term| id a)
+  let expected : ObjExpr := .app (.ident `El) (.ident `A)
+  let reflected ← elabLeanQuotedObjTerm `LeanQuotedImplicitSmoke sig #[] (some expected) term
+  let expectedReflected : ObjExpr := .app (.app (.ident `id) (.ident `A)) (.ident `a)
+  unless reflected == expectedReflected do
+    throwError "expected reusable quoted elaborator to reflect {expectedReflected}, got \
+      {reflected}"
+
+namespace LeanQuotedImplicitSmoke
+
+internal_lean def id_a : El A := id a
+internal_lean theorem has_id_a : Has A (id a) := has_id a
+
+end LeanQuotedImplicitSmoke
+
+set_option internalLean.requireLeanQuotedTheoryBlocks true in
+declare_type_theory LeanQuotedTheoryBlockSmoke where
+  syntax_sort Ctx
+  syntax_sort Ty (Γ : Ctx)
+  lf_opaque empty : Ctx
+  lf_opaque base : Ty empty
+  lf_opaque ext {Γ : Ctx} (A : Ty Γ) : Ctx
+  lf_opaque top {Γ : Ctx} (A : Ty Γ) : Ty (ext (Γ := Γ) A)
+  lf_def topBase : Ty (ext (Γ := empty) base) := top base
+  judgment IsTy {Γ : Ctx} (A : Ty Γ)
+  rule mkTy {Γ : Ctx} (A : Ty Γ) : IsTy A
+  judgment_theorem topBase_ok : IsTy topBase := mkTy topBase
+
+#check LeanQuotedTheoryBlockSmoke.LFQuote.topBase
+#check LeanQuotedTheoryBlockSmoke.LFQuote.topBase_ok
+
+set_option internalLean.requireLeanQuotedTheoryBlocks true in
+extend_type_theory LeanQuotedTheoryBlockSmoke where
+  lf_def topBaseAlias : Ty (ext (Γ := empty) base) := topBase
+  judgment_theorem topBaseAlias_ok : IsTy topBaseAlias := mkTy topBaseAlias
+
+#check LeanQuotedTheoryBlockSmoke.LFQuote.topBaseAlias
+#check LeanQuotedTheoryBlockSmoke.LFQuote.topBaseAlias_ok
+
 namespace LeanQuotedFrontendSmoke
 
 internal_lean def d : Obj := o
@@ -98,7 +172,6 @@ internal_lean theorem local_ok_theorem (x : Obj) (h : IsObj x) : IsObj x := h
 internal_lean theorem byExactTheorem : IsObj o := by exact mkObj o
 internal_lean theorem byApplyTheorem : IsObj o := by
   apply mkObj
-  exact o
 internal_lean theorem byExactLocal (x : Obj) (h : IsObj x) : IsObj x := by exact h
 internal_lean theorem byAssumptionLocal (x : Obj) (h : IsObj x) : IsObj x := by
   assumption

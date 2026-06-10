@@ -1887,6 +1887,7 @@ syntax ident : ttExpr
 syntax "_" : ttExpr
 syntax "(" ttExpr ")" : ttExpr
 syntax "{" ident " := " ttExpr "}" : ttExpr
+syntax "(" ident " := " ttExpr ")" : ttExpr
 syntax:45 ttExpr:46 " ≡ " ttExpr:45 : ttExpr
 syntax:50 ttExpr:51 " → " ttExpr:50 : ttExpr
 syntax:50 "(" ident " : " ttExpr ")" " → " ttExpr:50 : ttExpr
@@ -2115,6 +2116,8 @@ meta partial def elabObjExpr (stx : TSyntax `ttExpr) : CommandElabM ObjExpr := d
       | `(ttExpr| _) => pure (.ident `_)
       | `(ttExpr| ($e:ttExpr)) => elabObjExpr e
       | `(ttExpr| {$x:ident := $value:ttExpr}) => do
+          return .app (.app (.ident `__implicitArg) (.ident x.getId)) (← elabObjExpr value)
+      | `(ttExpr| ($x:ident := $value:ttExpr)) => do
           return .app (.app (.ident `__implicitArg) (.ident x.getId)) (← elabObjExpr value)
       | `(ttExpr| $a:ttExpr ≡ $b:ttExpr) => return .jeq (← elabObjExpr a) (← elabObjExpr b)
       | `(ttExpr| $a:ttExpr → $b:ttExpr) =>

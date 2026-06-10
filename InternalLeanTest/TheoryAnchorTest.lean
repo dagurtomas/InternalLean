@@ -35,7 +35,7 @@ declare_type_theory AnchorSmoke where
     throwError "unexpected docstring for theory anchor {anchorName}: {doc}"
 
 /-- Preexisting declaration used to test anchor-name collision diagnostics. -/
-def AnchorCollision.theory : InternalLean.TheoryAnchor := .mk
+def AnchorCollision.theory : Unit := ()
 
 /-- error: cannot create Lean-visible anchor 'AnchorCollision.theory' for type theory
 'AnchorCollision': a Lean declaration with that name already exists -/

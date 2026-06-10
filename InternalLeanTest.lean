@@ -12,6 +12,7 @@ import InternalLeanTest.GenerationHygieneTest
 import InternalLeanTest.ImplicitVariablesTest
 import InternalLeanTest.IncrementalCacheTest
 import InternalLeanTest.InternalDefScalabilityTest
+import InternalLeanTest.InternalDeclarationAnchorEvidenceTest
 import InternalLeanTest.InternalDefTest
 import InternalLeanTest.InternalTacticTest
 import InternalLeanTest.IntroUXTest

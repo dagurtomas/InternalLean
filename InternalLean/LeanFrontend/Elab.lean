@@ -28,6 +28,18 @@ register_option internalLean.preferLeanQuotedFrontend : Bool := {
     term bodies before falling back to the raw InternalLean frontend"
 }
 
+register_option internalLean.preferLeanQuotedTheoryBlocks : Bool := {
+  defValue := false
+  descr := "try the experimental Lean-quoted frontend for `declare_type_theory` and \
+    `extend_type_theory` expression fields before falling back to the raw InternalLean frontend"
+}
+
+register_option internalLean.requireLeanQuotedTheoryBlocks : Bool := {
+  defValue := false
+  descr := "require the experimental Lean-quoted frontend for `declare_type_theory` and \
+    `extend_type_theory` expression fields instead of falling back to the raw frontend"
+}
+
 /-- Local Lean free variables introduced for an experimental quoted-LF elaboration. -/
 abbrev LFQuoteLocalMap := Array (FVarId × Name)
 
@@ -72,19 +84,32 @@ def lfQuoteSourceArity? (sig : HLSignature) (sourceName : Name) : Option Nat :=
   else
     none
 
+/-- Resolve a Lean constant against a supplied LF signature to an LF source name and arity. -/
+def lfQuoteSourceNameAndArityOfConstInSignature? (theoryName : Name) (sig : HLSignature)
+    (constName : Name) : Option (Name × Nat × Bool) :=
+  if let some localName := lfQuoteSourceNameOfConst? theoryName constName then
+    some (localName, (lfQuoteSourceArity? sig localName).getD 0, false)
+  else if constName.isAnonymous then
+    none
+  else
+    let candidate := Name.mkSimple constName.getString!
+    match lfQuoteSourceArity? sig candidate with
+    | some arity => some (candidate, arity, true)
+    | none => none
+
 /-- Resolve a Lean constant used in a quoted LF body to an LF source name and arity. -/
 def lfQuoteSourceNameAndArityOfConst? (theoryName : Name) (constName : Name) : CoreM
     (Option (Name × Nat × Bool)) := do
   let some checkedHL ← getCheckedHLSignature? theoryName
     | return none
-  if let some localName := lfQuoteSourceNameOfConst? theoryName constName then
-    return some (localName, (lfQuoteSourceArity? checkedHL localName).getD 0, false)
-  if constName.isAnonymous then
-    return none
-  let candidate := Name.mkSimple constName.getString!
-  match lfQuoteSourceArity? checkedHL candidate with
-  | some arity => return some (candidate, arity, true)
-  | none => return none
+  return lfQuoteSourceNameAndArityOfConstInSignature? theoryName checkedHL constName
+
+/-- Resolve a Lean constant through either a supplied signature or the checked registry. -/
+def lfQuoteSourceNameAndArityOfConstFrom? (theoryName : Name) (sig? : Option HLSignature)
+    (constName : Name) : CoreM (Option (Name × Nat × Bool)) := do
+  match sig? with
+  | some sig => return lfQuoteSourceNameAndArityOfConstInSignature? theoryName sig constName
+  | none => lfQuoteSourceNameAndArityOfConst? theoryName constName
 
 /-- Drop Lean-only arguments from a fallback application that resolved to an LF head. -/
 def lfQuoteArgsForSourceArity (constName : Name) (arity : Nat) (args : Array Expr) : Array Expr :=
@@ -147,8 +172,8 @@ partial def qualifyLFQuoteSourceIdents (theoryName : Name) (sig : HLSignature)
 mutual
 
 /-- Reflect a unary binder argument to a quoted LF structural constructor. -/
-partial def reflectLFQuoteUnaryBinder (theoryName : Name) (locals : LFQuoteLocalMap) (e : Expr) :
-    MetaM (Name × ObjExpr) := do
+partial def reflectLFQuoteUnaryBinder (theoryName : Name) (sig? : Option HLSignature)
+    (locals : LFQuoteLocalMap) (e : Expr) : MetaM (Name × ObjExpr) := do
   lambdaTelescope e fun xs body => do
     unless xs.size == 1 do
       throwError "quoted LF structural binder expected one Lean binder, but elaborated to \
@@ -157,27 +182,36 @@ partial def reflectLFQuoteUnaryBinder (theoryName : Name) (locals : LFQuoteLocal
     let localDecl ← x.fvarId!.getDecl
     let userName := localDecl.userName.eraseMacroScopes
     let locals := locals.push (x.fvarId!, userName)
-    pure (userName, ← reflectLFQuoteExpr theoryName locals body)
+    pure (userName, ← reflectLFQuoteExprWithSignature theoryName sig? locals body)
 
 /-- Reflect an application of one built-in quoted LF structural constructor, if present. -/
-partial def reflectLFQuoteBuiltinApp? (theoryName : Name) (locals : LFQuoteLocalMap)
-    (constName : Name) (args : Array Expr) : MetaM (Option ObjExpr) := do
+partial def reflectLFQuoteBuiltinApp? (theoryName : Name) (sig? : Option HLSignature)
+    (locals : LFQuoteLocalMap) (constName : Name) (args : Array Expr) :
+    MetaM (Option ObjExpr) := do
+  let explicitArgs (expected : Nat) : Array Expr :=
+    if expected <= args.size then args.extract (args.size - expected) args.size else args
   let binary (ctor : ObjExpr → ObjExpr → ObjExpr) : MetaM (Option ObjExpr) := do
+    let args := explicitArgs 2
     unless args.size == 2 do
-      throwError "quoted LF constructor '{constName}' expected 2 argument(s), got {args.size}"
-    pure <| some <| ctor (← reflectLFQuoteExpr theoryName locals args[0]!)
-      (← reflectLFQuoteExpr theoryName locals args[1]!)
+      throwError "quoted LF constructor '{constName}' expected 2 explicit argument(s), got \
+        {args.size}"
+    pure <| some <| ctor (← reflectLFQuoteExprWithSignature theoryName sig? locals args[0]!)
+      (← reflectLFQuoteExprWithSignature theoryName sig? locals args[1]!)
   let dependent (ctor : Option Name → ObjExpr → ObjExpr → ObjExpr) :
       MetaM (Option ObjExpr) := do
+    let args := explicitArgs 2
     unless args.size == 2 do
-      throwError "quoted LF constructor '{constName}' expected 2 argument(s), got {args.size}"
-    let domain ← reflectLFQuoteExpr theoryName locals args[0]!
-    let (binderName, codomain) ← reflectLFQuoteUnaryBinder theoryName locals args[1]!
+      throwError "quoted LF constructor '{constName}' expected 2 explicit argument(s), got \
+        {args.size}"
+    let domain ← reflectLFQuoteExprWithSignature theoryName sig? locals args[0]!
+    let (binderName, codomain) ← reflectLFQuoteUnaryBinder theoryName sig? locals args[1]!
     pure <| some <| ctor (some binderName) domain codomain
   let unary (ctor : ObjExpr → ObjExpr) : MetaM (Option ObjExpr) := do
+    let args := explicitArgs 1
     unless args.size == 1 do
-      throwError "quoted LF constructor '{constName}' expected 1 argument(s), got {args.size}"
-    pure <| some <| ctor (← reflectLFQuoteExpr theoryName locals args[0]!)
+      throwError "quoted LF constructor '{constName}' expected 1 explicit argument(s), got \
+        {args.size}"
+    pure <| some <| ctor (← reflectLFQuoteExprWithSignature theoryName sig? locals args[0]!)
   if constName == ``InternalLean.LFQuote.arrow then
     binary (fun A B => .arrow none A B)
   else if constName == ``InternalLean.LFQuote.arrowDep then
@@ -200,33 +234,34 @@ partial def reflectLFQuoteBuiltinApp? (theoryName : Name) (locals : LFQuoteLocal
     pure none
 
 /-- Reflect one Lean expression elaborated against quoted-LF stubs back to an `ObjExpr`. -/
-partial def reflectLFQuoteExpr (theoryName : Name) (locals : LFQuoteLocalMap) :
-    Expr → MetaM ObjExpr
-  | .mdata _ e => reflectLFQuoteExpr theoryName locals e
+partial def reflectLFQuoteExprWithSignature (theoryName : Name) (sig? : Option HLSignature)
+    (locals : LFQuoteLocalMap) : Expr → MetaM ObjExpr
+  | .mdata _ e => reflectLFQuoteExprWithSignature theoryName sig? locals e
   | e@(.app ..) => do
       match e.getAppFn with
       | .const n _ =>
-          match ← reflectLFQuoteBuiltinApp? theoryName locals n e.getAppArgs with
+          match ← reflectLFQuoteBuiltinApp? theoryName sig? locals n e.getAppArgs with
           | some out => pure out
           | none =>
-              match ← lfQuoteSourceNameAndArityOfConst? theoryName n with
+              match ← lfQuoteSourceNameAndArityOfConstFrom? theoryName sig? n with
               | some (localName, arity, _) =>
                   let args := lfQuoteArgsForSourceArity n arity e.getAppArgs
                   let mut out : ObjExpr := .ident localName
                   for arg in args do
-                    out := .app out (← reflectLFQuoteExpr theoryName locals arg)
+                    out := .app out
+                      (← reflectLFQuoteExprWithSignature theoryName sig? locals arg)
                   pure out
               | none =>
-                  pure (.app (← reflectLFQuoteExpr theoryName locals e.appFn!)
-                    (← reflectLFQuoteExpr theoryName locals e.appArg!))
+                  pure (.app (← reflectLFQuoteExprWithSignature theoryName sig? locals e.appFn!)
+                    (← reflectLFQuoteExprWithSignature theoryName sig? locals e.appArg!))
       | _ =>
-          pure (.app (← reflectLFQuoteExpr theoryName locals e.appFn!)
-            (← reflectLFQuoteExpr theoryName locals e.appArg!))
+          pure (.app (← reflectLFQuoteExprWithSignature theoryName sig? locals e.appFn!)
+            (← reflectLFQuoteExprWithSignature theoryName sig? locals e.appArg!))
   | .const n _ => do
       if n == ``InternalLean.LFQuote.sort then
         pure .sort
       else
-        match ← lfQuoteSourceNameAndArityOfConst? theoryName n with
+        match ← lfQuoteSourceNameAndArityOfConstFrom? theoryName sig? n with
         | some (localName, _, _) =>
             pure (.ident localName)
         | none => throwError "Lean-elaborated LF term uses Lean constant '{n}', which is not part \
@@ -247,7 +282,7 @@ partial def reflectLFQuoteExpr (theoryName : Name) (locals : LFQuoteLocalMap) :
           let userName := localDecl.userName.eraseMacroScopes
           locals := locals.push (x.fvarId!, userName)
           names := names.push userName
-        pure (.lam names (← reflectLFQuoteExpr theoryName locals body))
+        pure (.lam names (← reflectLFQuoteExprWithSignature theoryName sig? locals body))
   | .mvar _ => do
       -- Lean metavariables introduced for omitted implicit quote-stub arguments are reflected as
       -- ordinary InternalLean placeholders.  InternalLean's own implicit-argument elaboration and
@@ -256,6 +291,11 @@ partial def reflectLFQuoteExpr (theoryName : Name) (locals : LFQuoteLocalMap) :
   | e => throwError "unsupported Lean-elaborated LF expression after elaboration:\n  {e}"
 
 end
+
+/-- Reflect one Lean expression through the checked registry for its theory. -/
+def reflectLFQuoteExpr (theoryName : Name) (locals : LFQuoteLocalMap) (e : Expr) :
+    MetaM ObjExpr :=
+  reflectLFQuoteExprWithSignature theoryName none locals e
 
 /-- Elaborate `body` as a quoted LF term and reflect it to `ObjExpr`. -/
 def elabLeanQuotedLFBody (target : InternalDefTarget) (params : Array HLBinding)
@@ -271,20 +311,24 @@ def elabLeanQuotedLFBody (target : InternalDefTarget) (params : Array HLBinding)
     | none => body.raw
   let body ← `(term| open $builtinQuoteOpenDecl in open $quoteOpenDecl in $(⟨body⟩):term)
   liftTermElabM do
-    let expectedType := lfQuoteLeanTypeOfObjType typeExpr
-    let rec withLocals (i : Nat) (locals : LFQuoteLocalMap) : TermElabM ObjExpr := do
+    let rec withLocals (i : Nat) (locals : LFQuoteLocalMap)
+        (typeLocals : LFQuoteLeanLocalMap) : TermElabM ObjExpr := do
       if h : i < params.size then
         let p := params[i]
+        let binderType := lfQuoteLeanTypeOfBinding (← getEnv) target.theoryName typeLocals p
         withLocalDecl p.name.eraseMacroScopes (lfQuoteBinderInfoOfVisibility p.visibility)
-            (lfQuoteLeanTypeOfBinding p) fun fvar =>
+            binderType fun fvar =>
           withLocals (i + 1) (locals.push (fvar.fvarId!, p.name.eraseMacroScopes))
+            (typeLocals.push (p.name.eraseMacroScopes, fvar))
       else
+        let expectedType :=
+          lfQuoteLeanTypeOfObjType (← getEnv) target.theoryName typeLocals typeExpr
         let value ← withEnableInfoTree false do
           let value ← Term.elabTerm body (some expectedType)
           Term.synthesizeSyntheticMVarsNoPostponing
           instantiateMVars value
         reflectLFQuoteExpr target.theoryName locals value
-    withLocals 0 #[]
+    withLocals 0 #[] #[]
 
 /-- Collect names from the binder-pattern side of a Lean typed `fun` binder. -/
 partial def collectLFQuoteFunBinderPatternNames (stx : Syntax) (acc : Array Name := #[]) :
@@ -484,6 +528,23 @@ def saveLeanQuotedLFBodyInfo (target : InternalDefTarget) (params : Array HLBind
   let flatSig ← liftCoreM <| flattenSignature sig
   saveLeanQuotedLFBodyGoalInfo target flatSig goal bodyStx
 
+/-- Run the existing LF implicit elaborator on a Lean-quoted declaration header.
+
+Term bodies can then use Lean's implicit insertion against a fully elaborated expected quote type,
+while the trusted LF checker still validates the reflected declaration. -/
+def elaborateLeanQuotedHeaderImplicits (target : InternalDefTarget) (params : Array HLBinding)
+    (typeExpr : ObjExpr) : CommandElabM (Array HLBinding × ObjExpr) := do
+  let some sig ← liftCoreM <| getTheory? target.theoryName
+    | throwError "unknown type theory '{target.theoryName}'"
+  let flatSig ← liftCoreM <| flattenSignature sig
+  liftCoreM do
+    let (params, knownTypes, locals) ←
+      elaborateImplicitAppsInBindings flatSig {} {} "internal_lean" target.localName params
+    let typeExpr ←
+      elaborateImplicitAppsInExpr flatSig knownTypes locals "internal_lean" target.localName
+        "type" none typeExpr
+    pure (params, typeExpr)
+
 /-- Elaborate and reflect a quoted LF term for diagnostics. -/
 def elabAndReflectLFQuoteTerm (theoryName : Name) (body : TSyntax `term) :
     CommandElabM ObjExpr := do
@@ -497,7 +558,7 @@ def elabAndReflectLFQuoteTerm (theoryName : Name) (body : TSyntax `term) :
     | none => body.raw
   let body ← `(term| open $builtinQuoteOpenDecl in open $quoteOpenDecl in $(⟨body⟩):term)
   liftTermElabM do
-    let value ← Term.elabTerm body (some (mkConst ``LFQuoteTerm))
+    let value ← Term.elabTerm body none
     Term.synthesizeSyntheticMVarsNoPostponing
     let value ← instantiateMVars value
     reflectLFQuoteExpr theoryName #[] value
@@ -572,9 +633,10 @@ def elabLeanQuotedInternalTheoremCheckedExpr
   liftCoreM <| registerLFJudgmentTheorem target.theoryName lfTheorem
   if let some doc := sourceDoc? then
     liftCoreM <| registerSourceDoc target.theoryName .internalDef target.localName doc
-  addInternalDeclarationAnchor target (mkInternalDefFunctionType params typeExpr) false sourceDoc?
+  addInternalDeclarationAnchor target (mkInternalDefFunctionType params typeExpr)
+    .checkedJudgmentTheorem params (some valueExpr) "internal_lean theorem" sourceDoc?
     (← getRef) declNameStx
-  addInternalDeclarationQuoteStub target params
+  addInternalDeclarationQuoteStub target params typeExpr
 
 /-- Parse the exact source range of a raw `ttExpr` body as an ordinary Lean term. -/
 def parseLeanQuotedTermFromSource (stx : Syntax) : CommandElabM (TSyntax `term) := do
@@ -587,9 +649,510 @@ def parseLeanQuotedTermFromSource (stx : Syntax) : CommandElabM (TSyntax `term) 
   | .ok stx => pure ⟨stx⟩
   | .error err => throwError "could not parse internal body as a Lean term: {err}"
 
+/-- Elaborate one object-language expression field as a Lean-quoted LF term.
+
+The supplied signature prefix is the LF signature visible to the field, and `stagedEnv?` can
+include quote stubs for a checked same-block prefix that has not been committed to the command
+environment.  The reflected `ObjExpr` must still be checked by the LF checker before
+registration. -/
+def elabLeanQuotedObjTerm (theoryName : Name) (sigPrefix : HLSignature)
+    (locals : Array HLBinding) (expected? : Option ObjExpr) (body : TSyntax `term)
+    (stagedEnv? : Option Environment := none) : CommandElabM ObjExpr := do
+  let run : CommandElabM ObjExpr := do
+    let builtinQuoteOpenDecl ← `(Lean.Parser.Command.openDecl| InternalLean.LFQuote)
+    let quoteNs := mkIdent (lfQuoteNamespace theoryName)
+    let quoteOpenDecl ← `(Lean.Parser.Command.openDecl| $quoteNs:ident)
+    let protectedNames :=
+      locals.foldl (init := collectLFQuoteBinderNames body.raw) fun names p =>
+        names.insert p.name.eraseMacroScopes
+    let body := qualifyLFQuoteSourceIdents theoryName sigPrefix protectedNames body
+    let body ← `(term| open $builtinQuoteOpenDecl in open $quoteOpenDecl in $(⟨body⟩):term)
+    liftTermElabM do
+      let rec withLocals (i : Nat) (reflectedLocals : LFQuoteLocalMap)
+          (typeLocals : LFQuoteLeanLocalMap) : TermElabM ObjExpr := do
+        if h : i < locals.size then
+          let p := locals[i]
+          let binderType := lfQuoteLeanTypeOfBinding (← getEnv) theoryName typeLocals p
+          withLocalDecl p.name.eraseMacroScopes (lfQuoteBinderInfoOfVisibility p.visibility)
+              binderType fun fvar =>
+            withLocals (i + 1) (reflectedLocals.push (fvar.fvarId!, p.name.eraseMacroScopes))
+              (typeLocals.push (p.name.eraseMacroScopes, fvar))
+        else
+          let env ← getEnv
+          let expectedType? :=
+            expected?.map fun expected =>
+              lfQuoteLeanTypeOfObjType env theoryName typeLocals expected
+          let value ← withEnableInfoTree false do
+            let value ← Term.elabTerm body expectedType?
+            Term.synthesizeSyntheticMVarsNoPostponing
+            instantiateMVars value
+          reflectLFQuoteExprWithSignature theoryName (some sigPrefix) reflectedLocals value
+      withLocals 0 #[] #[]
+  match stagedEnv? with
+  | some env => withEnv env run
+  | none => run
+
+/-- Parse a source expression range as a Lean term, elaborate it as quoted LF, and reflect it. -/
+def elabLeanQuotedObjExpr (theoryName : Name) (sigPrefix : HLSignature)
+    (locals : Array HLBinding) (expected? : Option ObjExpr) (stx : Syntax)
+    (stagedEnv? : Option Environment := none) : CommandElabM ObjExpr := do
+  let term ← parseLeanQuotedTermFromSource stx
+  elabLeanQuotedObjTerm theoryName sigPrefix locals expected? term stagedEnv?
+
+/-- Return whether an expression source contains legacy `{x := ...}` syntax.
+
+Lean's term elaborator reports non-backtrackable structure-notation errors for these braces.  In
+preference mode we skip the quoted attempt for such fields and let the legacy parser handle them. -/
+def ttExprSourceContainsLegacyNamedImplicit (stx : Syntax) : CommandElabM Bool := do
+  let some startPos := stx.getPos? (canonicalOnly := true)
+    | return false
+  let some stopPos := stx.getTailPos? (canonicalOnly := true)
+    | return false
+  let source := String.Pos.Raw.extract (← getFileMap).source startPos stopPos
+  pure <| source.toList.any (fun c => c == '{')
+
+/-- Elaborate a theory-block expression with the Lean-quoted frontend.
+
+In preference mode, unsupported quoted expressions fall back to the legacy object-expression parser
+for this field, so existing object-universe and structural syntax can continue to migrate in small
+steps.  In strict mode, the quoted elaboration error is reported. -/
+def elabLeanQuotedTheoryObjExpr (theoryName : Name) (sigPrefix : HLSignature)
+    (stagedEnv : Environment) (strict : Bool) (locals : Array HLBinding)
+    (expected? : Option ObjExpr) (stx : TSyntax `ttExpr) : CommandElabM ObjExpr := do
+  if strict then
+    elabLeanQuotedObjExpr theoryName sigPrefix locals expected? stx.raw (some stagedEnv)
+  else if ← ttExprSourceContainsLegacyNamedImplicit stx.raw then
+    elabObjExpr stx
+  else
+    try
+      elabLeanQuotedObjExpr theoryName sigPrefix locals expected? stx.raw (some stagedEnv)
+    catch _ =>
+      elabObjExpr stx
+
+/-- Elaborate a telescope of theory-block binders through the quoted frontend. -/
+def elabLeanQuotedTheoryBinders (theoryName : Name) (sigPrefix : HLSignature)
+    (stagedEnv : Environment) (strict : Bool) (binders : TSyntaxArray `ttBinder) :
+    CommandElabM (Array HLBinding) := do
+  let mut out : Array HLBinding := #[]
+  for binder in binders do
+    match binder with
+    | `(ttBinder| ($x:ident : $ty:ttExpr)) => do
+        let typeExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict out none ty
+        out := out.push { name := x.getId, typeExpr, visibility := .explicit }
+    | `(ttBinder| {$x:ident : $ty:ttExpr}) => do
+        let typeExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict out none ty
+        out := out.push { name := x.getId, typeExpr, visibility := .implicit }
+    | stx => throwError "unsupported type-theory binder syntax:{indentD stx}"
+  pure out
+
+/-- Elaborate one rule-block item, returning any premise local it introduces. -/
+def elabLeanQuotedTheoryRuleItem (theoryName : Name) (sigPrefix : HLSignature)
+    (stagedEnv : Environment) (strict : Bool) (locals : Array HLBinding)
+    (item : TSyntax `ttRuleItem) : CommandElabM (ParsedRuleItem × Option HLBinding) := do
+  match item with
+  | `(ttRuleItem| premise $n:ident : $j:ttExpr) => do
+      let judgmentExpr ←
+        elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict locals none j
+      let premiseDecl : RulePremiseDecl := { name := n.getId, judgmentExpr }
+      let localBinding : HLBinding := { name := n.getId, typeExpr := judgmentExpr, visibility :=
+        .explicit }
+      pure (.premise premiseDecl, some localBinding)
+  | `(ttRuleItem| evidence $h:ident for $n:ident : $j:ttExpr) => do
+      let judgmentExpr ←
+        elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict locals none j
+      let evidenceDecl : RuleParamEvidenceDecl := {
+        name := h.getId
+        paramName := n.getId
+        judgmentExpr
+      }
+      let localBinding : HLBinding := { name := h.getId, typeExpr := judgmentExpr, visibility :=
+        .explicit }
+      pure (.evidence evidenceDecl, some localBinding)
+  | `(ttRuleItem| side_condition $n:ident by $solver:ident : $input:ttExpr) => do
+      let input ←
+        elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict locals none input
+      pure (.sideCondition { name := n.getId, solver := solver.getId, input }, none)
+  | `(ttRuleItem| conclusion : $j:ttExpr) => do
+      let conclusionExpr ←
+        elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict locals none j
+      pure (.concl conclusionExpr, none)
+  | stx => throwError "unsupported rule item syntax:{indentD stx}"
+
+/-- Elaborate a rule `where` block through the quoted frontend. -/
+def elabLeanQuotedTheoryRuleItems (theoryName : Name) (sigPrefix : HLSignature)
+    (stagedEnv : Environment) (strict : Bool) (params : Array HLBinding)
+    (items : TSyntaxArray `ttRuleItem) : CommandElabM (Array ParsedRuleItem) := do
+  let mut locals := params
+  let mut out : Array ParsedRuleItem := #[]
+  for item in items do
+    let (parsed, local?) ←
+      elabLeanQuotedTheoryRuleItem theoryName sigPrefix stagedEnv strict locals item
+    out := out.push parsed
+    if let some localBinding := local? then
+      locals := locals.push localBinding
+  pure out
+
+/-- Add generated quote stubs for a high-level signature to a staged environment. -/
+def addLFQuoteStubsForHLSignatureToEnvIfMissing (env : Environment) (theoryName : Name)
+    (sig : HLSignature) : CoreM Environment := do
+  let mut env := env
+  for d in sig.syntaxSorts do
+    unless env.contains (lfQuoteDeclName theoryName d.name) do
+      env ← addLFQuoteStubDeclarationToEnv env theoryName d.name d.params
+  for d in sig.syntaxAbbrevs do
+    unless env.contains (lfQuoteDeclName theoryName d.name) do
+      env ← addLFQuoteStubDeclarationToEnv env theoryName d.name d.params
+  for d in sig.syntaxDefs do
+    unless env.contains (lfQuoteDeclName theoryName d.name) do
+      env ← addLFQuoteStubDeclarationToEnv env theoryName d.name d.params
+  for d in sig.judgmentAbbrevs do
+    unless env.contains (lfQuoteDeclName theoryName d.name) do
+      env ← addLFQuoteStubDeclarationToEnv env theoryName d.name d.params
+  for d in sig.lfOpaqueConsts do
+    unless env.contains (lfQuoteDeclName theoryName d.name) do
+      env ← addLFQuoteStubDeclarationToEnv env theoryName d.name
+        (lfQuoteParamsOfLFOpaqueConst d) d.typeExpr?
+  for d in sig.judgments do
+    unless env.contains (lfQuoteDeclName theoryName d.name) do
+      env ← addLFQuoteStubDeclarationToEnv env theoryName d.name d.params
+  for d in sig.rules do
+    unless env.contains (lfQuoteDeclName theoryName d.name) do
+      env ← addLFQuoteStubDeclarationToEnv env theoryName d.name (lfQuoteParamsOfRule d)
+        (some d.conclusionExpr)
+  for d in sig.lfObjectDefs do
+    unless env.contains (lfQuoteDeclName theoryName d.name) do
+      env ← addLFQuoteStubDeclarationToEnv env theoryName d.name #[] (some d.typeExpr)
+  for d in sig.lfJudgmentTheorems do
+    unless env.contains (lfQuoteDeclName theoryName d.name) do
+      env ← addLFQuoteStubDeclarationToEnv env theoryName d.name d.binders
+        (some d.judgmentExpr)
+  pure env
+
+/-- Add a generated quote stub for one theory-block item to a staged environment. -/
+def addLFQuoteStubForTheoryItemToEnvIfMissing (env : Environment) (theoryName : Name)
+    (item : HLTheoryItem) : CoreM Environment := do
+  match item with
+  | .syntaxSort d =>
+      if env.contains (lfQuoteDeclName theoryName d.name) then
+        pure env
+      else
+        addLFQuoteStubDeclarationToEnv env theoryName d.name d.params
+  | .syntaxAbbrev d =>
+      if env.contains (lfQuoteDeclName theoryName d.name) then
+        pure env
+      else
+        addLFQuoteStubDeclarationToEnv env theoryName d.name d.params
+  | .syntaxDef d =>
+      if env.contains (lfQuoteDeclName theoryName d.name) then
+        pure env
+      else
+        addLFQuoteStubDeclarationToEnv env theoryName d.name d.params
+  | .judgmentAbbrev d =>
+      if env.contains (lfQuoteDeclName theoryName d.name) then
+        pure env
+      else
+        addLFQuoteStubDeclarationToEnv env theoryName d.name d.params
+  | .judgment d =>
+      if env.contains (lfQuoteDeclName theoryName d.name) then
+        pure env
+      else
+        addLFQuoteStubDeclarationToEnv env theoryName d.name d.params
+  | .rule d =>
+      if env.contains (lfQuoteDeclName theoryName d.name) then
+        pure env
+      else
+        addLFQuoteStubDeclarationToEnv env theoryName d.name (lfQuoteParamsOfRule d)
+          (some d.conclusionExpr)
+  | .lfOpaqueConst d =>
+      if env.contains (lfQuoteDeclName theoryName d.name) then
+        pure env
+      else
+        addLFQuoteStubDeclarationToEnv env theoryName d.name (lfQuoteParamsOfLFOpaqueConst d)
+          d.typeExpr?
+  | .lfObjectDef d =>
+      if env.contains (lfQuoteDeclName theoryName d.name) then
+        pure env
+      else
+        addLFQuoteStubDeclarationToEnv env theoryName d.name #[] (some d.typeExpr)
+  | .lfJudgmentTheorem d =>
+      if env.contains (lfQuoteDeclName theoryName d.name) then
+        pure env
+      else
+        addLFQuoteStubDeclarationToEnv env theoryName d.name d.binders (some d.judgmentExpr)
+  | _ => pure env
+
+/-- Known LF definition result types from a high-level signature prefix. -/
+def lfKnownTypesOfHLSignature (sig : HLSignature) : LFLocalTypes := Id.run do
+  let mut out : LFLocalTypes := {}
+  for d in sig.syntaxDefs do
+    out := out.insert d.name.eraseMacroScopes <|
+      eraseObjExprScopes (mkInternalDefFunctionType d.params (objExprTypeOfLevel d.resultLevel))
+  for d in sig.lfObjectDefs do
+    out := out.insert d.name.eraseMacroScopes (eraseObjExprScopes d.typeExpr)
+  return out
+
+/-- Extend known LF definition result types with one item, if it introduces one. -/
+def insertKnownTypesForTheoryItem (knownTypes : LFLocalTypes) (item : HLTheoryItem) :
+    LFLocalTypes :=
+  match item with
+  | .syntaxDef d =>
+      knownTypes.insert d.name.eraseMacroScopes <|
+        eraseObjExprScopes (mkInternalDefFunctionType d.params (objExprTypeOfLevel d.resultLevel))
+  | .lfObjectDef d =>
+      knownTypes.insert d.name.eraseMacroScopes (eraseObjExprScopes d.typeExpr)
+  | _ => knownTypes
+
+/-- State threaded through sequential Lean-quoted theory-block elaboration. -/
+structure LeanQuotedTheoryBlockState where
+  /-- Signature prefix visible to the next item. -/
+  sigPrefix : HLSignature
+  /-- Staged Lean environment containing quote stubs for the visible prefix. -/
+  stagedEnv : Environment
+  /-- Known LF definition result types for the visible prefix. -/
+  knownTypes : LFLocalTypes
+  /-- Elaborated items in source order. -/
+  items : Array HLTheoryItem := #[]
+
+/-- Extract the single elaborated item matching `original` from a one-item block. -/
+def implicitElaboratedTheoryItemFromBlock (original : HLTheoryItem) (block : HLTheoryBlock) :
+    HLTheoryItem :=
+  match original with
+  | .syntaxSort _ => .syntaxSort block.syntaxSorts[0]!
+  | .syntaxAbbrev _ => .syntaxAbbrev block.syntaxAbbrevs[0]!
+  | .syntaxDef _ => .syntaxDef block.syntaxDefs[0]!
+  | .judgmentAbbrev _ => .judgmentAbbrev block.judgmentAbbrevs[0]!
+  | .judgment _ => .judgment block.judgments[0]!
+  | .rule _ => .rule block.rules[0]!
+  | .lfOpaqueConst _ => .lfOpaqueConst block.lfOpaqueConsts[0]!
+  | .lfObjectDef _ => .lfObjectDef block.lfObjectDefs[0]!
+  | .lfJudgmentTheorem _ => .lfJudgmentTheorem block.lfJudgmentTheorems[0]!
+  | _ => original
+
+/-- Run the existing LF implicit-argument elaborator on one staged theory-block item. -/
+def elaborateImplicitAppsInLeanQuotedTheoryItem (state : LeanQuotedTheoryBlockState)
+    (item : HLTheoryItem) : CoreM HLTheoryItem := do
+  let block ← elaborateImplicitAppsInTheoryBlockExtension state.sigPrefix state.knownTypes <|
+    HLTheoryBlock.ofItems #[item]
+  pure <| implicitElaboratedTheoryItemFromBlock item block
+
+/-- Append one quoted-elaborated theory item to the staged prefix. -/
+def LeanQuotedTheoryBlockState.pushItem (theoryName : Name) (state : LeanQuotedTheoryBlockState)
+    (rawItem : HLTheoryItem) : CommandElabM LeanQuotedTheoryBlockState := do
+  let item ← liftCoreM <| elaborateImplicitAppsInLeanQuotedTheoryItem state rawItem
+  let stagedEnv ←
+    liftCoreM <| addLFQuoteStubForTheoryItemToEnvIfMissing state.stagedEnv theoryName item
+  let sigPrefix := state.sigPrefix.appendBlock (HLTheoryBlock.ofItems #[item])
+  let knownTypes := insertKnownTypesForTheoryItem state.knownTypes item
+  pure { sigPrefix, stagedEnv, knownTypes, items := state.items.push item }
+
+/-- Elaborate one theory-block item through the Lean-quoted frontend where it has expressions. -/
+def elabLeanQuotedTheoryItem (theoryName : Name) (sigPrefix : HLSignature)
+    (stagedEnv : Environment) (strict : Bool) (decl : TSyntax `ttDecl) :
+    CommandElabM HLTheoryItem := do
+  match decl with
+  | `(ttDecl| syntax_sort $n:ident $bs:ttBinder*) => do
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      pure <| .syntaxSort { name := n.getId, params := bs }
+  | `(ttDecl| $doc:docComment syntax_sort $n:ident $bs:ttBinder*) => do
+      let _ := doc.raw
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      pure <| .syntaxSort { name := n.getId, params := bs }
+  | `(ttDecl| syntax_sort $n:ident $bs:ttBinder* : $result:ttExpr) => do
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      pure <| .syntaxSort {
+        name := n.getId
+        params := bs
+        resultLevel := (← elabSyntaxSortResultLevel n.getId result) }
+  | `(ttDecl| $doc:docComment syntax_sort $n:ident $bs:ttBinder* : $result:ttExpr) => do
+      let _ := doc.raw
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      pure <| .syntaxSort {
+        name := n.getId
+        params := bs
+        resultLevel := (← elabSyntaxSortResultLevel n.getId result) }
+  | `(ttDecl| syntax_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none value
+      pure <| .syntaxAbbrev { name := n.getId, params := bs, value }
+  | `(ttDecl| $doc:docComment syntax_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
+      let _ := doc.raw
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none value
+      pure <| .syntaxAbbrev { name := n.getId, params := bs, value }
+  | `(ttDecl| syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := sorry) => do
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      pure <| .syntaxDef {
+        name := n.getId
+        params := bs
+        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
+        value? := none }
+  | `(ttDecl| $doc:docComment syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := sorry) => do
+      let _ := doc.raw
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      pure <| .syntaxDef {
+        name := n.getId
+        params := bs
+        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
+        value? := none }
+  | `(ttDecl| syntax_def $n:ident $bs:ttBinder* : $result:ttExpr := $value:ttExpr) => do
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none value
+      pure <| .syntaxDef {
+        name := n.getId
+        params := bs
+        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
+        value? := some value }
+  | `(ttDecl| $doc:docComment syntax_def $n:ident $bs:ttBinder* : $result:ttExpr :=
+      $value:ttExpr) => do
+      let _ := doc.raw
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none value
+      pure <| .syntaxDef {
+        name := n.getId
+        params := bs
+        resultLevel := (← elabSyntaxSortResultLevel n.getId result "syntax_def")
+        value? := some value }
+  | `(ttDecl| judgment_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none value
+      pure <| .judgmentAbbrev { name := n.getId, params := bs, value }
+  | `(ttDecl| $doc:docComment judgment_abbrev $n:ident $bs:ttBinder* := $value:ttExpr) => do
+      let _ := doc.raw
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none value
+      pure <| .judgmentAbbrev { name := n.getId, params := bs, value }
+  | `(ttDecl| judgment $n:ident $bs:ttBinder*) => do
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      pure <| .judgment { name := n.getId, params := bs }
+  | `(ttDecl| $doc:docComment judgment $n:ident $bs:ttBinder*) => do
+      let _ := doc.raw
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      pure <| .judgment { name := n.getId, params := bs }
+  | `(ttDecl| rule $n:ident $bs:ttBinder* : $conclStx:ttExpr) => do
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let conclusionExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none
+        conclStx
+      pure <| .rule { name := n.getId, params := bs, conclusionExpr }
+  | `(ttDecl| $doc:docComment rule $n:ident $bs:ttBinder* : $conclStx:ttExpr) => do
+      let _ := doc.raw
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let conclusionExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none
+        conclStx
+      pure <| .rule { name := n.getId, params := bs, conclusionExpr }
+  | `(ttDecl| rule $n:ident $bs:ttBinder* where $items:ttRuleItem*) => do
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let items ← elabLeanQuotedTheoryRuleItems theoryName sigPrefix stagedEnv strict bs items
+      pure <| .rule (← mkRuleDeclFromItems n.getId bs items)
+  | `(ttDecl| $doc:docComment rule $n:ident $bs:ttBinder* where $items:ttRuleItem*) => do
+      let _ := doc.raw
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let items ← elabLeanQuotedTheoryRuleItems theoryName sigPrefix stagedEnv strict bs items
+      pure <| .rule (← mkRuleDeclFromItems n.getId bs items)
+  | `(ttDecl| lf_opaque $n:ident $bs:ttBinder* : $ty:ttExpr) => do
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let typeExpr? ←
+        some <$> elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none ty
+      pure <| .lfOpaqueConst { name := n.getId, arity? := some bs.size, params := bs, typeExpr? }
+  | `(ttDecl| $doc:docComment lf_opaque $n:ident $bs:ttBinder* : $ty:ttExpr) => do
+      let _ := doc.raw
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let typeExpr? ←
+        some <$> elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none ty
+      pure <| .lfOpaqueConst { name := n.getId, arity? := some bs.size, params := bs, typeExpr? }
+  | `(ttDecl| lf_def $n:ident : $ty:ttExpr := $value:ttExpr) => do
+      let typeExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict #[] none ty
+      let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict #[]
+        (some typeExpr) value
+      pure <| .lfObjectDef { name := n.getId, typeExpr, value }
+  | `(ttDecl| $doc:docComment lf_def $n:ident : $ty:ttExpr := $value:ttExpr) => do
+      let _ := doc.raw
+      let typeExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict #[] none ty
+      let value ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict #[]
+        (some typeExpr) value
+      pure <| .lfObjectDef { name := n.getId, typeExpr, value }
+  | `(ttDecl| judgment_theorem $n:ident $bs:ttBinder* : $j:ttExpr := $proof:ttExpr) => do
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let judgmentExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none j
+      let proof ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs
+        (some judgmentExpr) proof
+      pure <| .lfJudgmentTheorem { name := n.getId, binders := bs, judgmentExpr, proof }
+  | `(ttDecl| $doc:docComment judgment_theorem $n:ident $bs:ttBinder* : $j:ttExpr :=
+      $proof:ttExpr) => do
+      let _ := doc.raw
+      let bs ← elabLeanQuotedTheoryBinders theoryName sigPrefix stagedEnv strict bs
+      let judgmentExpr ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs none j
+      let proof ← elabLeanQuotedTheoryObjExpr theoryName sigPrefix stagedEnv strict bs
+        (some judgmentExpr) proof
+      pure <| .lfJudgmentTheorem { name := n.getId, binders := bs, judgmentExpr, proof }
+  | stx => elabHLTheoryItem stx
+
+/-- Elaborate a whole theory block in source order with staged same-block quote stubs. -/
+def elabLeanQuotedTheoryBlock (theoryName : Name) (basePrefix : HLSignature)
+    (decls : TSyntaxArray `ttDecl) (strict : Bool) : CommandElabM HLTheoryBlock := do
+  let env ← getEnv
+  let stagedEnv ←
+    liftCoreM <| addLFQuoteStubsForHLSignatureToEnvIfMissing env theoryName basePrefix
+  let knownTypes := lfKnownTypesOfHLSignature basePrefix
+  let mut state : LeanQuotedTheoryBlockState := { sigPrefix := basePrefix, stagedEnv, knownTypes }
+  for decl in decls do
+    let item ← elabLeanQuotedTheoryItem theoryName state.sigPrefix state.stagedEnv strict decl
+    state ← state.pushItem theoryName item
+  pure <| HLTheoryBlock.ofItems state.items
+
 /-- Whether canonical internal declarations should try the quoted frontend first. -/
 def preferLeanQuotedFrontend : CommandElabM Bool :=
   getBoolOption `internalLean.preferLeanQuotedFrontend
+
+/-- Whether theory-block commands should try the quoted frontend first. -/
+def preferLeanQuotedTheoryBlocks : CommandElabM Bool :=
+  getBoolOption `internalLean.preferLeanQuotedTheoryBlocks
+
+/-- Whether theory-block commands must use the quoted frontend. -/
+def requireLeanQuotedTheoryBlocks : CommandElabM Bool :=
+  getBoolOption `internalLean.requireLeanQuotedTheoryBlocks
+
+/-- Ensure the quoted theory-block frontend is enabled for this command elaborator. -/
+def ensureLeanQuotedTheoryBlockFrontendEnabled : CommandElabM Bool := do
+  let strict ← requireLeanQuotedTheoryBlocks
+  unless strict || (← preferLeanQuotedTheoryBlocks) do
+    throwUnsupportedSyntax
+  pure strict
+
+/-- Try the Lean-quoted frontend for one `declare_type_theory` command. -/
+def elabDeclareInternalLeanQuoted (doc? : Option (TSyntax ``Parser.Command.docComment))
+    (nm : Ident) (levelParams parents : Array Name) (decls : TSyntaxArray `ttDecl) :
+    CommandElabM Unit := do
+  let strict ← ensureLeanQuotedTheoryBlockFrontendEnabled
+  let basePrefix ← liftCoreM <| flattenSignature { name := nm.getId, parents, levelParams }
+  let block ←
+    try
+      elabLeanQuotedTheoryBlock nm.getId basePrefix decls strict
+    catch ex =>
+      if strict then
+        throw ex
+      else
+        throwUnsupportedSyntax
+  elabDeclareInternalLeanWithBlock doc? nm levelParams parents decls block
+
+/-- Try the Lean-quoted frontend for one `extend_type_theory` command. -/
+def elabExtendInternalLeanQuoted (doc? : Option (TSyntax ``Parser.Command.docComment))
+    (nm : Ident) (decls : TSyntaxArray `ttDecl) : CommandElabM Unit := do
+  let strict ← ensureLeanQuotedTheoryBlockFrontendEnabled
+  let some basePrefix ← liftCoreM <| getCheckedHLSignature? nm.getId
+    | if strict then
+        throwError "unknown type theory '{nm.getId}'; use `declare_type_theory {nm.getId} \
+          where ...` before `extend_type_theory`"
+      else
+        throwUnsupportedSyntax
+  let block ←
+    try
+      elabLeanQuotedTheoryBlock nm.getId basePrefix decls strict
+    catch ex =>
+      if strict then
+        throw ex
+      else
+        throwUnsupportedSyntax
+  elabExtendInternalLeanWithBlock doc? nm decls block
 
 /-- Try the experimental quoted frontend for a canonical checked `internal def` term body. -/
 def elabCanonicalLeanQuotedDefChecked (doc? : Option (TSyntax ``Parser.Command.docComment))
@@ -599,6 +1162,7 @@ def elabCanonicalLeanQuotedDefChecked (doc? : Option (TSyntax ``Parser.Command.d
     throwUnsupportedSyntax
   let target ← resolveInternalDefTarget declName
   let typeExpr ← elabObjExpr typeStx
+  let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
   let bodyTerm ←
     try
       parseLeanQuotedTermFromSource bodyStx
@@ -612,9 +1176,10 @@ def elabCanonicalLeanQuotedDefChecked (doc? : Option (TSyntax ``Parser.Command.d
   saveLeanQuotedLFBodyInfo target params typeExpr bodyStx
   if params.isEmpty then
     elabInternalDefCheckedExpr doc? declNameStx declName #[] typeExpr valueExpr
+      "internal def (Lean-quoted)"
   else
     elabInternalDefCheckedWithBindersExpr doc? declNameStx declName #[] params typeExpr
-      valueExpr
+      valueExpr "internal def (Lean-quoted)"
 
 /-- Try the experimental quoted frontend for a canonical checked `internal theorem` term body. -/
 def elabCanonicalLeanQuotedTheoremChecked (doc? : Option (TSyntax ``Parser.Command.docComment))
@@ -624,6 +1189,7 @@ def elabCanonicalLeanQuotedTheoremChecked (doc? : Option (TSyntax ``Parser.Comma
     throwUnsupportedSyntax
   let target ← resolveInternalDefTarget declName
   let typeExpr ← elabObjExpr typeStx
+  let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
   let bodyTerm ←
     try
       parseLeanQuotedTermFromSource bodyStx
@@ -664,6 +1230,30 @@ syntax (name := internalLeanQuotedTheoremBySorry)
 syntax (name := internalLeanQuotedTheoremBinderBySorry)
   docComment ? "internal_lean " "theorem " ident ttBinder+ " : " ttExpr " := " "by" ppLine
     "sorry" : command
+
+elab_rules (kind := declareInternalLeanWhere) : command
+  | `($[$doc?:docComment]? declare_type_theory $nm:ident where $decls:ttDecl*) => do
+      elabDeclareInternalLeanQuoted doc? nm #[] #[] decls
+
+elab_rules (kind := declareInternalLeanLevelWhere) : command
+  | `($[$doc?:docComment]? declare_type_theory $nm:ident {$levels:ident,*} where
+      $decls:ttDecl*) => do
+      elabDeclareInternalLeanQuoted doc? nm (levels.getElems.map (·.getId)) #[] decls
+
+elab_rules (kind := declareInternalLeanExtendsWhere) : command
+  | `($[$doc?:docComment]? declare_type_theory $nm:ident extends $parents:ident,* where
+      $decls:ttDecl*) => do
+      elabDeclareInternalLeanQuoted doc? nm #[] (parents.getElems.map (·.getId)) decls
+
+elab_rules (kind := declareInternalLeanLevelExtendsWhere) : command
+  | `($[$doc?:docComment]? declare_type_theory $nm:ident {$levels:ident,*} extends
+      $parents:ident,* where $decls:ttDecl*) => do
+      elabDeclareInternalLeanQuoted doc? nm (levels.getElems.map (·.getId))
+        (parents.getElems.map (·.getId)) decls
+
+elab_rules (kind := extendInternalLeanWhere) : command
+  | `($[$doc?:docComment]? extend_type_theory $nm:ident where $decls:ttDecl*) => do
+      elabExtendInternalLeanQuoted doc? nm decls
 
 elab_rules (kind := internalDef) : command
   | `($[$doc?:docComment]? internal def $declName:ident : $typeStx:ttExpr :=
@@ -739,9 +1329,10 @@ elab_rules (kind := internalLeanQuotedTheorem) : command
       $body:term) => do
       let target ← resolveInternalDefTarget declName.getId
       let typeExpr ← elabObjExpr typeStx
-      saveLeanQuotedLFBodyInfo target #[] typeExpr body
-      let valueExpr ← elabLeanQuotedLFBody target #[] typeExpr body
-      elabLeanQuotedInternalTheoremCheckedExpr doc? declName declName.getId #[] typeExpr
+      let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target #[] typeExpr
+      saveLeanQuotedLFBodyInfo target params typeExpr body
+      let valueExpr ← elabLeanQuotedLFBody target params typeExpr body
+      elabLeanQuotedInternalTheoremCheckedExpr doc? declName declName.getId params typeExpr
         valueExpr
       addInternalDefAnnotationNavigationInfo declName.getId #[] typeStx
 
@@ -751,6 +1342,7 @@ elab_rules (kind := internalLeanQuotedTheoremBinder) : command
       let target ← resolveInternalDefTarget declName.getId
       let params ← binders.mapM elabHLBinding
       let typeExpr ← elabObjExpr typeStx
+      let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
       saveLeanQuotedLFBodyInfo target params typeExpr body
       let valueExpr ← elabLeanQuotedLFBody target params typeExpr body
       elabLeanQuotedInternalTheoremCheckedExpr doc? declName declName.getId params typeExpr
@@ -762,9 +1354,11 @@ elab_rules (kind := internalLeanQuotedDef) : command
       $body:term) => do
       let target ← resolveInternalDefTarget declName.getId
       let typeExpr ← elabObjExpr typeStx
-      saveLeanQuotedLFBodyInfo target #[] typeExpr body
-      let valueExpr ← elabLeanQuotedLFBody target #[] typeExpr body
+      let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target #[] typeExpr
+      saveLeanQuotedLFBodyInfo target params typeExpr body
+      let valueExpr ← elabLeanQuotedLFBody target params typeExpr body
       elabInternalDefCheckedExpr doc? declName declName.getId #[] typeExpr valueExpr
+        "internal_lean def"
       addInternalDefAnnotationNavigationInfo declName.getId #[] typeStx
 
 elab_rules (kind := internalLeanQuotedDefBinder) : command
@@ -773,10 +1367,11 @@ elab_rules (kind := internalLeanQuotedDefBinder) : command
       let target ← resolveInternalDefTarget declName.getId
       let params ← binders.mapM elabHLBinding
       let typeExpr ← elabObjExpr typeStx
+      let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
       saveLeanQuotedLFBodyInfo target params typeExpr body
       let valueExpr ← elabLeanQuotedLFBody target params typeExpr body
       elabInternalDefCheckedWithBindersExpr doc? declName declName.getId #[] params typeExpr
-        valueExpr
+        valueExpr "internal_lean def"
       addInternalDefAnnotationNavigationInfo declName.getId binders typeStx
 
 end InternalLean
