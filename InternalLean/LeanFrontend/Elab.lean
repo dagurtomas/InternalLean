@@ -312,23 +312,27 @@ def elabLeanQuotedLFBody (target : InternalDefTarget) (params : Array HLBinding)
   let body ← `(term| open $builtinQuoteOpenDecl in open $quoteOpenDecl in $(⟨body⟩):term)
   liftTermElabM do
     let rec withLocals (i : Nat) (locals : LFQuoteLocalMap)
-        (typeLocals : LFQuoteLeanLocalMap) : TermElabM ObjExpr := do
+        (typeLocals : LFQuoteLeanLocalMap) (untypedLocals : NameSet) : TermElabM ObjExpr := do
       if h : i < params.size then
         let p := params[i]
-        let binderType := lfQuoteLeanTypeOfBinding (← getEnv) target.theoryName typeLocals p
-        withLocalDecl p.name.eraseMacroScopes (lfQuoteBinderInfoOfVisibility p.visibility)
-            binderType fun fvar =>
-          withLocals (i + 1) (locals.push (fvar.fvarId!, p.name.eraseMacroScopes))
-            (typeLocals.push (p.name.eraseMacroScopes, fvar))
+        let env ← getEnv
+        let pName := p.name.eraseMacroScopes
+        let pSupported := lfQuoteSupportsIndexedQuoteType env target.theoryName
+          (lfQuoteLeanLocalNames typeLocals) untypedLocals p.typeExpr
+        let binderType := lfQuoteLeanTypeOfBinding env target.theoryName typeLocals untypedLocals p
+        let untypedLocals := if pSupported then untypedLocals else untypedLocals.insert pName
+        withLocalDecl pName (lfQuoteBinderInfoOfVisibility p.visibility) binderType fun fvar =>
+          withLocals (i + 1) (locals.push (fvar.fvarId!, pName))
+            (typeLocals.push (pName, fvar)) untypedLocals
       else
         let expectedType :=
-          lfQuoteLeanTypeOfObjType (← getEnv) target.theoryName typeLocals typeExpr
+          lfQuoteLeanTypeOfObjType (← getEnv) target.theoryName typeLocals untypedLocals typeExpr
         let value ← withEnableInfoTree false do
           let value ← Term.elabTerm body (some expectedType)
           Term.synthesizeSyntheticMVarsNoPostponing
           instantiateMVars value
         reflectLFQuoteExpr target.theoryName locals value
-    withLocals 0 #[] #[]
+    withLocals 0 #[] #[] {}
 
 /-- Collect names from the binder-pattern side of a Lean typed `fun` binder. -/
 partial def collectLFQuoteFunBinderPatternNames (stx : Syntax) (acc : Array Name := #[]) :
@@ -638,6 +642,19 @@ def elabLeanQuotedInternalTheoremCheckedExpr
     (← getRef) declNameStx
   addInternalDeclarationQuoteStub target params typeExpr
 
+/-- Run a speculative command elaboration step, restoring command state if it fails.
+
+Prefer-mode quoted elaboration uses this wrapper before falling back to the legacy frontend.  Lean
+term elaboration and generated-declaration checks can leave messages or partial info state behind
+before throwing; those diagnostics should not survive a successful legacy fallback. -/
+def withRestoredCommandStateOnError (x : CommandElabM α) : CommandElabM α := do
+  let savedState ← get
+  try
+    x
+  catch ex =>
+    set savedState
+    throw ex
+
 /-- Parse the exact source range of a raw `ttExpr` body as an ordinary Lean term. -/
 def parseLeanQuotedTermFromSource (stx : Syntax) : CommandElabM (TSyntax `term) := do
   let some startPos := stx.getPos? (canonicalOnly := true)
@@ -669,25 +686,29 @@ def elabLeanQuotedObjTerm (theoryName : Name) (sigPrefix : HLSignature)
     let body ← `(term| open $builtinQuoteOpenDecl in open $quoteOpenDecl in $(⟨body⟩):term)
     liftTermElabM do
       let rec withLocals (i : Nat) (reflectedLocals : LFQuoteLocalMap)
-          (typeLocals : LFQuoteLeanLocalMap) : TermElabM ObjExpr := do
+          (typeLocals : LFQuoteLeanLocalMap) (untypedLocals : NameSet) : TermElabM ObjExpr := do
         if h : i < locals.size then
           let p := locals[i]
-          let binderType := lfQuoteLeanTypeOfBinding (← getEnv) theoryName typeLocals p
-          withLocalDecl p.name.eraseMacroScopes (lfQuoteBinderInfoOfVisibility p.visibility)
-              binderType fun fvar =>
-            withLocals (i + 1) (reflectedLocals.push (fvar.fvarId!, p.name.eraseMacroScopes))
-              (typeLocals.push (p.name.eraseMacroScopes, fvar))
+          let env ← getEnv
+          let pName := p.name.eraseMacroScopes
+          let pSupported := lfQuoteSupportsIndexedQuoteType env theoryName
+            (lfQuoteLeanLocalNames typeLocals) untypedLocals p.typeExpr
+          let binderType := lfQuoteLeanTypeOfBinding env theoryName typeLocals untypedLocals p
+          let untypedLocals := if pSupported then untypedLocals else untypedLocals.insert pName
+          withLocalDecl pName (lfQuoteBinderInfoOfVisibility p.visibility) binderType fun fvar =>
+            withLocals (i + 1) (reflectedLocals.push (fvar.fvarId!, pName))
+              (typeLocals.push (pName, fvar)) untypedLocals
         else
           let env ← getEnv
           let expectedType? :=
             expected?.map fun expected =>
-              lfQuoteLeanTypeOfObjType env theoryName typeLocals expected
+              lfQuoteLeanTypeOfObjType env theoryName typeLocals untypedLocals expected
           let value ← withEnableInfoTree false do
-            let value ← Term.elabTerm body expectedType?
+            let value ← withoutErrToSorry <| Term.elabTerm body expectedType?
             Term.synthesizeSyntheticMVarsNoPostponing
             instantiateMVars value
           reflectLFQuoteExprWithSignature theoryName (some sigPrefix) reflectedLocals value
-      withLocals 0 #[] #[]
+      withLocals 0 #[] #[] {}
   match stagedEnv? with
   | some env => withEnv env run
   | none => run
@@ -725,7 +746,8 @@ def elabLeanQuotedTheoryObjExpr (theoryName : Name) (sigPrefix : HLSignature)
     elabObjExpr stx
   else
     try
-      elabLeanQuotedObjExpr theoryName sigPrefix locals expected? stx.raw (some stagedEnv)
+      withRestoredCommandStateOnError <|
+        elabLeanQuotedObjExpr theoryName sigPrefix locals expected? stx.raw (some stagedEnv)
     catch _ =>
       elabObjExpr stx
 
@@ -1123,36 +1145,38 @@ def elabDeclareInternalLeanQuoted (doc? : Option (TSyntax ``Parser.Command.docCo
     (nm : Ident) (levelParams parents : Array Name) (decls : TSyntaxArray `ttDecl) :
     CommandElabM Unit := do
   let strict ← ensureLeanQuotedTheoryBlockFrontendEnabled
-  let basePrefix ← liftCoreM <| flattenSignature { name := nm.getId, parents, levelParams }
-  let block ←
+  if strict then
+    let basePrefix ← liftCoreM <| flattenSignature { name := nm.getId, parents, levelParams }
+    let block ← elabLeanQuotedTheoryBlock nm.getId basePrefix decls strict
+    elabDeclareInternalLeanWithBlock doc? nm levelParams parents decls block
+  else
     try
-      elabLeanQuotedTheoryBlock nm.getId basePrefix decls strict
-    catch ex =>
-      if strict then
-        throw ex
-      else
-        throwUnsupportedSyntax
-  elabDeclareInternalLeanWithBlock doc? nm levelParams parents decls block
+      withRestoredCommandStateOnError do
+        let basePrefix ← liftCoreM <| flattenSignature { name := nm.getId, parents, levelParams }
+        let block ← elabLeanQuotedTheoryBlock nm.getId basePrefix decls strict
+        elabDeclareInternalLeanWithBlock doc? nm levelParams parents decls block
+    catch _ =>
+      throwUnsupportedSyntax
 
 /-- Try the Lean-quoted frontend for one `extend_type_theory` command. -/
 def elabExtendInternalLeanQuoted (doc? : Option (TSyntax ``Parser.Command.docComment))
     (nm : Ident) (decls : TSyntaxArray `ttDecl) : CommandElabM Unit := do
   let strict ← ensureLeanQuotedTheoryBlockFrontendEnabled
-  let some basePrefix ← liftCoreM <| getCheckedHLSignature? nm.getId
-    | if strict then
-        throwError "unknown type theory '{nm.getId}'; use `declare_type_theory {nm.getId} \
+  if strict then
+    let some basePrefix ← liftCoreM <| getCheckedHLSignature? nm.getId
+      | throwError "unknown type theory '{nm.getId}'; use `declare_type_theory {nm.getId} \
           where ...` before `extend_type_theory`"
-      else
-        throwUnsupportedSyntax
-  let block ←
+    let block ← elabLeanQuotedTheoryBlock nm.getId basePrefix decls strict
+    elabExtendInternalLeanWithBlock doc? nm decls block
+  else
     try
-      elabLeanQuotedTheoryBlock nm.getId basePrefix decls strict
-    catch ex =>
-      if strict then
-        throw ex
-      else
-        throwUnsupportedSyntax
-  elabExtendInternalLeanWithBlock doc? nm decls block
+      withRestoredCommandStateOnError do
+        let some basePrefix ← liftCoreM <| getCheckedHLSignature? nm.getId
+          | throwUnsupportedSyntax
+        let block ← elabLeanQuotedTheoryBlock nm.getId basePrefix decls strict
+        elabExtendInternalLeanWithBlock doc? nm decls block
+    catch _ =>
+      throwUnsupportedSyntax
 
 /-- Try the experimental quoted frontend for a canonical checked `internal def` term body. -/
 def elabCanonicalLeanQuotedDefChecked (doc? : Option (TSyntax ``Parser.Command.docComment))
@@ -1160,26 +1184,22 @@ def elabCanonicalLeanQuotedDefChecked (doc? : Option (TSyntax ``Parser.Command.d
     (typeStx : TSyntax `ttExpr) (bodyStx : Syntax) : CommandElabM Unit := do
   unless ← preferLeanQuotedFrontend do
     throwUnsupportedSyntax
-  let target ← resolveInternalDefTarget declName
-  let typeExpr ← elabObjExpr typeStx
-  let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
-  let bodyTerm ←
-    try
-      parseLeanQuotedTermFromSource bodyStx
-    catch _ =>
-      throwUnsupportedSyntax
-  let valueExpr ←
-    try
-      elabLeanQuotedLFBody target params typeExpr bodyTerm
-    catch _ =>
-      throwUnsupportedSyntax
-  saveLeanQuotedLFBodyInfo target params typeExpr bodyStx
-  if params.isEmpty then
-    elabInternalDefCheckedExpr doc? declNameStx declName #[] typeExpr valueExpr
-      "internal def (Lean-quoted)"
-  else
-    elabInternalDefCheckedWithBindersExpr doc? declNameStx declName #[] params typeExpr
-      valueExpr "internal def (Lean-quoted)"
+  try
+    withRestoredCommandStateOnError do
+      let target ← resolveInternalDefTarget declName
+      let typeExpr ← elabObjExpr typeStx
+      let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
+      let bodyTerm ← parseLeanQuotedTermFromSource bodyStx
+      let valueExpr ← elabLeanQuotedLFBody target params typeExpr bodyTerm
+      saveLeanQuotedLFBodyInfo target params typeExpr bodyStx
+      if params.isEmpty then
+        elabInternalDefCheckedExpr doc? declNameStx declName #[] typeExpr valueExpr
+          "internal def (Lean-quoted)"
+      else
+        elabInternalDefCheckedWithBindersExpr doc? declNameStx declName #[] params typeExpr
+          valueExpr "internal def (Lean-quoted)"
+  catch _ =>
+    throwUnsupportedSyntax
 
 /-- Try the experimental quoted frontend for a canonical checked `internal theorem` term body. -/
 def elabCanonicalLeanQuotedTheoremChecked (doc? : Option (TSyntax ``Parser.Command.docComment))
@@ -1187,21 +1207,17 @@ def elabCanonicalLeanQuotedTheoremChecked (doc? : Option (TSyntax ``Parser.Comma
     (typeStx : TSyntax `ttExpr) (bodyStx : Syntax) : CommandElabM Unit := do
   unless ← preferLeanQuotedFrontend do
     throwUnsupportedSyntax
-  let target ← resolveInternalDefTarget declName
-  let typeExpr ← elabObjExpr typeStx
-  let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
-  let bodyTerm ←
-    try
-      parseLeanQuotedTermFromSource bodyStx
-    catch _ =>
-      throwUnsupportedSyntax
-  let valueExpr ←
-    try
-      elabLeanQuotedLFBody target params typeExpr bodyTerm
-    catch _ =>
-      throwUnsupportedSyntax
-  saveLeanQuotedLFBodyInfo target params typeExpr bodyStx
-  elabLeanQuotedInternalTheoremCheckedExpr doc? declNameStx declName params typeExpr valueExpr
+  try
+    withRestoredCommandStateOnError do
+      let target ← resolveInternalDefTarget declName
+      let typeExpr ← elabObjExpr typeStx
+      let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
+      let bodyTerm ← parseLeanQuotedTermFromSource bodyStx
+      let valueExpr ← elabLeanQuotedLFBody target params typeExpr bodyTerm
+      saveLeanQuotedLFBodyInfo target params typeExpr bodyStx
+      elabLeanQuotedInternalTheoremCheckedExpr doc? declNameStx declName params typeExpr valueExpr
+  catch _ =>
+    throwUnsupportedSyntax
 
 syntax (name := internalLeanQuotedDef)
   docComment ? "internal_lean " "def " ident " : " ttExpr " := " term : command

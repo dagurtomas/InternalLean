@@ -127,6 +127,35 @@ internal_lean theorem has_id_a : Has A (id a) := has_id a
 
 end LeanQuotedImplicitSmoke
 
+declare_type_theory LeanQuoteUntypedLocalFallbackSmoke where
+  syntax_sort U
+  syntax_sort El (A : U)
+  syntax_sort T {A : U} (x : El A)
+  syntax_sort Box {A : U} {x : El A} (p : T x)
+
+namespace LeanQuoteUntypedLocalFallbackSmoke
+
+/--
+warning: internal declaration 'LeanQuoteUntypedLocalFallbackSmoke.fallbackParam' was admitted by
+`sorry`; the annotation was checked in theory 'LeanQuoteUntypedLocalFallbackSmoke', but the body was
+not checked. Use `#lint_type_theory_sorries LeanQuoteUntypedLocalFallbackSmoke` to list current
+admissions.
+-/
+#guard_msgs (whitespace := lax) in
+internal_defs where
+  def fallbackParam (A : U) (x : El A) (p : T x) : Box p := sorry
+
+end LeanQuoteUntypedLocalFallbackSmoke
+
+/--
+info: LeanQuoteUntypedLocalFallbackSmoke.LFQuote.fallbackParam
+  (A : LFQuoteOf LeanQuoteUntypedLocalFallbackSmoke.LFQuote.U)
+  (x : LFQuoteOf (LeanQuoteUntypedLocalFallbackSmoke.LFQuote.El A))
+  (p : LFQuoteTerm) : LFQuoteTerm
+-/
+#guard_msgs (whitespace := lax) in
+#check LeanQuoteUntypedLocalFallbackSmoke.LFQuote.fallbackParam
+
 set_option internalLean.requireLeanQuotedTheoryBlocks true in
 declare_type_theory LeanQuotedTheoryBlockSmoke where
   syntax_sort Ctx

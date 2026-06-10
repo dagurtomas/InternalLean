@@ -36,6 +36,19 @@ def profileLFCheckPhase (label : MessageData) (x : CoreM α) : CoreM α := do
   else
     x
 
+/-- Run a speculative core action, restoring the environment and message/info state if it fails.
+
+The Lean mirror backend is a best-effort optimization/comparison path.  Failed mirror declaration
+construction should leave no partial generated declarations or kernel diagnostics when the ordinary
+LF checker can still be used as the authoritative fallback. -/
+def withRestoredCoreStateOnError (x : CoreM α) : CoreM α := do
+  let savedState ← Core.saveState
+  try
+    x
+  catch ex =>
+    Core.SavedState.restore savedState
+    throw ex
+
 /-- Substitute object-expression parameters by object-expression arguments in a macro template. -/
 partial def substObjectMacroParams (subst : NameMap ObjExpr) : ObjExpr → ObjExpr
   | .ident n =>
@@ -5438,11 +5451,12 @@ def checkLFObjectDefInContextWithMirror (ctx : IntraBlockLFCheckContext) (d : LF
   let mirrorSig := lfMirrorSignatureForObjectDefPrefix ctx d
   let compareWithLF ← getBoolOption `internalLean.mirrorBackend.compareTheoryBodiesWithLF
   try
-    profileLFCheckPhase m!"{d.name}: mirror body check" do
-      withLFMirrorFastPathHeartbeats do
-        ensureLFMirrorForSignatureBestEffort mirrorSig
-        addLFMirrorPendingDecl mirrorSig.name (lfMirrorLevelParamNamesForSignature mirrorSig)
-          (lfMirrorLevelArgsForSignature mirrorSig) (.lfObjectDef d)
+    withRestoredCoreStateOnError do
+      profileLFCheckPhase m!"{d.name}: mirror body check" do
+        withLFMirrorFastPathHeartbeats do
+          ensureLFMirrorForSignatureBestEffort mirrorSig
+          addLFMirrorPendingDecl mirrorSig.name (lfMirrorLevelParamNamesForSignature mirrorSig)
+            (lfMirrorLevelArgsForSignature mirrorSig) (.lfObjectDef d)
     if compareWithLF then
       checkLFObjectDefInContext ctx d
     else
@@ -5764,11 +5778,12 @@ def checkOneSyntaxDefMetadataInSignatureSelected (mirrorSig : HLSignature)
       syntaxSortArities globalHeads d
     let compareWithLF ← getBoolOption `internalLean.mirrorBackend.compareTheoryBodiesWithLF
     try
-      profileLFCheckPhase m!"{d.name}: mirror syntax_def body check" do
-        withLFMirrorFastPathHeartbeats do
-          ensureLFMirrorForSignatureBestEffort mirrorSig
-          addLFMirrorPendingDecl mirrorSig.name (lfMirrorLevelParamNamesForSignature mirrorSig)
-            (lfMirrorLevelArgsForSignature mirrorSig) (.syntaxDef d)
+      withRestoredCoreStateOnError do
+        profileLFCheckPhase m!"{d.name}: mirror syntax_def body check" do
+          withLFMirrorFastPathHeartbeats do
+            ensureLFMirrorForSignatureBestEffort mirrorSig
+            addLFMirrorPendingDecl mirrorSig.name (lfMirrorLevelParamNamesForSignature mirrorSig)
+              (lfMirrorLevelArgsForSignature mirrorSig) (.syntaxDef d)
       if compareWithLF then
         checkOneSyntaxDefMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
           syntaxSortArities globalHeads d

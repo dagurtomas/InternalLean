@@ -439,6 +439,12 @@ partial def lfQuoteLeanForallArity : Expr → Nat
   | .forallE _ _ body _ => 1 + lfQuoteLeanForallArity body
   | _ => 0
 
+/-- Drop up to `n` leading Lean binders from a generated quote-stub type. -/
+partial def lfQuoteLeanDropForalls : Expr → Nat → Expr
+  | type, 0 => type
+  | .forallE _ _ body _, n + 1 => lfQuoteLeanDropForalls body n
+  | type, _ => type
+
 /-- Return whether an application has supplied enough arguments for the current Lean stub. -/
 def lfQuoteAppSuppliesStubBinders (env : Environment) (theoryName : Name) (e : ObjExpr) : Bool :=
   match lfQuoteObjExprAppHeadArgs e with
@@ -468,38 +474,40 @@ def lfQuoteAppConsumesUntypedStubBinder (env : Environment) (theoryName : Name)
       | none => false
   | _ => false
 
+/-- Return whether an application produces only the unindexed quote-marker type. -/
+def lfQuoteAppReturnsUntypedMarker (env : Environment) (theoryName : Name) (e : ObjExpr) : Bool :=
+  match lfQuoteObjExprAppHeadArgs e with
+  | (.ident n, args) =>
+      match env.find? (lfQuoteDeclName theoryName n) with
+      | some info => lfQuoteLeanDropForalls info.type args.size == mkConst ``LFQuoteTerm
+      | none => false
+  | _ => false
+
 /-- Return whether an identifier is currently represented only by the unindexed quote marker. -/
 def lfQuoteIsUntypedMarkerIdent (env : Environment) (theoryName : Name) (locals : NameSet)
-    (name : Name) : Bool :=
-  if locals.contains name.eraseMacroScopes then
+    (untypedLocals : NameSet) (name : Name) : Bool :=
+  let name := name.eraseMacroScopes
+  if untypedLocals.contains name then
+    true
+  else if locals.contains name then
     false
   else
     match env.find? (lfQuoteDeclName theoryName name) with
     | some info => info.type == mkConst ``LFQuoteTerm
     | none => false
 
-/-- Return whether an expression uses an unindexed marker as an application argument. -/
-partial def lfQuoteContainsUntypedMarkerIdent (env : Environment) (theoryName : Name)
-    (locals : NameSet) : ObjExpr → Bool
-  | .ident n => lfQuoteIsUntypedMarkerIdent env theoryName locals n
-  | .app f a =>
-      lfQuoteContainsUntypedMarkerIdent env theoryName locals f ||
-        lfQuoteContainsUntypedMarkerIdent env theoryName locals a
-  | .arrow binder? A B | .funArrow binder? A B | .sigma binder? A B =>
-      let bodyLocals :=
-        match binder? with
-        | some name => locals.insert name.eraseMacroScopes
-        | none => locals
-      lfQuoteContainsUntypedMarkerIdent env theoryName locals A ||
-        lfQuoteContainsUntypedMarkerIdent env theoryName bodyLocals B
-  | .pair a b | .jeq a b =>
-      lfQuoteContainsUntypedMarkerIdent env theoryName locals a ||
-        lfQuoteContainsUntypedMarkerIdent env theoryName locals b
-  | .fst e | .snd e => lfQuoteContainsUntypedMarkerIdent env theoryName locals e
-  | .lam names body =>
-      let locals := names.foldl (fun locals name => locals.insert name.eraseMacroScopes) locals
-      lfQuoteContainsUntypedMarkerIdent env theoryName locals body
-  | .sort | .univ _ => false
+/-- Return whether an expression is itself represented only by an unindexed quote marker. -/
+def lfQuoteIsUntypedMarkerExpr (env : Environment) (theoryName : Name) (locals : NameSet)
+    (untypedLocals : NameSet) (e : ObjExpr) : Bool :=
+  match e with
+  | .ident n => lfQuoteIsUntypedMarkerIdent env theoryName locals untypedLocals n
+  | .app .. =>
+      match lfQuoteObjExprAppHeadArgs e with
+      | (.ident n, _) =>
+          lfQuoteIsUntypedMarkerIdent env theoryName locals untypedLocals n ||
+            lfQuoteAppReturnsUntypedMarker env theoryName e
+      | _ => lfQuoteAppReturnsUntypedMarker env theoryName e
+  | _ => false
 
 /-- Return whether an LF expression is in the first-order fragment represented precisely by
 indexed quote-stub types, using only quote stubs that already exist.
@@ -507,19 +515,20 @@ indexed quote-stub types, using only quote stubs that already exist.
 More expressive, forward-referencing, or implicit-omitting LF expressions still get quote stubs,
 but with the old unindexed marker type so stub generation remains total. -/
 partial def lfQuoteSupportsIndexedQuoteType (env : Environment) (theoryName : Name)
-    (locals : NameSet) : ObjExpr → Bool
+    (locals : NameSet) (untypedLocals : NameSet) : ObjExpr → Bool
   | e@(.app ..) =>
       let (head, args) := lfQuoteObjExprAppHeadArgs e
       let headOk :=
         match head with
         | .ident n =>
-            locals.contains n.eraseMacroScopes || env.contains (lfQuoteDeclName theoryName n)
-        | _ => lfQuoteSupportsIndexedQuoteType env theoryName locals head
+            !lfQuoteIsUntypedMarkerIdent env theoryName locals untypedLocals n &&
+              (locals.contains n.eraseMacroScopes || env.contains (lfQuoteDeclName theoryName n))
+        | _ => lfQuoteSupportsIndexedQuoteType env theoryName locals untypedLocals head
       headOk && lfQuoteAppSuppliesStubBinders env theoryName e &&
         !lfQuoteAppConsumesUntypedStubBinder env theoryName e &&
         args.all (fun arg =>
-          !lfQuoteContainsUntypedMarkerIdent env theoryName locals arg &&
-            lfQuoteSupportsIndexedQuoteType env theoryName locals arg)
+          !lfQuoteIsUntypedMarkerExpr env theoryName locals untypedLocals arg &&
+            lfQuoteSupportsIndexedQuoteType env theoryName locals untypedLocals arg)
   | .ident n =>
       locals.contains n.eraseMacroScopes || env.contains (lfQuoteDeclName theoryName n)
   | .sort | .univ _ => true
@@ -528,8 +537,8 @@ partial def lfQuoteSupportsIndexedQuoteType (env : Environment) (theoryName : Na
         match binder? with
         | some name => locals.insert name.eraseMacroScopes
         | none => locals
-      lfQuoteSupportsIndexedQuoteType env theoryName locals A &&
-        lfQuoteSupportsIndexedQuoteType env theoryName bodyLocals B
+      lfQuoteSupportsIndexedQuoteType env theoryName locals untypedLocals A &&
+        lfQuoteSupportsIndexedQuoteType env theoryName bodyLocals untypedLocals B
   | .pair _ _ | .fst _ | .snd _ | .lam _ _ | .jeq _ _ => false
 
 mutual
@@ -603,20 +612,22 @@ indexed quote type.  The index gives Lean enough dependency information to infer
 arguments before InternalLean reflects and checks the term.  Expressions outside the supported
 index fragment fall back to `LFQuoteTerm`. -/
 partial def lfQuoteLeanTypeOfObjType (env : Environment) (theoryName : Name)
-    (locals : LFQuoteLeanLocalMap) (typeExpr : ObjExpr) : Expr :=
-  if !lfQuoteSupportsIndexedQuoteType env theoryName (lfQuoteLeanLocalNames locals) typeExpr then
+    (locals : LFQuoteLeanLocalMap) (untypedLocals : NameSet) (typeExpr : ObjExpr) : Expr :=
+  if !lfQuoteSupportsIndexedQuoteType env theoryName (lfQuoteLeanLocalNames locals) untypedLocals
+      typeExpr then
     mkConst ``LFQuoteTerm
   else
     match typeExpr with
     | .sort | .univ _ => mkConst ``LFQuoteTerm
     | .arrow binder? A B | .funArrow binder? A B =>
         let binderName := (binder?.getD `_arg).eraseMacroScopes
-        let domain := lfQuoteLeanTypeOfObjType env theoryName locals A
+        let domain := lfQuoteLeanTypeOfObjType env theoryName locals untypedLocals A
         let locals :=
           match binder? with
           | some name => pushLFQuoteLeanLocal locals name
           | none => shiftLFQuoteLeanLocals locals
-        mkForall binderName .default domain (lfQuoteLeanTypeOfObjType env theoryName locals B)
+        mkForall binderName .default domain
+          (lfQuoteLeanTypeOfObjType env theoryName locals untypedLocals B)
     | typeExpr =>
         mkApp (mkConst ``LFQuoteOf) (lfQuoteLeanTermOfObjExpr env theoryName locals typeExpr)
 
@@ -624,42 +635,62 @@ end
 
 /-- Lean type of one generated quote-stub parameter. -/
 def lfQuoteLeanTypeOfBinding (env : Environment) (theoryName : Name)
-    (locals : LFQuoteLeanLocalMap) (b : HLBinding) : Expr :=
-  lfQuoteLeanTypeOfObjType env theoryName locals b.typeExpr
+    (locals : LFQuoteLeanLocalMap) (untypedLocals : NameSet) (b : HLBinding) : Expr :=
+  lfQuoteLeanTypeOfObjType env theoryName locals untypedLocals b.typeExpr
 
 /-- Lean function type for a generated quoted-LF frontend stub. -/
 def lfQuoteStubType (env : Environment) (theoryName : Name) (params : Array HLBinding)
     (resultType? : Option ObjExpr) : Expr :=
-  let rec go (i : Nat) (locals : LFQuoteLeanLocalMap) : Expr :=
+  let rec go (i : Nat) (locals : LFQuoteLeanLocalMap) (untypedLocals : NameSet) : Expr :=
     if h : i < params.size then
       let p := params[i]
       let binderInfo := lfQuoteBinderInfoOfVisibility p.visibility
-      let domain := lfQuoteLeanTypeOfBinding env theoryName locals p
-      mkForall p.name.eraseMacroScopes binderInfo domain
-        (go (i + 1) (pushLFQuoteLeanLocal locals p.name))
+      let pName := p.name.eraseMacroScopes
+      let pSupported := lfQuoteSupportsIndexedQuoteType env theoryName
+        (lfQuoteLeanLocalNames locals) untypedLocals p.typeExpr
+      let domain := lfQuoteLeanTypeOfBinding env theoryName locals untypedLocals p
+      let untypedLocals := if pSupported then untypedLocals else untypedLocals.insert pName
+      mkForall pName binderInfo domain
+        (go (i + 1) (pushLFQuoteLeanLocal locals p.name) untypedLocals)
     else
       match resultType? with
-      | some resultType => lfQuoteLeanTypeOfObjType env theoryName locals resultType
+      | some resultType => lfQuoteLeanTypeOfObjType env theoryName locals untypedLocals resultType
       | none => mkConst ``LFQuoteTerm
-  go 0 #[]
+  go 0 #[] {}
+
+/-- Conservative unindexed Lean function type for a generated quoted-LF frontend stub.
+
+This is used when precise indexed quote-stub construction fails for dependencies outside the
+currently supported fragment.  The declaration remains useful as a name-resolution marker for the
+quoted frontend, while avoiding kernel errors from an over-precise `LFQuoteOf` index. -/
+def lfQuoteUntypedStubType (params : Array HLBinding) : Expr :=
+  let rec go (i : Nat) : Expr :=
+    if h : i < params.size then
+      let p := params[i]
+      mkForall p.name.eraseMacroScopes (lfQuoteBinderInfoOfVisibility p.visibility)
+        (mkConst ``LFQuoteTerm) (go (i + 1))
+    else
+      mkConst ``LFQuoteTerm
+  go 0
 
 /-- Dummy Lean value for an object of a generated quoted-LF frontend type. -/
 partial def lfQuoteDummyValueOfObjType (env : Environment) (theoryName : Name)
-    (locals : LFQuoteLeanLocalMap) (typeExpr : ObjExpr) : Expr :=
-  if !lfQuoteSupportsIndexedQuoteType env theoryName (lfQuoteLeanLocalNames locals) typeExpr then
+    (locals : LFQuoteLeanLocalMap) (untypedLocals : NameSet) (typeExpr : ObjExpr) : Expr :=
+  if !lfQuoteSupportsIndexedQuoteType env theoryName (lfQuoteLeanLocalNames locals) untypedLocals
+      typeExpr then
     mkConst ``LFQuoteTerm.mk
   else
     match typeExpr with
     | .sort | .univ _ => mkConst ``LFQuoteTerm.mk
     | .arrow binder? A B | .funArrow binder? A B =>
         let binderName := (binder?.getD `_arg).eraseMacroScopes
-        let domain := lfQuoteLeanTypeOfObjType env theoryName locals A
+        let domain := lfQuoteLeanTypeOfObjType env theoryName locals untypedLocals A
         let locals :=
           match binder? with
           | some name => pushLFQuoteLeanLocal locals name
           | none => shiftLFQuoteLeanLocals locals
         mkLambda binderName .default domain
-          (lfQuoteDummyValueOfObjType env theoryName locals B)
+          (lfQuoteDummyValueOfObjType env theoryName locals untypedLocals B)
     | typeExpr =>
         mkApp (mkConst ``LFQuoteOf.mk)
           (lfQuoteLeanTermOfObjExpr env theoryName locals typeExpr)
@@ -667,18 +698,33 @@ partial def lfQuoteDummyValueOfObjType (env : Environment) (theoryName : Name)
 /-- Dummy Lean value for a generated quoted-LF frontend stub. -/
 def lfQuoteStubValue (env : Environment) (theoryName : Name) (params : Array HLBinding)
     (resultType? : Option ObjExpr) : Expr :=
-  let rec go (i : Nat) (locals : LFQuoteLeanLocalMap) : Expr :=
+  let rec go (i : Nat) (locals : LFQuoteLeanLocalMap) (untypedLocals : NameSet) : Expr :=
     if h : i < params.size then
       let p := params[i]
       let binderInfo := lfQuoteBinderInfoOfVisibility p.visibility
-      let domain := lfQuoteLeanTypeOfBinding env theoryName locals p
-      mkLambda p.name.eraseMacroScopes binderInfo domain
-        (go (i + 1) (pushLFQuoteLeanLocal locals p.name))
+      let pName := p.name.eraseMacroScopes
+      let pSupported := lfQuoteSupportsIndexedQuoteType env theoryName
+        (lfQuoteLeanLocalNames locals) untypedLocals p.typeExpr
+      let domain := lfQuoteLeanTypeOfBinding env theoryName locals untypedLocals p
+      let untypedLocals := if pSupported then untypedLocals else untypedLocals.insert pName
+      mkLambda pName binderInfo domain
+        (go (i + 1) (pushLFQuoteLeanLocal locals p.name) untypedLocals)
     else
       match resultType? with
-      | some resultType => lfQuoteDummyValueOfObjType env theoryName locals resultType
+      | some resultType => lfQuoteDummyValueOfObjType env theoryName locals untypedLocals resultType
       | none => mkConst ``LFQuoteTerm.mk
-  go 0 #[]
+  go 0 #[] {}
+
+/-- Conservative unindexed dummy value for a generated quoted-LF frontend stub. -/
+def lfQuoteUntypedStubValue (params : Array HLBinding) : Expr :=
+  let rec go (i : Nat) : Expr :=
+    if h : i < params.size then
+      let p := params[i]
+      mkLambda p.name.eraseMacroScopes (lfQuoteBinderInfoOfVisibility p.visibility)
+        (mkConst ``LFQuoteTerm) (go (i + 1))
+    else
+      mkConst ``LFQuoteTerm.mk
+  go 0
 
 /-- Dummy quote-stub parameters for an untyped LF opaque arity. -/
 def lfQuoteArityParams (arity : Nat) : Array HLBinding := Id.run do
@@ -728,9 +774,27 @@ def mkLFQuoteStubDeclaration (env : Environment) (theoryName sourceName : Name)
       '{sourceName}' in type theory '{theoryName}': a Lean declaration with that name already \
         exists"
   withEnv env do
-    let type := lfQuoteStubType env theoryName params resultType?
-    let value := lfQuoteStubValue env theoryName params resultType?
-    let defVal ← mkDefinitionValInferringUnsafe declName [] type value ReducibilityHints.abbrev
+    let mkDecl (type value : Expr) : CoreM Declaration := do
+      let defVal ← mkDefinitionValInferringUnsafe declName [] type value ReducibilityHints.abbrev
+      pure (Declaration.defnDecl defVal)
+    try
+      withRestoredCoreStateOnError do
+        mkDecl (lfQuoteStubType env theoryName params resultType?)
+          (lfQuoteStubValue env theoryName params resultType?)
+    catch _ =>
+      mkDecl (lfQuoteUntypedStubType params) (lfQuoteUntypedStubValue params)
+
+/-- Build a conservative unindexed Lean declaration for a generated quote stub. -/
+def mkLFQuoteUntypedStubDeclaration (env : Environment) (theoryName sourceName : Name)
+    (params : Array HLBinding) : CoreM Declaration := do
+  let declName := lfQuoteDeclName theoryName sourceName
+  if env.contains declName then
+    throwError "cannot create quoted-LF frontend stub '{declName}' for declaration \
+      '{sourceName}' in type theory '{theoryName}': a Lean declaration with that name already \
+        exists"
+  withEnv env do
+    let defVal ← mkDefinitionValInferringUnsafe declName [] (lfQuoteUntypedStubType params)
+      (lfQuoteUntypedStubValue params) ReducibilityHints.abbrev
     pure (Declaration.defnDecl defVal)
 
 /-- Add a generated quote-stub declaration to a supplied environment without committing it. -/
@@ -743,8 +807,13 @@ def addLFQuoteStubToEnv (env : Environment) (decl : Declaration) : CoreM Environ
 /-- Add one generated quote stub to a supplied environment without committing it. -/
 def addLFQuoteStubDeclarationToEnv (env : Environment) (theoryName sourceName : Name)
     (params : Array HLBinding) (resultType? : Option ObjExpr := none) : CoreM Environment := do
-  let decl ← mkLFQuoteStubDeclaration env theoryName sourceName params resultType?
-  addLFQuoteStubToEnv env decl
+  try
+    withRestoredCoreStateOnError do
+      let decl ← mkLFQuoteStubDeclaration env theoryName sourceName params resultType?
+      addLFQuoteStubToEnv env decl
+  catch _ =>
+    let decl ← mkLFQuoteUntypedStubDeclaration env theoryName sourceName params
+    addLFQuoteStubToEnv env decl
 
 /-- User-facing docstring for a generated quote-stub declaration. -/
 def lfQuoteStubDocString (theoryName sourceName : Name) (params : Array HLBinding)
@@ -769,8 +838,13 @@ def lfQuoteStubDocString (theoryName sourceName : Name) (params : Array HLBindin
 def addLFQuoteStubDeclaration (theoryName sourceName : Name) (params : Array HLBinding)
     (resultType? : Option ObjExpr := none) : CommandElabM Unit := do
   let env ← getEnv
-  let decl ← liftCoreM <| mkLFQuoteStubDeclaration env theoryName sourceName params resultType?
-  liftCoreM <| addAndCompile decl
+  try
+    liftCoreM <| withRestoredCoreStateOnError do
+      let decl ← mkLFQuoteStubDeclaration env theoryName sourceName params resultType?
+      addAndCompile decl
+  catch _ =>
+    let decl ← liftCoreM <| mkLFQuoteUntypedStubDeclaration env theoryName sourceName params
+    liftCoreM <| addAndCompile decl
   let declName := lfQuoteDeclName theoryName sourceName
   addDocStringCore declName (lfQuoteStubDocString theoryName sourceName params resultType?)
   liftCoreM <| addDeclarationRangesFromInternalSourceAnchorIfSameModule declName theoryName
