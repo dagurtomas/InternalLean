@@ -252,6 +252,22 @@ register_option internalLean.mirrorBackend.compareTheoryBodiesWithLF : Bool := {
     ordinary LF body checker and report any mismatch"
 }
 
+register_option internalLean.mirrorBackend.fastPathMaxHeartbeats : Nat := {
+  defValue := 1000000
+  descr := "heartbeat ceiling used inside opt-in Lean mirror theory-body checks; zero disables \
+    the ceiling"
+}
+
+/-- Run an opt-in mirror fast-path action with enough heartbeat room for Lean defeq. -/
+def withLFMirrorFastPathHeartbeats (x : CoreM α) : CoreM α := do
+  let limit ← getNatOption `internalLean.mirrorBackend.fastPathMaxHeartbeats 1000000
+  if limit == 0 then
+    withTheReader Core.Context (fun ctx => { ctx with maxHeartbeats := 0 }) x
+  else
+    let internalLimit := limit * 1000
+    withTheReader Core.Context
+      (fun ctx => { ctx with maxHeartbeats := Nat.max ctx.maxHeartbeats internalLimit }) x
+
 /-- Translate an object-level universe expression to the corresponding Lean universe. -/
 def lfMirrorLeanLevelOfLevelExpr (u : LevelExpr) : Level :=
   LevelExpr.toLeanLevel u
