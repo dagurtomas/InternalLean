@@ -35,9 +35,8 @@ internal def inferableUnderscore : Hom o o := idm _
 internal def betaRedex (f : Hom o o) : Hom o o := (fun g => comp g g) f
 
 /--
-error: Lean-elaborated LF term uses Lean constant 'sorryAx', which is not part of the quoted LF
-signature for type theory 'QuotedFrontendWinsSmoke'. Use a generated declaration in namespace
-'QuotedFrontendWinsSmoke.LFQuote', or an LF declaration name available in the checked theory.
+error: Lean-elaborated LF term uses Lean `sorry`. Lean `sorry` cannot become a checked internal
+proof; use `:= sorry` for an explicit InternalLean admission.
 -/
 #guard_msgs (whitespace := lax) in
 internal_lean def smuggledSorry : Obj := (sorry : _)

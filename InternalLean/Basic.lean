@@ -34,6 +34,33 @@ namespace InternalLean
 
 open Lean
 
+/-- LF head names reserved for the current raw-kernel structural encoding. -/
+public def lfKernelReservedNameList : List Name :=
+  [`lam, `_app, `pair, `fst, `snd, `arrow, `sigma, `Type, `jeq, `__implicitArg]
+
+/-- Set of LF head names reserved for the current raw-kernel structural encoding. -/
+public def lfKernelReservedNames : NameSet :=
+  lfKernelReservedNameList.foldl (init := {}) fun names n => names.insert n
+
+/-- Human-readable list of kernel-reserved LF head names. -/
+public def lfKernelReservedNamesString : String :=
+  String.intercalate ", " (lfKernelReservedNameList.map (fun n => toString n))
+
+/-- Whether a user LF declaration name is reserved by the raw-kernel encoding. -/
+public def isLFKernelReservedName (n : Name) : Bool :=
+  lfKernelReservedNames.contains n.eraseMacroScopes
+
+/-- Shared user-facing diagnostic for a kernel-reserved LF declaration name. -/
+public def lfKernelReservedNameError (kind : String) (rawName : Name) : String :=
+  let n := rawName.eraseMacroScopes
+  let label :=
+    if kind == "internal declaration" || kind == "admitted internal declaration" then
+      kind
+    else
+      s!"{kind} declaration"
+  s!"{label} '{rawName}' uses reserved name '{n}', which is reserved by the kernel encoding. \
+    Reserved kernel names: {lfKernelReservedNamesString}"
+
 /-- A small universe-polymorphic equivalence type used by generated structural model
 equivalence interfaces. InternalLean avoids depending on an external `Equiv` definition here so
 generated model code remains available in the minimal project environment. -/
@@ -1619,6 +1646,15 @@ def conversionPluginsByName (sig : Signature) (pluginName : Name) : List Convers
 def findConversionPlugin? (sig : Signature) (pluginName : Name) : Option ConversionPluginSchema :=
   (sig.conversionPluginsByName pluginName).head?
 
+/-- Validate that kernel-facing constants and rules do not shadow structural raw encodings. -/
+def validateNoKernelReservedNames (sig : Signature) : Except String Unit := do
+  for c in sig.constants do
+    if isLFKernelReservedName c.name then
+      throw <| lfKernelReservedNameError "kernel LF constant" c.name
+  for r in sig.rules do
+    if isLFKernelReservedName r.name then
+      throw <| lfKernelReservedNameError "kernel LF rule" r.name
+
 /-- Validate conversion-plugin schemas for duplicate names and duplicate supported step kinds. -/
 def validateConversionPluginSchemas (sig : Signature) : Except String Unit := do
   let rec goPlugins (seen : List Name) : List ConversionPluginSchema → Except String Unit
@@ -1905,8 +1941,8 @@ def validatePluginStepWithContext (ctx : KernelLFCheckContext) (sig : Signature)
   | .ok () => .ok ()
   | .error err => .error err.message
 
-/-- Validate a generic conversion certificate against a declared plugin signature and context. -/
-partial def checkWithContextDetailed (ctx : KernelLFCheckContext) (sig : Signature) :
+/-- Recursive conversion-certificate checker after signature-level guards have run. -/
+partial def checkWithContextDetailedCore (ctx : KernelLFCheckContext) (sig : Signature) :
     KernelLFConversionCertificate → ConversionStatement → Except ConversionCheckFailure Unit
   | .refl stmt, expected => do
       if stmt != expected then
@@ -1925,7 +1961,7 @@ partial def checkWithContextDetailed (ctx : KernelLFCheckContext) (sig : Signatu
       match stmt.validateBuiltinConstructorDiscipline s!"conversion symm for '{stmt.plugin}'" with
       | .ok () => pure ()
       | .error err => throwFailure .malformedCertificate err
-      checkWithContextDetailed ctx sig child stmt.symm
+      checkWithContextDetailedCore ctx sig child stmt.symm
   | .trans stmt middle left right, expected => do
       if stmt != expected then
         throwFailure .malformedCertificate
@@ -1937,8 +1973,8 @@ partial def checkWithContextDetailed (ctx : KernelLFCheckContext) (sig : Signatu
           s!"conversion trans for '{stmt.plugin}'" "middle endpoint" with
       | .ok () => pure ()
       | .error err => throwFailure .malformedCertificate err
-      checkWithContextDetailed ctx sig left (stmt.withRhs middle)
-      checkWithContextDetailed ctx sig right (stmt.withLhs middle)
+      checkWithContextDetailedCore ctx sig left (stmt.withRhs middle)
+      checkWithContextDetailedCore ctx sig right (stmt.withLhs middle)
   | .pluginStep stmt kind externalCertificateName? sideConditionCertificateNames payload,
       expected => do
       if stmt != expected then
@@ -1948,13 +1984,23 @@ partial def checkWithContextDetailed (ctx : KernelLFCheckContext) (sig : Signatu
       validatePluginStepWithContextDetailed ctx sig stmt kind externalCertificateName?
         sideConditionCertificateNames payload
 
+/-- Validate a generic conversion certificate against a declared plugin signature and context.
+
+This entry validates kernel-reserved signature names once before recursive certificate checking. -/
+def checkWithContextDetailed (ctx : KernelLFCheckContext) (sig : Signature)
+    (cert : KernelLFConversionCertificate) (expected : ConversionStatement) :
+    Except ConversionCheckFailure Unit := do
+  match sig.validateNoKernelReservedNames with
+  | .ok () => pure ()
+  | .error err => throwFailure .malformedCertificate err
+  checkWithContextDetailedCore ctx sig cert expected
+
 /-- Validate a generic conversion certificate against a declared plugin signature and context. -/
-partial def checkWithContext (ctx : KernelLFCheckContext) (sig : Signature) :
-    KernelLFConversionCertificate → ConversionStatement → Except String Unit
-  | cert, expected =>
-      match checkWithContextDetailed ctx sig cert expected with
-      | .ok () => .ok ()
-      | .error err => .error err.message
+def checkWithContext (ctx : KernelLFCheckContext) (sig : Signature)
+    (cert : KernelLFConversionCertificate) (expected : ConversionStatement) : Except String Unit :=
+  match checkWithContextDetailed ctx sig cert expected with
+  | .ok () => .ok ()
+  | .error err => .error err.message
 
 /-- Validate a generic conversion certificate without any theorem/certificate context. -/
 partial def checkDetailed (sig : Signature) (d : KernelLFConversionCertificate)
@@ -2183,12 +2229,12 @@ def validateCertificateWithContext (ctx : KernelLFCheckContext) (name : Name)
     throw s!"certificate-backed derivation '{name}' uses certificate '{certificateName}', \
       expected '{entry.certificateName}'"
 
-/-- Small trusted checker for kernel-facing LF replay artifacts.
+/-- Recursive worker for kernel-facing LF replay after signature-level guards have run.
 
 This is the executable checker for the first-order replay shape. It validates rule membership,
 finite scoped instantiations, recursive premise replay, instantiated conclusion equality, and exact
 checked side-condition certificate names. -/
-partial def checkWithContext (ctx : KernelLFCheckContext) (sig : Signature) :
+partial def checkWithContextCore (ctx : KernelLFCheckContext) (sig : Signature) :
     KernelLFDerivation → Judgment → Except String Unit
   | .assumption name stmt, expected => do
       if !stmt.alphaEq expected then
@@ -2219,7 +2265,15 @@ partial def checkWithContext (ctx : KernelLFCheckContext) (sig : Signature) :
           | .ok expectedPremise => pure expectedPremise
           | .error err =>
             throw s!"rule application '{ruleName}' has capture-unsafe premise instantiation: {err}"
-        checkWithContext ctx sig premiseDeriv expectedPremise
+        checkWithContextCore ctx sig premiseDeriv expectedPremise
+
+/-- Small trusted checker for kernel-facing LF replay artifacts.
+
+This entry validates kernel-reserved signature names once before recursive replay checking. -/
+def checkWithContext (ctx : KernelLFCheckContext) (sig : Signature)
+    (d : KernelLFDerivation) (expected : Judgment) : Except String Unit := do
+  sig.validateNoKernelReservedNames
+  checkWithContextCore ctx sig d expected
 
 /-- Small trusted checker for kernel-facing LF replay artifacts without theorem/certificate
 references in scope. Prefer `checkWithContext` when checking user artifacts. -/

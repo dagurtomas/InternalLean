@@ -328,6 +328,8 @@ partial def reflectLFQuoteBuiltinApp? (theoryName : Name) (sig? : Option HLSigna
     dependent (fun x A B => .funArrow x A B)
   else if constName == ``InternalLean.LFQuote.prod then
     binary (fun A B => .sigma none A B)
+  else if constName == ``InternalLean.LFQuote.jeq then
+    binary (fun lhs rhs => .jeq lhs rhs)
   else if constName == ``InternalLean.LFQuote.sigma then
     dependent (fun x A B => .sigma x A B)
   else if constName == ``InternalLean.LFQuote.pair then
@@ -370,10 +372,15 @@ partial def reflectLFQuoteExprWithSignature (theoryName : Name) (sig? : Option H
         match ← lfQuoteSourceNameAndArityOfConstFrom? theoryName sig? n with
         | some (localName, _, _) =>
             pure (.ident localName)
-        | none => throwError "Lean-elaborated LF term uses Lean constant '{n}', which is not part \
-            of the quoted LF signature for type theory '{theoryName}'. Use a generated declaration \
-            in namespace '{lfQuoteNamespace theoryName}', or an LF declaration name available in \
-            the checked theory."
+        | none =>
+            if n.eraseMacroScopes == `sorryAx then
+              throwError "Lean-elaborated LF term uses Lean `sorry`. Lean `sorry` cannot become \
+                a checked internal proof; use `:= sorry` for an explicit InternalLean admission."
+            else
+              throwError "Lean-elaborated LF term uses Lean constant '{n}', which is not part \
+                of the quoted LF signature for type theory '{theoryName}'. Use a generated \
+                  declaration in namespace '{lfQuoteNamespace theoryName}', or an LF declaration \
+                    name available in the checked theory."
   | .fvar fvarId => do
       match findLFQuoteLocal? locals fvarId with
       | some localName => pure (.ident localName)

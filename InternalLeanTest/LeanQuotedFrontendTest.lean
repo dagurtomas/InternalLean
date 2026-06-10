@@ -74,6 +74,13 @@ info: reflected LF term in type theory 'LeanQuotedFrontendSmoke':
 
 /--
 info: reflected LF term in type theory 'LeanQuotedFrontendSmoke':
+  Obj ≡ Obj
+-/
+#guard_msgs (whitespace := lax) in
+#reflect_lf_quote LeanQuotedFrontendSmoke : jeq Obj Obj
+
+/--
+info: reflected LF term in type theory 'LeanQuotedFrontendSmoke':
   Σ x : Obj, Obj
 -/
 #guard_msgs (whitespace := lax) in

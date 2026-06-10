@@ -34,6 +34,7 @@ import InternalLeanTest.NavigationTest
 import InternalLeanTest.ObjectNotationTest
 import InternalLeanTest.QuotedFrontendWinsTest
 import InternalLeanTest.RawConversionCaptureTest
+import InternalLeanTest.ReservedNamesTest
 import InternalLeanTest.RawConversionTest
 import InternalLeanTest.SoundnessRegressionTest
 import InternalLeanTest.StructuralInternalAdmissionTest

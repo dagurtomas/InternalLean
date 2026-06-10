@@ -147,54 +147,13 @@ partial def expandObjectMacrosInExpr (sig : HLSignature) (e : ObjExpr) : CoreM O
         | _ => pure (mkObjApp head args)
   go e
 
-/-- Return whether a flattened signature has the constants for a future object-level
-`FunctionCore` expansion mode. The current surface keeps `→` as structural compatibility syntax. -/
-def hasFunctionCoreSurface (sig : HLSignature) : Bool :=
-  let contains (n : Name) : Bool :=
-    sig.lfOpaqueConsts.any (fun d => d.name == n) ||
-      sig.lfObjectDefs.any (fun d => d.name == n) ||
-      sig.lfJudgmentTheorems.any (fun t => t.name == n)
-  contains `Fun && contains `lam && contains `app
-
-/-- Elaborate source `→` arrows through `FunctionCore.Fun` for a future explicit expansion mode.
-
-The current checker does not call this helper: both `→` and `⇒` remain structural/framework arrows
-for compatibility with existing direct-LF theories. -/
-partial def expandSurfaceFunctionsInExpr (sig : HLSignature) (e : ObjExpr) : CoreM ObjExpr := do
-  let rec go : ObjExpr → CoreM ObjExpr
-    | .ident n => pure (.ident n)
-    | .sort => pure .sort
-    | .univ u => pure (.univ u)
-    | .app f a => return .app (← go f) (← go a)
-    | .arrow x A B => return .arrow x (← go A) (← go B)
-    | .funArrow x A B => do
-        unless hasFunctionCoreSurface sig do
-          throwError "surface function arrow '→' requires FunctionCore; use explicit structural \
-            arrow '⇒' for framework-level arities"
-        let A ← go A
-        let binder := x.getD `_
-        let B ← go B
-        pure (.app (.app (.ident `Fun) A) (.lam #[binder] B))
-    | .sigma x A B => return .sigma x (← go A) (← go B)
-    | .pair a b => return .pair (← go a) (← go b)
-    | .fst e => return .fst (← go e)
-    | .snd e => return .snd (← go e)
-    | .lam xs body => return .lam xs (← go body)
-    | .jeq lhs rhs => return .jeq (← go lhs) (← go rhs)
-  go e
-
-/-- Elaborate surface function notation in a binder type. -/
-def expandSurfaceFunctionsInBinding (sig : HLSignature) (b : HLBinding) : CoreM HLBinding := do
-  return { b with typeExpr := (← expandSurfaceFunctionsInExpr sig b.typeExpr) }
-
 /-- Expand theory-local object macros in a binder. -/
 def expandObjectMacrosInBinding (sig : HLSignature) (b : HLBinding) : CoreM HLBinding := do
   return { b with typeExpr := (← expandObjectMacrosInExpr sig b.typeExpr) }
 
 /-- Named checkpoint for source-level surface function notation.
 
-Today this intentionally preserves `→` as the structural/function-family arrow. If a future mode
-expands through `FunctionCore`, it should happen here before checker validation. -/
+Today this preserves `→` as the structural/function-family arrow. -/
 def expandSurfaceFunctionsInSignature (sig : HLSignature) : CoreM HLSignature :=
   pure sig
 
@@ -7380,12 +7339,41 @@ def theoryBlockIncrementalDeclCount (block : HLTheoryBlock) : Nat :=
     block.modelVisibilities.size + block.modelSections.size + block.lfObjectDefs.size +
     block.lfJudgmentTheorems.size
 
+/-- Check that an LF-head declaration name does not collide with raw-kernel encodings. -/
+def checkLFKernelReservedDeclarationName (kind : String) (rawName : Name) : CoreM Unit := do
+  if isLFKernelReservedName rawName then
+    throwError (lfKernelReservedNameError kind rawName)
+
+/-- Check all LF-head declarations in a flattened signature against kernel-reserved names. -/
+def checkNoKernelReservedLFHeadNamesInSignature (sig : HLSignature) : CoreM Unit := do
+  for d in sig.syntaxSorts do
+    checkLFKernelReservedDeclarationName "syntax-sort" d.name
+  for d in sig.syntaxAbbrevs do
+    checkLFKernelReservedDeclarationName "syntax abbreviation" d.name
+  for d in sig.syntaxDefs do
+    checkLFKernelReservedDeclarationName "syntax definition" d.name
+  for d in sig.judgmentAbbrevs do
+    checkLFKernelReservedDeclarationName "judgment abbreviation" d.name
+  for d in sig.judgments do
+    checkLFKernelReservedDeclarationName "judgment" d.name
+  for d in sig.rules do
+    checkLFKernelReservedDeclarationName "rule" d.name
+  for d in sig.lfOpaqueConsts do
+    checkLFKernelReservedDeclarationName "LF opaque constant" d.name
+  for d in sig.lfObjectDefs do
+    checkLFKernelReservedDeclarationName "LF object definition" d.name
+  for d in sig.lfJudgmentTheorems do
+    checkLFKernelReservedDeclarationName "LF judgment theorem" d.name
+
 /-- Check that new declaration names do not collide with the already flattened baseline. -/
 def checkNoExtensionNameCollisions (flatBase : HLSignature) (block : HLTheoryBlock) :
     CoreM Unit := do
   let existing := flatBase.nameSet
-  let checkName (seen : NameSet) (kind : String) (rawName : Name) : CoreM NameSet := do
+  let checkName (reserveKernelName : Bool) (seen : NameSet) (kind : String)
+      (rawName : Name) : CoreM NameSet := do
     let n := rawName.eraseMacroScopes
+    if reserveKernelName then
+      checkLFKernelReservedDeclarationName kind rawName
     if seen.contains n then
       throwError "duplicate {kind} declaration '{rawName}' in type-theory block"
     if existing.contains n then
@@ -7394,31 +7382,31 @@ def checkNoExtensionNameCollisions (flatBase : HLSignature) (block : HLTheoryBlo
     pure (seen.insert n)
   let mut seen : NameSet := {}
   for d in block.syntaxSorts do
-    seen ← checkName seen "syntax-sort" d.name
+    seen ← checkName true seen "syntax-sort" d.name
   for d in block.syntaxAbbrevs do
-    seen ← checkName seen "syntax abbreviation" d.name
+    seen ← checkName true seen "syntax abbreviation" d.name
   for d in block.syntaxDefs do
-    seen ← checkName seen "syntax definition" d.name
+    seen ← checkName true seen "syntax definition" d.name
   for d in block.judgmentAbbrevs do
-    seen ← checkName seen "judgment abbreviation" d.name
+    seen ← checkName true seen "judgment abbreviation" d.name
   for d in block.contextZones do
-    seen ← checkName seen "context zone" d.name
+    seen ← checkName false seen "context zone" d.name
   for d in block.binderClasses do
-    seen ← checkName seen "binder class" d.name
+    seen ← checkName false seen "binder class" d.name
   for d in block.judgments do
-    seen ← checkName seen "judgment" d.name
+    seen ← checkName true seen "judgment" d.name
   for d in block.rules do
-    seen ← checkName seen "rule" d.name
+    seen ← checkName true seen "rule" d.name
   for d in block.sideConditionSolvers do
-    seen ← checkName seen "side-condition solver" d.name
+    seen ← checkName false seen "side-condition solver" d.name
   for d in block.conversionPlugins do
-    seen ← checkName seen "conversion plugin" d.name
+    seen ← checkName false seen "conversion plugin" d.name
   for d in block.lfOpaqueConsts do
-    seen ← checkName seen "LF opaque constant" d.name
+    seen ← checkName true seen "LF opaque constant" d.name
   for d in block.lfObjectDefs do
-    seen ← checkName seen "LF object definition" d.name
+    seen ← checkName true seen "LF object definition" d.name
   for d in block.lfJudgmentTheorems do
-    seen ← checkName seen "LF judgment theorem" d.name
+    seen ← checkName true seen "LF judgment theorem" d.name
 
 /-- Elaborate implicit applications in just the new extension block. -/
 def elaborateImplicitAppsInTheoryBlockExtension (flatBase : HLSignature)
@@ -8513,6 +8501,7 @@ def checkTheoryBlockExtensionIncremental (theoryName : Name) (sig : HLSignature)
 def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature := do
   let flat ← flattenSignature sig
   checkNoDuplicateNamesInSignature flat
+  checkNoKernelReservedLFHeadNamesInSignature flat
   checkModelVisibilityMetadataInSignature flat
   checkModelSectionMetadataInSignature flat
   let flat ← expandSyntaxAbbrevsInSignature flat

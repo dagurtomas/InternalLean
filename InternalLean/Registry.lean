@@ -147,6 +147,9 @@ public def funArrowDep (domain : LFQuoteTerm) (_codomain : LFQuoteOf domain → 
 /-- Quoted nondependent Sigma/product type. -/
 public def prod (_fst _snd : LFQuoteTerm) : LFQuoteTerm := LFQuoteTerm.mk
 
+/-- Quoted judgmental-equality marker. -/
+public def jeq (_lhs _rhs : LFQuoteTerm) : LFQuoteTerm := LFQuoteTerm.mk
+
 /-- Quoted dependent Sigma type. -/
 public def sigma (fstTy : LFQuoteTerm) (_snd : LFQuoteOf fstTy → LFQuoteTerm) :
     LFQuoteTerm :=

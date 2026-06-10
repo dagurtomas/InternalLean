@@ -601,7 +601,7 @@ partial def lfQuoteLeanTermOfObjExpr (env : Environment) (theoryName : Name)
       names.foldr (init := lfQuoteLeanTermOfObjExpr env theoryName locals body) fun name body =>
         mkLambda name.eraseMacroScopes .default (mkConst ``LFQuoteTerm) body
   | .jeq lhs rhs =>
-      mkApp2 (mkConst ``InternalLean.LFQuote.prod)
+      mkApp2 (mkConst ``InternalLean.LFQuote.jeq)
         (lfQuoteLeanTermOfObjExpr env theoryName locals lhs)
         (lfQuoteLeanTermOfObjExpr env theoryName locals rhs)
 
@@ -972,6 +972,8 @@ def ensureInternalDeclarationNamesAvailable (target : InternalDefTarget) : Comma
     match ← getCheckedHLSignature? target.theoryName with
     | some checkedHL => pure checkedHL
     | none => flattenSignature sig
+  if isLFKernelReservedName target.localName then
+    throwError (lfKernelReservedNameError "internal declaration" target.localName)
   if flatSig.containsName target.localName then
     throwError "declaration '{target.localName}' already exists in type theory \
       '{target.theoryName}' or one of its parents"
@@ -1539,6 +1541,7 @@ def registerAdmittedInternalLFJudgmentTheorem (theoryName anchorName localName :
   let some sig ← getTheory? theoryName
     | throwError "unknown type theory '{theoryName}'"
   let flatSourceBase ← flattenSignature sig
+  checkLFKernelReservedDeclarationName "admitted internal declaration" localName
   if flatSourceBase.containsName localName then
     throwError "declaration '{localName}' already exists in type theory '{theoryName}' or one of \
       its parents"
@@ -1667,6 +1670,7 @@ def registerLFObjectDef (theoryName : Name) (d : LFObjectDefDecl) : CoreM Unit :
     | throwError "no checked artifact stored for type theory '{theoryName}'"
   let cacheLookup ← getOrBuildCompiledLFCheckCache theoryName checked
   let cache := cacheLookup.cache
+  checkLFKernelReservedDeclarationName "LF object definition" d.name
   if cache.checkedHL.containsName d.name then
     throwError "declaration '{d.name}' already exists in type theory '{theoryName}' or one of its \
       parents"
@@ -1761,6 +1765,7 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
     | throwError "no checked artifact stored for type theory '{theoryName}'"
   let cacheLookup ← getOrBuildCompiledLFCheckCache theoryName checked
   let cache := cacheLookup.cache
+  checkLFKernelReservedDeclarationName "LF judgment theorem" t.name
   if cache.checkedHL.containsName t.name then
     throwError "declaration '{t.name}' already exists in type theory '{theoryName}' or one of its \
       parents"
@@ -1860,22 +1865,30 @@ def registerObjectRole (theoryName : Name) (role : ObjectRole) : CoreM Unit := d
 /-- Check that declaration names in a single theory block are unique. -/
 def checkNoDuplicateBlockNames (block : HLTheoryBlock) : CommandElabM Unit := do
   let mut seen : NameSet := {}
-  for (kind, n) in
+  for (kind, rawName) in
       (block.syntaxSorts.map (fun d => ("syntax-sort", d.name)) ++
         block.syntaxAbbrevs.map (fun d => ("syntax abbreviation", d.name)) ++
         block.syntaxDefs.map (fun d => ("syntax definition", d.name)) ++
         block.judgmentAbbrevs.map (fun d => ("judgment abbreviation", d.name)) ++
-        block.contextZones.map (fun d => ("context-zone", d.name)) ++
-        block.binderClasses.map (fun d => ("binder class", d.name)) ++
         block.judgments.map (fun d => ("judgment", d.name)) ++
         block.rules.map (fun d => ("rule", d.name)) ++
-        block.sideConditionSolvers.map (fun d => ("side-condition solver", d.name)) ++
-        block.conversionPlugins.map (fun d => ("conversion plugin", d.name)) ++
         block.lfOpaqueConsts.map (fun d => ("LF opaque constant", d.name)) ++
         block.lfObjectDefs.map (fun d => ("LF object definition", d.name)) ++
         block.lfJudgmentTheorems.map (fun d => ("LF judgment theorem", d.name))) do
+    let n := rawName.eraseMacroScopes
+    if isLFKernelReservedName n then
+      throwError (lfKernelReservedNameError kind rawName)
     if seen.contains n then
-      throwError "duplicate {kind} declaration '{n}' in type-theory block"
+      throwError "duplicate {kind} declaration '{rawName}' in type-theory block"
+    seen := seen.insert n
+  for (kind, rawName) in
+      (block.contextZones.map (fun d => ("context-zone", d.name)) ++
+        block.binderClasses.map (fun d => ("binder class", d.name)) ++
+        block.sideConditionSolvers.map (fun d => ("side-condition solver", d.name)) ++
+        block.conversionPlugins.map (fun d => ("conversion plugin", d.name))) do
+    let n := rawName.eraseMacroScopes
+    if seen.contains n then
+      throwError "duplicate {kind} declaration '{rawName}' in type-theory block"
     seen := seen.insert n
 
 /-- Convert parsed declaration-block metadata into signature fields. -/
