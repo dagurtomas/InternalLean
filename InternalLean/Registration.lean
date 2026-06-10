@@ -208,16 +208,120 @@ structure SourceDeclSyntaxRef where
   nameStx : Syntax
   deriving Inhabited
 
+/-- Render a telescope of high-level binders for source-anchor hover text. -/
+def sourceAnchorParamsSummary (params : Array HLBinding) : String :=
+  String.intercalate " " (params.toList.map HLBinding.summary)
+
+/-- Render a telescope with a leading separating space when nonempty. -/
+def sourceAnchorParamSuffix (params : Array HLBinding) : String :=
+  let params := sourceAnchorParamsSummary params
+  if params.isEmpty then "" else s!" {params}"
+
+/-- Render one checked rule declaration for source-anchor hover text. -/
+def sourceAnchorRuleSummary (d : RuleDecl) : String :=
+  let params := sourceAnchorParamSuffix d.params
+  if d.premises.isEmpty && d.sideConditions.isEmpty && d.paramEvidences.isEmpty then
+    s!"rule {d.name}{params} : {d.conclusionExpr}"
+  else
+    let evidenceNames : NameSet :=
+      d.paramEvidences.foldl (init := {}) fun acc ev => acc.insert ev.name.eraseMacroScopes
+    let premiseText := d.premises.toList.filterMap fun p =>
+      if evidenceNames.contains p.name.eraseMacroScopes then
+        none
+      else
+        some (RulePremiseDecl.summary p)
+    let evidenceText := d.paramEvidences.toList.map fun ev =>
+      s!"evidence {ev.name} for {ev.paramName} : {ev.judgmentExpr}"
+    let sideConditionText := d.sideConditions.toList.map RuleSideConditionDecl.summary
+    let items :=
+      premiseText ++ evidenceText ++ sideConditionText ++ [s!"conclusion : {d.conclusionExpr}"]
+    s!"rule {d.name}{params} where\n  {String.intercalate "\n  " items}"
+
+/-- Render one checked source declaration for source-anchor hover text. -/
+def sourceDeclSummaryFromCheckedHL? (theoryName : Name) (ref : SourceDeclSyntaxRef) :
+    CoreM (Option String) := do
+  let some sig ← getCheckedHLSignature? theoryName
+    | return none
+  let n := ref.sourceName.eraseMacroScopes
+  match ref.role with
+  | .syntaxSort =>
+      return sig.syntaxSorts.find? (fun d => d.name.eraseMacroScopes == n) |>.map fun d =>
+        let resultText :=
+          if LevelExpr.equal d.resultLevel .zero then "" else s!" : Type {d.resultLevel}"
+        s!"syntax_sort {d.name}{sourceAnchorParamSuffix d.params}{resultText}"
+  | .syntaxAbbrev =>
+      return sig.syntaxAbbrevs.find? (fun d => d.name.eraseMacroScopes == n) |>.map fun d =>
+        s!"syntax_abbrev {d.name}{sourceAnchorParamSuffix d.params} := {d.value}"
+  | .syntaxDef =>
+      return sig.syntaxDefs.find? (fun d => d.name.eraseMacroScopes == n) |>.map fun d =>
+        let body := match d.value? with | some value => toString value | none => "sorry"
+        s!"syntax_def {d.name}{sourceAnchorParamSuffix d.params} : Type {d.resultLevel} := \
+          {body}"
+  | .judgmentAbbrev =>
+      return sig.judgmentAbbrevs.find? (fun d => d.name.eraseMacroScopes == n) |>.map fun d =>
+        s!"judgment_abbrev {d.name}{sourceAnchorParamSuffix d.params} := {d.value}"
+  | .contextZone =>
+      return sig.contextZones.find? (fun d => d.name.eraseMacroScopes == n) |>.map fun d =>
+        let deps :=
+          if d.dependsOn.isEmpty then ""
+          else s!" depends_on {String.intercalate ", " (d.dependsOn.toList.map toString)}"
+        s!"context_zone {d.name} : {d.sortName}{deps}"
+  | .binderClass =>
+      return sig.binderClasses.find? (fun d => d.name.eraseMacroScopes == n) |>.map fun d =>
+        let deps :=
+          if d.dependsOn.isEmpty then ""
+          else s!" depends_on {String.intercalate ", " (d.dependsOn.toList.map toString)}"
+        s!"binder_class {d.name} : {d.boundSortName} in {d.zoneName}{deps}"
+  | .judgment =>
+      return sig.judgments.find? (fun d => d.name.eraseMacroScopes == n) |>.map fun d =>
+        s!"judgment {d.name}{sourceAnchorParamSuffix d.params}"
+  | .rule =>
+      return sig.rules.find? (fun d => d.name.eraseMacroScopes == n) |>.map
+        sourceAnchorRuleSummary
+  | .sideConditionSolver =>
+      return sig.sideConditionSolvers.find? (fun d => d.name.eraseMacroScopes == n) |>.map
+        fun d => s!"side_condition_solver {d.name}"
+  | .conversionPlugin =>
+      return sig.conversionPlugins.find? (fun d => d.name.eraseMacroScopes == n) |>.map fun d =>
+        let supported :=
+          if d.supportedSteps.isEmpty then "metadata_only"
+          else String.intercalate "," (d.supportedSteps.toList.map ConversionStepKind.label)
+        s!"conversion_plugin {d.name} [{d.trust.label}; {supported}]"
+  | .lfOpaque =>
+      return sig.lfOpaqueConsts.find? (fun d => d.name.eraseMacroScopes == n) |>.map fun d =>
+        match d.typeExpr? with
+        | some typeExpr =>
+            s!"lf_opaque {d.name}{sourceAnchorParamSuffix d.params} : {typeExpr}"
+        | none =>
+            match d.arity? with
+            | none => s!"lf_opaque {d.name}"
+            | some arity => s!"lf_opaque {d.name} / {arity}"
+  | .lfObjectDef =>
+      return sig.lfObjectDefs.find? (fun d => d.name.eraseMacroScopes == n) |>.map fun d =>
+        s!"lf_def {d.name} : {d.typeExpr} := {d.value}"
+  | .lfJudgmentTheorem =>
+      return sig.lfJudgmentTheorems.find? (fun d => d.name.eraseMacroScopes == n) |>.map fun d =>
+        s!"judgment_theorem {d.name}{sourceAnchorParamSuffix d.binders} : \
+          {d.judgmentExpr} := {d.proof}"
+  | _ => return none
+
 /-- User-facing docstring for hidden source declaration anchors. -/
 def internalTheoryDeclarationAnchorDocString (theoryName : Name) (ref : SourceDeclSyntaxRef) :
-    String :=
-  String.intercalate "\n" [
-    s!"Source declaration `{ref.sourceName.eraseMacroScopes}` in type theory \
-      `{theoryName.eraseMacroScopes}`.",
-    "",
-    s!"Declaration class: {ref.role.label}.",
-    "This generated Lean declaration is an editor/navigation anchor for InternalLean source \
-      syntax; it is not part of the object theory's trusted semantics." ]
+    CoreM String := do
+  let summary? ← sourceDeclSummaryFromCheckedHL? theoryName ref
+  let summaryLines :=
+    match summary? with
+    | some summary => ["", "InternalLean declaration:", summary]
+    | none => []
+  return String.intercalate "\n" <|
+    [ s!"Source declaration `{ref.sourceName.eraseMacroScopes}` in type theory \
+        `{theoryName.eraseMacroScopes}`.",
+      "",
+      s!"Declaration class: {ref.role.label}." ] ++
+      summaryLines ++
+      [ "",
+        "This generated Lean declaration is an editor/navigation anchor for InternalLean source \
+          syntax; it is not part of the object theory's trusted semantics." ]
 
 /-- Add one hidden Lean declaration used as a jump target for an object-theory source item. -/
 def addInternalTheoryDeclarationAnchor (theoryName : Name) (ref : SourceDeclSyntaxRef) :
@@ -240,7 +344,8 @@ def addInternalTheoryDeclarationAnchor (theoryName : Name) (ref : SourceDeclSynt
     let value := mkAppN (mkConst ``InternalTheoryDeclarationAnchor.mk) #[theory, source, ev]
     let defVal ← mkDefinitionValInferringUnsafe anchorName [] ty value ReducibilityHints.abbrev
     addAndCompile (Declaration.defnDecl defVal)
-  addDocStringCore anchorName (internalTheoryDeclarationAnchorDocString theoryName ref)
+  let docString ← liftCoreM <| internalTheoryDeclarationAnchorDocString theoryName ref
+  addDocStringCore anchorName docString
   addDeclarationRangesFromSyntax anchorName ref.declStx ref.nameStx
 
 /-- Find the Lean anchor declaration used for editor navigation to an InternalLean source name. -/
