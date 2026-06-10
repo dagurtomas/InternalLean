@@ -334,6 +334,328 @@ elab "#check_rule_induction " theory:ident " for " judgments:ident,* : command =
     {structuralMetaNameList principle.judgmentNames}: {principle.cases.size} case(s), \
     {principle.recursivePremiseCount} recursive premise(s)"
 
+/-- Render an InternalLean `Name` literal for generated structural-metatheory declarations. -/
+def renderLeanNameLiteral (n : Name) : String :=
+  "`" ++ structuralMetaNameString n
+
+/-- Render a Lean `Option Name` term for generated structural-metatheory declarations. -/
+def renderLeanOptionName : Option Name → String
+  | none => "none"
+  | some n => s!"(some {renderLeanNameLiteral n})"
+
+/-- Render an object-universe level as a Lean expression. -/
+partial def renderLevelExprTerm : LevelExpr → String
+  | .zero => "InternalLean.LevelExpr.zero"
+  | .lit n => s!"(InternalLean.LevelExpr.lit {n})"
+  | .param n => s!"(InternalLean.LevelExpr.param {renderLeanNameLiteral n})"
+  | .succ u => s!"(InternalLean.LevelExpr.succ {renderLevelExprTerm u})"
+  | .max u v => s!"(InternalLean.LevelExpr.max {renderLevelExprTerm u} \
+      {renderLevelExprTerm v})"
+
+/-- Local variable names available while rendering generated induction constructors. -/
+abbrev GeneratedObjLocals := NameMap Unit
+
+/-- Whether a local variable is available while rendering an object expression. -/
+def generatedObjLocalContains (locals : GeneratedObjLocals) (n : Name) : Bool :=
+  (locals.find? n.eraseMacroScopes).isSome
+
+/-- Add one local variable to a generated-object-expression renderer context. -/
+def generatedObjLocalInsert (locals : GeneratedObjLocals) (n : Name) : GeneratedObjLocals :=
+  locals.insert n.eraseMacroScopes ()
+
+/-- Remove one shadowed local variable from a generated-object-expression renderer context. -/
+def generatedObjLocalErase (locals : GeneratedObjLocals) (n : Name) : GeneratedObjLocals :=
+  locals.erase n.eraseMacroScopes
+
+/-- Render an `ObjExpr` as a Lean expression, using Lean variables for rule parameters. -/
+partial def renderObjExprTerm (locals : GeneratedObjLocals) : ObjExpr → String
+  | .ident n =>
+      if generatedObjLocalContains locals n then
+        structuralMetaNameString n
+      else
+        s!"(InternalLean.ObjExpr.ident {renderLeanNameLiteral n})"
+  | .sort => "InternalLean.ObjExpr.sort"
+  | .univ u => s!"(InternalLean.ObjExpr.univ {renderLevelExprTerm u})"
+  | .app f a =>
+      s!"(InternalLean.ObjExpr.app {renderObjExprTerm locals f} {renderObjExprTerm locals a})"
+  | .arrow x A B =>
+      let bodyLocals := match x with
+        | some n => generatedObjLocalErase locals n
+        | none => locals
+      s!"(InternalLean.ObjExpr.arrow {renderLeanOptionName x} {renderObjExprTerm locals A} \
+        {renderObjExprTerm bodyLocals B})"
+  | .funArrow x A B =>
+      let bodyLocals := match x with
+        | some n => generatedObjLocalErase locals n
+        | none => locals
+      s!"(InternalLean.ObjExpr.funArrow {renderLeanOptionName x} {renderObjExprTerm locals A} \
+        {renderObjExprTerm bodyLocals B})"
+  | .sigma x A B =>
+      let bodyLocals := match x with
+        | some n => generatedObjLocalErase locals n
+        | none => locals
+      s!"(InternalLean.ObjExpr.sigma {renderLeanOptionName x} {renderObjExprTerm locals A} \
+        {renderObjExprTerm bodyLocals B})"
+  | .pair a b =>
+      s!"(InternalLean.ObjExpr.pair {renderObjExprTerm locals a} {renderObjExprTerm locals b})"
+  | .fst e => s!"(InternalLean.ObjExpr.fst {renderObjExprTerm locals e})"
+  | .snd e => s!"(InternalLean.ObjExpr.snd {renderObjExprTerm locals e})"
+  | .lam xs body =>
+      let bodyLocals := xs.foldl (fun acc n => generatedObjLocalErase acc n) locals
+      let xsTerm := "#[" ++ String.intercalate ", "
+        (xs.toList.map renderLeanNameLiteral) ++ "]"
+      s!"(InternalLean.ObjExpr.lam {xsTerm} {renderObjExprTerm bodyLocals body})"
+  | .jeq lhs rhs =>
+      s!"(InternalLean.ObjExpr.jeq {renderObjExprTerm locals lhs} \
+        {renderObjExprTerm locals rhs})"
+
+/-- Generated Lean family name for a judgment derivation predicate. -/
+def judgmentDerivationFamilyName (judgmentName : Name) : String :=
+  structuralMetaNameString judgmentName ++ "Derivation"
+
+/-- Render one constructor argument binder for a generated derivation family. -/
+def renderGeneratedArg (name : Name) (typeTerm : String) : String :=
+  s!"({structuralMetaNameString name} : {typeTerm})"
+
+/-- Render one generated induction constructor. -/
+def renderGeneratedInductionConstructor (targets : Array Name) (c : LFJudgmentInductionCase) :
+    String :=
+  let targetSetContains (n : Name) : Bool :=
+    targets.any fun target => target.eraseMacroScopes == n.eraseMacroScopes
+  let locals := c.params.foldl (init := ({} : GeneratedObjLocals)) fun locals b =>
+    generatedObjLocalInsert locals b.name
+  let args : List String := Id.run do
+    let mut args := c.params.toList.map fun b =>
+      renderGeneratedArg b.name "InternalLean.ObjExpr"
+    for ev in c.paramEvidences do
+      args := args ++ [renderGeneratedArg ev.name "InternalLean.ObjExpr"]
+    for p in c.premises do
+      let typeTerm := match p.head? with
+        | some h =>
+            if h.kind == .judgment && targetSetContains h.name then
+              s!"{judgmentDerivationFamilyName h.name} {renderObjExprTerm locals p.judgmentExpr}"
+            else
+              "InternalLean.ObjExpr"
+        | none => "InternalLean.ObjExpr"
+      args := args ++ [renderGeneratedArg p.name typeTerm]
+    for sc in c.sideConditions do
+      args := args ++ [renderGeneratedArg sc.name "InternalLean.ObjExpr"]
+    return args
+  let argsText := if args.isEmpty then "" else " " ++ String.intercalate " " args
+  let family := judgmentDerivationFamilyName c.conclusionHead.name
+  s!"  | {structuralMetaNameString c.ruleName}{argsText} : {family} \
+    {renderObjExprTerm locals c.conclusionExpr}"
+
+/-- Render a generated derivation-family inductive declaration for one target judgment. -/
+def renderGeneratedInductionFamily (p : LFJudgmentInductionPrinciple) (target : Name) : String :=
+  let cases := p.cases.filter fun c =>
+    c.conclusionHead.name.eraseMacroScopes == target.eraseMacroScopes
+  let constructorLines := cases.toList.map (renderGeneratedInductionConstructor p.judgmentNames)
+  let constructors := String.intercalate "\n" constructorLines
+  s!"inductive {judgmentDerivationFamilyName target} : InternalLean.ObjExpr → Type where\n\
+    {constructors}"
+
+/-- Render generated derivation-family declarations for a rule-induction principle. -/
+def LFJudgmentInductionPrinciple.renderGeneratedCommands (p : LFJudgmentInductionPrinciple) :
+    Array String :=
+  let familyDecls := p.judgmentNames.toList.map (renderGeneratedInductionFamily p)
+  let body :=
+    if p.judgmentNames.size == 1 then
+      String.intercalate "\n\n" familyDecls
+    else
+      "mutual\n" ++ String.intercalate "\n\n" familyDecls ++ "\nend"
+  #[s!"namespace {structuralMetaNameString p.theoryName}", body,
+    s!"end {structuralMetaNameString p.theoryName}"]
+
+/-- Render generated derivation-family declarations as one diagnostic string. -/
+def LFJudgmentInductionPrinciple.renderGeneratedCommand (p : LFJudgmentInductionPrinciple) :
+    String :=
+  String.intercalate "\n\n" p.renderGeneratedCommands.toList
+
+/-- Elaborate generated derivation-family declarations for a checked induction principle. -/
+def elabGeneratedInductionPrinciple (p : LFJudgmentInductionPrinciple) : CommandElabM Unit := do
+  ensureUsableInductionPrinciple p
+  for commandString in p.renderGeneratedCommands do
+    let commandStx ←
+      match Lean.Parser.runParserCategory (← getEnv) `command commandString with
+      | .ok stx => pure stx
+      | .error err =>
+          throwError "failed to generate rule-induction declarations for type theory \
+            '{p.theoryName}':\n{err}\ngenerated command:\n{p.renderGeneratedCommand}"
+    elabCommand commandStx
+
+/-- Generate Lean derivation families for one judgment's generic rule-induction metadata. -/
+elab "generate_judgment_induction " theory:ident judgmentName:ident : command => do
+  let checked ← getCheckedStructuralMetatheoryTheory theory.getId
+  elabGeneratedInductionPrinciple <| checked.judgmentInductionPrinciple #[judgmentName.getId]
+
+/-- Generate Lean derivation families for one or more mutually covered judgments. -/
+elab "generate_rule_induction " theory:ident " for " judgments:ident,* : command => do
+  let checked ← getCheckedStructuralMetatheoryTheory theory.getId
+  let names := judgments.getElems.map (·.getId)
+  if names.isEmpty then
+    throwError "generate_rule_induction requires at least one judgment after `for`"
+  elabGeneratedInductionPrinciple <| checked.judgmentInductionPrinciple names
+
+/-- Whether a role tag matches a normalized structural-metatheory role name. -/
+def structuralRoleMatches (kind expected : Name) : Bool :=
+  kind.eraseMacroScopes == expected.eraseMacroScopes
+
+/-- Names of syntax sorts carrying a given structural-metatheory role. -/
+def syntaxSortsWithStructuralRole (checked : CheckedSignature) (role : Name) : Array Name :=
+  checked.lfSyntaxSortRoles.foldl (init := #[]) fun out r =>
+    if structuralRoleMatches r.kind role then pushIfMissing out r.sortName.eraseMacroScopes
+    else out
+
+/-- Theory-local object roles carrying a given structural-metatheory role. -/
+def objectRolesWithStructuralRole (sig : HLSignature) (role : Name) : Array ObjectRole :=
+  sig.roles.filter fun r => structuralRoleMatches r.kind role
+
+/-- Render one theory-local structural object role. -/
+def renderStructuralObjectRole (r : ObjectRole) : String :=
+  let related := match r.related with
+    | some n => s!" for {structuralMetaNameString n}"
+    | none => ""
+  s!"{structuralMetaNameString r.name} : {structuralMetaNameString r.kind}{related}"
+
+/-- Build a generic structural-substitution metadata report from existing roles/zones/classes. -/
+def structuralMetatheoryReport (sig : HLSignature) (checked : CheckedSignature) :
+    String × Array String := Id.run do
+  let contextSorts := syntaxSortsWithStructuralRole checked `context
+  let typeSorts := syntaxSortsWithStructuralRole checked `type_sort
+  let termSorts := syntaxSortsWithStructuralRole checked `term_sort
+  let extensions := objectRolesWithStructuralRole sig `context_extension
+  let newestVariables := objectRolesWithStructuralRole sig `newest_variable
+  let weakenings := objectRolesWithStructuralRole sig `structural_weakening
+  let substitutions := objectRolesWithStructuralRole sig `structural_substitution
+  let mut lines := #[]
+  lines := lines.push s!"generic structural metadata for {structuralMetaNameString checked.name}"
+  lines := lines.push s!"context syntax sorts: {structuralMetaNameList contextSorts}"
+  lines := lines.push s!"type-like syntax sorts: {structuralMetaNameList typeSorts}"
+  lines := lines.push s!"term-like syntax sorts: {structuralMetaNameList termSorts}"
+  lines := lines.push s!"context zones: {checked.lfContextZones.size}"
+  for z in checked.lfContextZones do
+    let deps := if z.dependsOn.isEmpty then "none" else structuralMetaNameList z.dependsOn
+    lines := lines.push s!"  zone {structuralMetaNameString z.name} : \
+      {structuralMetaNameString z.sortName}, depends_on {deps}"
+  lines := lines.push s!"binder classes: {checked.lfBinderClasses.size}"
+  for b in checked.lfBinderClasses do
+    let deps := if b.dependsOn.isEmpty then "none" else structuralMetaNameList b.dependsOn
+    lines := lines.push s!"  binder_class {structuralMetaNameString b.name} : \
+      {structuralMetaNameString b.boundSortName} in {structuralMetaNameString b.zoneName}, \
+      depends_on {deps}"
+  lines := lines.push "structural object roles:"
+  for pair in #[(extensions, "context_extension"), (newestVariables, "newest_variable"),
+      (weakenings, "structural_weakening"), (substitutions, "structural_substitution")] do
+    let roles := pair.1
+    let label := pair.2
+    if roles.isEmpty then
+      lines := lines.push s!"  {label}: none"
+    else
+      lines := lines.push s!"  {label}:"
+      for r in roles do
+        lines := lines.push s!"    {renderStructuralObjectRole r}"
+  let mut diagnostics := #[]
+  if contextSorts.isEmpty then
+    diagnostics := diagnostics.push "no syntax_sort_role ... : context metadata is registered"
+  if checked.lfContextZones.isEmpty then
+    diagnostics := diagnostics.push "no context_zone metadata is registered"
+  for z in checked.lfContextZones do
+    unless checked.lfBinderClasses.any (fun b =>
+        b.zoneName.eraseMacroScopes == z.name.eraseMacroScopes) do
+      diagnostics := diagnostics.push s!"context zone '{z.name}' has no binder_class"
+  if checked.lfBinderClasses.isEmpty then
+    diagnostics := diagnostics.push "no binder_class metadata is registered"
+  if extensions.isEmpty then
+    diagnostics := diagnostics.push "no object_role ... : context_extension metadata is registered"
+  if weakenings.isEmpty && substitutions.isEmpty then
+    diagnostics := diagnostics.push "no structural_weakening or structural_substitution object \
+      roles are registered"
+  if !diagnostics.isEmpty then
+    lines := lines.push "diagnostics:"
+    for d in diagnostics do
+      lines := lines.push s!"- {d}"
+  return (String.intercalate "\n" lines.toList, diagnostics)
+
+/-- Print generic structural-substitution metadata and diagnostics. -/
+elab "#print_structural_metatheory " theory:ident : command => do
+  let some sig ← liftCoreM <| getTheory? theory.getId
+    | throwError "unknown type theory '{theory.getId}'"
+  let flatSig ← liftCoreM <| flattenSignature sig
+  let checked ← getCheckedStructuralMetatheoryTheory theory.getId
+  let (report, _) := structuralMetatheoryReport flatSig checked
+  logInfo m!"{report}"
+
+/-- Check that enough generic structural-substitution metadata is present for later generators. -/
+elab "#check_structural_metatheory " theory:ident : command => do
+  let some sig ← liftCoreM <| getTheory? theory.getId
+    | throwError "unknown type theory '{theory.getId}'"
+  let flatSig ← liftCoreM <| flattenSignature sig
+  let checked ← getCheckedStructuralMetatheoryTheory theory.getId
+  let (_, diagnostics) := structuralMetatheoryReport flatSig checked
+  unless diagnostics.isEmpty do
+    throwError "generic structural metadata for type theory '{checked.name}' is incomplete:\n\
+      {String.intercalate "\n" diagnostics.toList}"
+  logInfo m!"generic structural metadata for {structuralMetaNameString checked.name}: ready"
+
+/-- Recognized conversion judgments for generic congruence diagnostics. -/
+def congruenceConversionJudgments (checked : CheckedSignature) : Array Name :=
+  checked.conversionJudgmentNames
+
+/-- Explicit congruence metadata target-head names. -/
+def explicitCongruenceTargetHeads (checked : CheckedSignature) : Array Name :=
+  checked.lfRewriteCongruences.foldl (init := #[]) fun out c =>
+    pushIfMissing out c.targetHead.eraseMacroScopes
+
+/-- Render generic congruence obligations inferred from checked declarations and metadata. -/
+def congruenceObligationReport (checked : CheckedSignature) : String × Array String := Id.run do
+  let conversionJudgments := congruenceConversionJudgments checked
+  let explicitTargets := explicitCongruenceTargetHeads checked
+  let mut lines := #[]
+  let mut diagnostics := #[]
+  lines := lines.push s!"generic congruence obligations for {structuralMetaNameString checked.name}"
+  lines := lines.push s!"conversion judgments: {structuralMetaNameList conversionJudgments}"
+  if conversionJudgments.isEmpty then
+    diagnostics := diagnostics.push "no judgment_role ... : type_conversion or term_conversion \
+      metadata is registered"
+  lines := lines.push s!"explicit rewrite_congruence metadata: \
+    {checked.lfRewriteCongruences.size}"
+  for d in checked.lfSyntaxDefs do
+    let status := if d.value?.isSome then "automatic candidate from checked syntax_def" else
+      "proof required for admitted syntax_def"
+    lines := lines.push s!"- {structuralMetaNameString d.name}: {status}"
+  for d in checked.lfObjectDefs do
+    lines := lines.push s!"- {structuralMetaNameString d.name}: automatic candidate from \
+      checked lf_def"
+  for o in checked.lfOpaqueConsts do
+    if o.typeExpr?.isSome then
+      let status :=
+        if explicitTargets.contains o.name.eraseMacroScopes then
+          "explicit rewrite_congruence metadata present"
+        else
+          "proof required for opaque head"
+      lines := lines.push s!"- {structuralMetaNameString o.name}: {status}"
+  if !diagnostics.isEmpty then
+    lines := lines.push "diagnostics:"
+    for d in diagnostics do
+      lines := lines.push s!"- {d}"
+  return (String.intercalate "\n" lines.toList, diagnostics)
+
+/-- Print generic congruence theorem obligations inferred from checked declaration metadata. -/
+elab "#print_congruence_obligations " theory:ident : command => do
+  let checked ← getCheckedStructuralMetatheoryTheory theory.getId
+  let (report, _) := congruenceObligationReport checked
+  logInfo m!"{report}"
+
+/-- Check that generic congruence metadata has at least one declared conversion judgment. -/
+elab "#check_congruence_obligations " theory:ident : command => do
+  let checked ← getCheckedStructuralMetatheoryTheory theory.getId
+  let (_, diagnostics) := congruenceObligationReport checked
+  unless diagnostics.isEmpty do
+    throwError "generic congruence metadata for type theory '{checked.name}' is incomplete:\n\
+      {String.intercalate "\n" diagnostics.toList}"
+  logInfo m!"generic congruence obligations for {structuralMetaNameString checked.name}: ready"
+
 /-- User-facing name rendering for documentation/admission lints. -/
 def docLintNameString (n : Name) : String :=
   toString n.eraseMacroScopes

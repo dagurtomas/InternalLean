@@ -56,6 +56,11 @@ info: judgment induction metadata for GenericInductionSimpleSmoke.Ok: 2 case(s),
 #guard_msgs (whitespace := lax) in
 #check_judgment_induction GenericInductionSimpleSmoke Ok
 
+generate_judgment_induction GenericInductionSimpleSmoke Ok
+#check GenericInductionSimpleSmoke.OkDerivation
+#check GenericInductionSimpleSmoke.OkDerivation.base_ok
+#check GenericInductionSimpleSmoke.OkDerivation.step_ok
+
 declare_type_theory GenericInductionMutualSmoke where
   syntax_sort Obj
   judgment Even (x : Obj)
@@ -104,9 +109,59 @@ info: rule induction metadata for GenericInductionMutualSmoke over Even, Odd: 3 
 #guard_msgs (whitespace := lax) in
 #check_rule_induction GenericInductionMutualSmoke for Even, Odd
 
+generate_rule_induction GenericInductionMutualSmoke for Even, Odd
+#check GenericInductionMutualSmoke.EvenDerivation
+#check GenericInductionMutualSmoke.OddDerivation
+#check GenericInductionMutualSmoke.EvenDerivation.even_zero
+#check GenericInductionMutualSmoke.OddDerivation.odd_succ
+#check GenericInductionMutualSmoke.EvenDerivation.even_succ
+
 /--
 error: rule-induction metadata for type theory 'GenericInductionSimpleSmoke' is not usable:
 unknown judgment 'Missing' in checked type theory 'GenericInductionSimpleSmoke'
 -/
 #guard_msgs in
 #check_judgment_induction GenericInductionSimpleSmoke Missing
+
+declare_type_theory GenericStructuralMetadataSmoke where
+  syntax_sort Ctx
+  syntax_sort Ty (Γ : Ctx)
+  syntax_sort Tm (Γ : Ctx)
+  syntax_sort_role Ctx : context
+  syntax_sort_role Ty : type_sort
+  syntax_sort_role Tm : term_sort
+  context_zone ordinary : Ctx
+  binder_class ordinaryVar : Tm in ordinary
+
+  lf_opaque empty : Ctx
+  lf_opaque baseTy (Γ : Ctx) : Ty Γ
+  lf_opaque baseTm (Γ : Ctx) : Tm Γ
+  lf_opaque ext (Γ : Ctx) (A : Ty Γ) : Ctx
+  lf_opaque weakenTy (Γ : Ctx) (A : Ty Γ) : Ty (ext Γ A)
+  lf_opaque substTy (Γ : Ctx) (A : Ty Γ) (a : Tm Γ) : Ty Γ
+
+  judgment EqTm (Γ : Ctx) (a : Tm Γ) (b : Tm Γ) (A : Ty Γ)
+  judgment_role EqTm : term_conversion
+
+  lf_def baseTyAlias : Ty empty := baseTy empty
+
+object_role GenericStructuralMetadataSmoke ext : context_extension
+object_role GenericStructuralMetadataSmoke baseTm : newest_variable
+object_role GenericStructuralMetadataSmoke weakenTy : structural_weakening for Ty
+object_role GenericStructuralMetadataSmoke substTy : structural_substitution for Ty
+
+#print_structural_metatheory GenericStructuralMetadataSmoke
+#check_structural_metatheory GenericStructuralMetadataSmoke
+#print_congruence_obligations GenericStructuralMetadataSmoke
+#check_congruence_obligations GenericStructuralMetadataSmoke
+
+/--
+error: generic structural metadata for type theory 'GenericInductionSimpleSmoke' is incomplete:
+no syntax_sort_role ... : context metadata is registered
+no context_zone metadata is registered
+no binder_class metadata is registered
+no object_role ... : context_extension metadata is registered
+no structural_weakening or structural_substitution object roles are registered
+-/
+#guard_msgs in
+#check_structural_metatheory GenericInductionSimpleSmoke
