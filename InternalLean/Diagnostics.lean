@@ -723,6 +723,16 @@ def elabRuleInductionWitnesses (checked : CheckedSignature)
     for commandStx in parsedCommands do
       elabCommand commandStx
 
+/-- Print generated witnesses from checked LF theorem replay artifacts for one judgment. -/
+elab "#print_judgment_induction_witnesses " theory:ident judgmentName:ident : command => do
+  let checked ← getCheckedStructuralMetatheoryTheory theory.getId
+  let p := checked.judgmentInductionPrinciple #[judgmentName.getId]
+  ensureUsableInductionPrinciple p
+  match renderRuleInductionWitnessCommand checked p with
+  | .ok text => logInfo m!"{text}"
+  | .error err => throwError "failed to render checked derivation witnesses for type theory \
+      '{p.theoryName}': {err}"
+
 /-- Print generated witnesses from checked LF theorem replay artifacts into derivation families. -/
 elab "#print_rule_induction_witnesses " theory:ident " for " judgments:ident,* : command => do
   let checked ← getCheckedStructuralMetatheoryTheory theory.getId
@@ -735,6 +745,12 @@ elab "#print_rule_induction_witnesses " theory:ident " for " judgments:ident,* :
   | .ok text => logInfo m!"{text}"
   | .error err => throwError "failed to render checked derivation witnesses for type theory \
       '{p.theoryName}': {err}"
+
+/-- Generate witnesses from checked LF theorem replay artifacts for one judgment. -/
+elab "generate_judgment_induction_witnesses " theory:ident judgmentName:ident : command => do
+  let checked ← getCheckedStructuralMetatheoryTheory theory.getId
+  let p := checked.judgmentInductionPrinciple #[judgmentName.getId]
+  elabRuleInductionWitnesses checked p
 
 /-- Generate witnesses from checked LF theorem replay artifacts into derivation families. -/
 elab "generate_rule_induction_witnesses " theory:ident " for " judgments:ident,* : command => do
