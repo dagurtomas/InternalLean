@@ -5476,6 +5476,29 @@ def lfModelAdmittedSyntaxDefWarningStringFromObligations (checked : CheckedSigna
     lines := lines.push s!"  ... {fieldDeps.size - 12} more field(s)"
   return some (String.intercalate "\n" lines.toList)
 
+/-- User-facing metatheory accounting lines for model-obligation reports. -/
+def modelMetatheoryAccountingLines (checked : CheckedSignature) (admittedNames : NameSet)
+    (obs : Array LFModelObligation) : Array String :=
+  let fields := obs.filter (fun o => o.generatedRole == .field && o.renderable)
+  let derived := obs.filter (fun o => o.generatedRole == .derivedDeclaration && o.renderable)
+  let metadata := obs.filter (fun o => o.generatedRole == .metadataExpansion && o.renderable)
+  let omitted := obs.filter (fun o => o.generatedRole == .omitted || !o.renderable)
+  let induction := checked.judgmentInductionPrinciple (checked.lfJudgments.map (·.name))
+  let congruenceCandidates :=
+    (checked.lfSyntaxDefs.filter (fun d => d.value?.isSome)).size + checked.lfObjectDefs.size +
+      checked.lfRewriteCongruences.size
+  #["metatheory accounting:",
+    s!"  primitive user fields: {fields.size}",
+    s!"  checked derived declarations: {derived.size}",
+    s!"  checked metadata expansions: {metadata.size}",
+    s!"  generated induction principles: {induction.judgmentNames.size} judgment family(ies), \
+      {induction.cases.size} rule case(s), {induction.recursivePremiseCount} recursive \
+        premise(s); not model fields",
+    s!"  generated congruence candidates: {congruenceCandidates}; not model fields unless \
+      declared as primitive rules",
+    s!"  admitted internal declarations: {admittedNames.toList.length}",
+    s!"  blocked/omitted items: {omitted.size}"]
+
 /-- Concise user-facing model-obligation summary for the LF model backend. -/
 def modelObligationsUXString (checked : CheckedSignature) (admittedNames : NameSet := {})
     (mode : LFModelInterfaceMode := .full) : CommandElabM String := do
@@ -5519,6 +5542,7 @@ def modelObligationsUXString (checked : CheckedSignature) (admittedNames : NameS
   pure <| String.intercalate "\n" <|
     ([s!"model obligations for {nameString checked.name} ({modeText})", summary,
       s!"field breakdown: {lfModelFieldSourceBreakdown obs}", nextAction] ++ warningLines ++
+      (modelMetatheoryAccountingLines checked admittedNames obs).toList ++
       (group "fields to provide" fields).toList ++
       (group "derived declarations generated from replay" derived).toList ++
       (group "theorem-local certificate parameters" params).toList ++

@@ -87,6 +87,15 @@ expansion(s), 0 blocked/omitted obligation(s)
 field breakdown: 1 syntax_sort, 1 judgment, 1 typed lf_opaque, 1 rule
 next action: run `#print_model_interface ModelWorkflowLF as <Name>`, then fill the 4 user field(s);
 checked LF definitions/theorems can be generated afterward with `#print_model_transports`.
+metatheory accounting:
+  primitive user fields: 4
+  checked derived declarations: 5
+  checked metadata expansions: 1
+  generated induction principles: 1 judgment family(ies), 1 rule case(s), 0 recursive premise(s);
+  not model fields
+  generated congruence candidates: 1; not model fields unless declared as primitive rules
+  admitted internal declarations: 2
+  blocked/omitted items: 0
 fields to provide:
   Obj ← syntax_sort Obj: ready
   a ← typed lf_opaque a: ready
