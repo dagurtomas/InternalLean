@@ -92,14 +92,21 @@ FIXTURES = {
 }
 
 
-def run_lean(repo: Path, source: str, fixture: str, size: int, run_id: int) -> float:
+def run_lean(
+    repo: Path,
+    source: str,
+    fixture: str,
+    size: int,
+    run_id: int,
+    lean_options: list[str],
+) -> float:
     bench_dir = repo / ".lake" / "build" / "internallean-bench"
     bench_dir.mkdir(parents=True, exist_ok=True)
     path = bench_dir / f"{fixture}-{size}-{run_id}.lean"
     path.write_text(source)
     start = time.perf_counter()
     proc = subprocess.run(
-        ["lake", "env", "lean", str(path)],
+        ["lake", "env", "lean", *lean_options, str(path)],
         cwd=repo,
         text=True,
         stdout=subprocess.PIPE,
@@ -112,11 +119,18 @@ def run_lean(repo: Path, source: str, fixture: str, size: int, run_id: int) -> f
     return elapsed
 
 
-def benchmark_fixture(repo: Path, fixture: str, size: int, runs: int, warmup: bool) -> BenchResult:
+def benchmark_fixture(
+    repo: Path,
+    fixture: str,
+    size: int,
+    runs: int,
+    warmup: bool,
+    lean_options: list[str],
+) -> BenchResult:
     source = FIXTURES[fixture](size)
     if warmup:
-        run_lean(repo, source, fixture, size, -1)
-    times = [run_lean(repo, source, fixture, size, i) for i in range(runs)]
+        run_lean(repo, source, fixture, size, -1, lean_options)
+    times = [run_lean(repo, source, fixture, size, i, lean_options) for i in range(runs)]
     return BenchResult(fixture=fixture, size=size, times=times)
 
 
@@ -144,6 +158,12 @@ def main() -> None:
     parser.add_argument("--full", action="store_true", help="run larger pre-release sizes")
     parser.add_argument("--json", type=Path, help="write JSON results to this path")
     parser.add_argument("--repo", type=Path, default=Path.cwd(), help="repository root")
+    parser.add_argument(
+        "--lean-option",
+        action="append",
+        default=[],
+        help="extra option passed to `lean`, e.g. -KinternalLean.kernel.dualReplay=true",
+    )
     args = parser.parse_args()
 
     if args.full:
@@ -159,7 +179,14 @@ def main() -> None:
     results: list[BenchResult] = []
     for fixture in FIXTURES:
         for size in sizes:
-            result = benchmark_fixture(repo, fixture, size, runs=runs, warmup=(runs > 1))
+            result = benchmark_fixture(
+                repo,
+                fixture,
+                size,
+                runs=runs,
+                warmup=(runs > 1),
+                lean_options=args.lean_option,
+            )
             results.append(result)
             print(f"{fixture:14s} n={size:4d} median={result.median:8.3f}s times={result.times}")
 

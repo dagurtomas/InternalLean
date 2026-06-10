@@ -5,6 +5,7 @@ Authors: Dagur Asgeirsson
 -/
 module
 
+public meta import InternalLean.Kernel
 public meta import InternalLean.LFElab.Objects
 
 @[expose] public meta section
@@ -12,6 +13,96 @@ public meta import InternalLean.LFElab.Objects
 open Lean Elab Command
 
 namespace InternalLean
+
+/-- Convert checked LF head classes to the Phase-5b structural kernel head classes. -/
+def checkedLFHeadKindToKHeadKind : CheckedLFHeadKind → Kernel.KHeadKind
+  | .local => .primitive
+  | .syntaxSort => .syntaxSort
+  | .syntaxDef => .syntaxDef
+  | .lfDefinition => .lfDefinition
+  | .lfTheorem => .lfTheorem
+  | .lfRule => .lfRule
+  | .judgment => .judgment
+  | .primitive => .primitive
+  | .definition => .definition
+  | .theorem => .theorem
+  | .opaque => .opaque
+
+/-- Find a de Bruijn index for a source local in a KTerm-lowering binder stack. -/
+def findKTermLoweringBinder? (binders : Array (Option Name)) (x : Name) : Option Nat :=
+  let x := x.eraseMacroScopes
+  let rec go (i : Nat) : List (Option Name) → Option Nat
+    | [] => none
+    | none :: rest => go (i + 1) rest
+    | some y :: rest => if y.eraseMacroScopes == x then some i else go (i + 1) rest
+  go 0 binders.toList.reverse
+
+/-- Lower a checked LF expression to the Phase-5b structural kernel term. -/
+partial def checkedLFExprToKTermWithContext (metas : NameMap RawMetaSort) (freeLocals : NameSet)
+    (binders : Array (Option Name)) : CheckedLFExpr → Except String Kernel.KTerm
+  | .ident h =>
+      let name := h.name.eraseMacroScopes
+      if h.kind == .local then
+        match findKTermLoweringBinder? binders name with
+        | some i => pure (.bvar i)
+        | none =>
+            match metas.find? name with
+            | some sort => pure (.mvar (Kernel.KName.ofName name) sort)
+            | none =>
+                if freeLocals.contains name then
+                  pure (.fvar (Kernel.KLocalName.ofName name))
+                else
+                  throw s!"checked LF expression lowers out-of-scope local '{name}'"
+      else
+        pure <| .ident {
+          name := Kernel.KName.ofName name
+          kind := checkedLFHeadKindToKHeadKind h.kind
+          arity? := h.arity? }
+  | .sort => pure (.univ .zero)
+  | .univ u => pure (.univ (LevelExpr.normalize u))
+  | .app f a => do
+      let f ← checkedLFExprToKTermWithContext metas freeLocals binders f
+      let a ← checkedLFExprToKTermWithContext metas freeLocals binders a
+      pure (.app f a)
+  | .arrow none A B => do
+      let A ← checkedLFExprToKTermWithContext metas freeLocals binders A
+      let B ← checkedLFExprToKTermWithContext metas freeLocals (binders.push none) B
+      pure (.arrow A B)
+  | .arrow (some x) A B => do
+      let A ← checkedLFExprToKTermWithContext metas freeLocals binders A
+      let B ← checkedLFExprToKTermWithContext metas freeLocals (binders.push (some x)) B
+      pure (.arrow A B)
+  | .sigma none A B => do
+      let A ← checkedLFExprToKTermWithContext metas freeLocals binders A
+      let B ← checkedLFExprToKTermWithContext metas freeLocals (binders.push none) B
+      pure (.sigma A B)
+  | .sigma (some x) A B => do
+      let A ← checkedLFExprToKTermWithContext metas freeLocals binders A
+      let B ← checkedLFExprToKTermWithContext metas freeLocals (binders.push (some x)) B
+      pure (.sigma A B)
+  | .pair a b => do
+      let a ← checkedLFExprToKTermWithContext metas freeLocals binders a
+      let b ← checkedLFExprToKTermWithContext metas freeLocals binders b
+      pure (.pair a b)
+  | .fst e => do
+      let e ← checkedLFExprToKTermWithContext metas freeLocals binders e
+      pure (.fst e)
+  | .snd e => do
+      let e ← checkedLFExprToKTermWithContext metas freeLocals binders e
+      pure (.snd e)
+  | .lam xs body => do
+      let binders' := xs.foldl (fun binders x => binders.push (some x)) binders
+      let body ← checkedLFExprToKTermWithContext metas freeLocals binders' body
+      pure <| xs.toList.foldr (fun _ acc => .lam acc) body
+  | .jeq lhs rhs => do
+      let lhs ← checkedLFExprToKTermWithContext metas freeLocals binders lhs
+      let rhs ← checkedLFExprToKTermWithContext metas freeLocals binders rhs
+      pure (.jeq lhs rhs)
+
+/-- Lower a closed checked LF expression to the Phase-5b structural kernel term. -/
+def checkedLFExprToKTerm (e : CheckedLFExpr) (metas : NameMap RawMetaSort := {})
+    (freeLocals : NameSet := {}) : Except String Kernel.KTerm :=
+  checkedLFExprToKTermWithContext metas freeLocals #[] e
 
 /-- Find the unique checked context zone whose entry sort matches `sortName`, if any. -/
 def uniqueZoneForSort? (zones : Array CheckedLFContextZone) (sortName : Name) : Option Name :=
@@ -442,6 +533,22 @@ def kernelLFCertificateEntriesOfTheorems (theorems : Array CheckedLFJudgmentTheo
         some { name := name, statement := stmt, certificateName := certificateName }
     | _ => none
 
+/-- Run opt-in Phase-5b structural kernel dual replay for an already accepted raw replay. -/
+def validateStructuralKernelDualReplay (label : String) (signature : Signature)
+    (context : KernelLFCheckContext) (statement : Judgment) (derivation : KernelLFDerivation) :
+    CoreM Unit := do
+  if !(← getBoolOption `internalLean.kernel.dualReplay) then
+    return ()
+  let structuralSig := Kernel.Signature.ofOld signature
+  let structuralCtx := Kernel.KernelLFCheckContext.ofOld context
+  let structuralStmt := Kernel.Judgment.ofOld statement
+  let structuralDeriv := Kernel.KernelLFDerivation.ofOld derivation
+  match Kernel.CheckedKernelLFDerivation.ofReplay structuralSig structuralCtx structuralStmt
+      structuralDeriv with
+  | .ok _ => pure ()
+  | .error err =>
+      throwError "Phase-5b structural kernel dual replay failed for {label}: {err}"
+
 /-- Add checked kernel replay validation to one incrementally checked LF theorem. -/
 def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : CheckedSignature)
     (t : CheckedLFJudgmentTheorem) : CoreM CheckedLFJudgmentTheorem := do
@@ -469,7 +576,10 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
     assumptions := assumptions }
   match CheckedKernelLFDerivation.ofReplay kernelSig localReplayCtx
       (KernelLFDerivation.statement kernelDeriv) kernelDeriv with
-  | .ok checkedReplay => pure { t with checkedKernelDerivation? := some checkedReplay }
+  | .ok checkedReplay => do
+      validateStructuralKernelDualReplay s!"judgment_theorem '{t.name}' compact replay"
+        kernelSig localReplayCtx (KernelLFDerivation.statement kernelDeriv) kernelDeriv
+      pure { t with checkedKernelDerivation? := some checkedReplay }
   | .error compactErr =>
       let expandedKernelSig :=
         kernelSignatureWithExpandedReplayRules kernelSig lfCheckedDefValues checked.lfRuleSchemas
@@ -484,7 +594,11 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
         assumptions := expandedAssumptions }
       match CheckedKernelLFDerivation.ofReplay expandedKernelSig expandedReplayCtx
           (KernelLFDerivation.statement kernelDeriv) kernelDeriv with
-      | .ok checkedReplay => pure { t with checkedKernelDerivation? := some checkedReplay }
+      | .ok checkedReplay => do
+          validateStructuralKernelDualReplay s!"judgment_theorem '{t.name}' expanded replay"
+            expandedKernelSig expandedReplayCtx (KernelLFDerivation.statement kernelDeriv)
+            kernelDeriv
+          pure { t with checkedKernelDerivation? := some checkedReplay }
       | .error expandedErr =>
           throwError "kernel-facing replay check failed for judgment_theorem '{t.name}' in type \
             theory '{sig.name}': {compactErr}\nexpanded fallback also failed: {expandedErr}"
@@ -501,7 +615,10 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
     assumptions := assumptions }
   match CheckedKernelLFDerivation.ofReplay cache.kernelSig localReplayCtx
       (KernelLFDerivation.statement kernelDeriv) kernelDeriv with
-  | .ok checkedReplay => pure { t with checkedKernelDerivation? := some checkedReplay }
+  | .ok checkedReplay => do
+      validateStructuralKernelDualReplay s!"judgment_theorem '{t.name}' compact cached replay"
+        cache.kernelSig localReplayCtx (KernelLFDerivation.statement kernelDeriv) kernelDeriv
+      pure { t with checkedKernelDerivation? := some checkedReplay }
   | .error compactErr =>
       let primitiveNames : NameSet := cache.checkedRuleSchemas.foldl (init := {}) fun names r =>
         names.insert r.name.eraseMacroScopes
@@ -524,7 +641,11 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
         assumptions := expandedAssumptions }
       match CheckedKernelLFDerivation.ofReplay expandedKernelSig expandedReplayCtx
           (KernelLFDerivation.statement kernelDeriv) kernelDeriv with
-      | .ok checkedReplay => pure { t with checkedKernelDerivation? := some checkedReplay }
+      | .ok checkedReplay => do
+          validateStructuralKernelDualReplay s!"judgment_theorem '{t.name}' expanded cached replay"
+            expandedKernelSig expandedReplayCtx (KernelLFDerivation.statement kernelDeriv)
+            kernelDeriv
+          pure { t with checkedKernelDerivation? := some checkedReplay }
       | .error expandedErr =>
           throwError "kernel-facing replay check failed for judgment_theorem '{t.name}' in type \
             theory '{cache.checkedHL.name}': {compactErr}\nexpanded fallback also failed: \

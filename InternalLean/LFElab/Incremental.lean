@@ -923,6 +923,8 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
     assumptions := assumptions }
   match CheckedKernelLFDerivation.ofReplay ctx.kernelSig localReplayCtx stmt kernelDeriv with
   | .ok checkedReplay =>
+      validateStructuralKernelDualReplay s!"judgment_theorem '{t.name}' block compact replay"
+        ctx.kernelSig localReplayCtx stmt kernelDeriv
       let t := { t with checkedKernelDerivation? := some checkedReplay }
       let replayCtx :=
         if t.binders.isEmpty then ctx.replayCtx.addTheorem t.name stmt else ctx.replayCtx
@@ -937,6 +939,9 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
       match CheckedKernelLFDerivation.ofReplay ctx.kernelSigExpanded expandedReplayCtx stmt
           kernelDeriv with
       | .ok checkedReplay =>
+          validateStructuralKernelDualReplay
+            s!"judgment_theorem '{t.name}' block expanded replay" ctx.kernelSigExpanded
+            expandedReplayCtx stmt kernelDeriv
           let t := { t with checkedKernelDerivation? := some checkedReplay }
           let replayCtx :=
             if t.binders.isEmpty then ctx.replayCtx.addTheorem t.name stmt else ctx.replayCtx

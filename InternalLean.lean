@@ -4,6 +4,7 @@ import InternalLean.Command
 import InternalLean.DSL
 import InternalLean.Diagnostics
 import InternalLean.InternalTactic
+import InternalLean.Kernel
 import InternalLean.LFElab
 import InternalLean.ModelInterface
 import InternalLean.ModelTransport

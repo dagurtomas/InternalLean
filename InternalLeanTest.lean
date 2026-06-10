@@ -20,6 +20,7 @@ import InternalLeanTest.InternalDefTest
 import InternalLeanTest.InternalTacticTest
 import InternalLeanTest.IntroUXTest
 import InternalLeanTest.JudgmentAbbrevTest
+import InternalLeanTest.KernelDualReplayTest
 import InternalLeanTest.LeanQuotedFrontendTest
 import InternalLeanTest.LeanMirrorBackendTest
 import InternalLeanTest.LFModelStressTest
