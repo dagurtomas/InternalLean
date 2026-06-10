@@ -5760,7 +5760,7 @@ def checkOneSyntaxDefMetadataInSignatureSelected (mirrorSig : HLSignature)
   let useMirror :=
     (← getBoolOption `internalLean.mirrorBackend.checkTheoryBodies) &&
       match d.value? with
-      | some value => lfMirrorObjExprNodeCountLE lfMirrorBestEffortSyntaxDefNodeLimit value
+      | some value => lfMirrorObjExprNodeCountLE lfMirrorTheoryBodySyntaxDefCheckNodeLimit value
       | none => false
   if useMirror then
     checkOneSyntaxDefParameterMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities

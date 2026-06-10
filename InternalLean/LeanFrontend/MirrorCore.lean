@@ -756,7 +756,10 @@ partial def lfMirrorObjExprNodeCountLE (limit : Nat) (e : ObjExpr) : Bool :=
         | fuel + 1 => go fuel e
   (go limit e).isSome
 
-/-- Checked `syntax_def` bodies above this size use the ordinary LF checker in fast-path mode. -/
+/-- Checked `syntax_def` bodies currently use the ordinary LF checker in fast-path mode. -/
+def lfMirrorTheoryBodySyntaxDefCheckNodeLimit : Nat := 0
+
+/-- Checked `syntax_def`s above this size are skipped in best-effort mirror prefixes. -/
 def lfMirrorBestEffortSyntaxDefNodeLimit : Nat := 1000
 
 /-- `lf_def` bodies above this size are left to the ordinary LF checker in fast-path mode. -/
