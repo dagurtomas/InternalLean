@@ -268,6 +268,14 @@ def withLFMirrorFastPathHeartbeats (x : CoreM α) : CoreM α := do
     withTheReader Core.Context
       (fun ctx => { ctx with maxHeartbeats := Nat.max ctx.maxHeartbeats internalLimit }) x
 
+/-- Defeq for translated mirror types, with a reduction fallback for nested transparent heads. -/
+def lfMirrorIsDefEq (actual expected : Expr) : MetaM Bool := do
+  if ← withTransparency .all <| isDefEq actual expected then
+    return true
+  let actualReduced ← withTransparency .all <| reduceAll actual
+  let expectedReduced ← withTransparency .all <| reduceAll expected
+  withTransparency .all <| isDefEq actualReduced expectedReduced
+
 /-- Translate an object-level universe expression to the corresponding Lean universe. -/
 def lfMirrorLeanLevelOfLevelExpr (u : LevelExpr) : Level :=
   LevelExpr.toLeanLevel u
@@ -435,7 +443,7 @@ where
     | e => do
         let eExpr ← lfMirrorExprWithLevels theoryName levelArgs locals e
         let actual ← inferType eExpr
-        unless ← withTransparency .all <| isDefEq actual expected do
+        unless ← lfMirrorIsDefEq actual expected do
           throwError "Lean mirror translated LF term with type\n  {actual}\nexpected\n  {expected}"
         pure eExpr
 
@@ -503,7 +511,7 @@ partial def lfMirrorTermWithExpectedWithLevels (theoryName : Name) (levelArgs : 
       let expectedLean ← lfMirrorExprWithLevels theoryName levelArgs locals expected
       let eExpr ← lfMirrorExprWithLevels theoryName levelArgs locals e
       let actual ← inferType eExpr
-      unless ← withTransparency .all <| isDefEq actual expectedLean do
+      unless ← lfMirrorIsDefEq actual expectedLean do
         throwError "Lean mirror translated LF term with type\n  {actual}\nexpected\n  \
           {expectedLean}"
       pure eExpr
@@ -587,7 +595,7 @@ def addLFMirrorDefinitionIfMissing (declName : Name) (levelParams : List Name)
   unless (← getEnv).contains declName do
     MetaM.run' do
       let actual ← inferType value
-      unless ← withTransparency .all <| isDefEq actual type do
+      unless ← lfMirrorIsDefEq actual type do
         throwError "cannot add Lean mirror definition '{declName}': translated value has \
           type\n  {actual}\nexpected\n  {type}"
     let defVal : DefinitionVal := {
@@ -856,7 +864,7 @@ def checkWithLFMirrorOnlyInSignature (sig : HLSignature) (params : Array HLBindi
         let valueLean ← lfMirrorTermWithExpectedWithLevels sig.name
           (lfMirrorLevelArgsForSignature sig) locals typeExpr valueExpr
         let actual ← inferType valueLean
-        unless ← withTransparency .all <| isDefEq actual typeLean do
+        unless ← lfMirrorIsDefEq actual typeLean do
           let msg :=
             m!"Lean mirror checker inferred\n  {actual}\nfor translated value, expected\n  \
               {typeLean}"
@@ -923,7 +931,7 @@ def checkLFMirrorSyntaxDefBodyInSignature (sig : HLSignature) (d : SyntaxDefDecl
       let valueLean ← lfMirrorExprWithLevels sig.name (lfMirrorLevelArgsForSignature sig) locals
         value
       let actual ← inferType valueLean
-      unless ← withTransparency .all <| isDefEq actual expected do
+      unless ← lfMirrorIsDefEq actual expected do
         throwError "translated value has type\n  {actual}\nexpected\n  {expected}"
   catch ex =>
     let valueText := ObjExpr.toString value
