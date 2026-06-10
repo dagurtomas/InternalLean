@@ -78,6 +78,26 @@ run_cmd do
   | .ok _ => pure ()
   | .error err => throwError "structural kernel rejected an ordinary constant named 'lam': {err}"
 
+run_cmd do
+  let badStmt : Kernel.Judgment := {
+    head := Kernel.KName.ofName `J
+    args := [.bvar 0] }
+  let badRule : Kernel.RuleSchema := {
+    name := Kernel.KName.ofName `bad
+    conclusionStmt := badStmt }
+  let sig : Kernel.Signature := {
+    name := Kernel.KName.ofName `LooseBVarSmoke
+    rules := [badRule] }
+  let deriv := Kernel.KernelLFDerivation.ruleApp (Kernel.KName.ofName `bad) badStmt {} [] []
+  match Kernel.CheckedKernelLFDerivation.ofReplay sig {} badStmt deriv with
+  | .ok _ => throwError "structural checked replay accepted a loose de Bruijn index"
+  | .error err =>
+      unless err.contains "loose de Bruijn" do
+        throwError "expected a loose de Bruijn rejection, got: {err}"
+
+#check Kernel.CheckedKernelLFDerivation.toContextDeriv?
+#check Kernel.KernelLFDerivation.ContextDeriv.interp
+
 set_option internalLean.kernel.dualReplay true
 
 declare_type_theory KernelDualReplaySmoke where

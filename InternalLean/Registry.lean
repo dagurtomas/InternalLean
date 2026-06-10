@@ -6,6 +6,7 @@ Authors: Dagur Asgeirsson
 module
 
 public meta import InternalLean.DSL
+public meta import InternalLean.Kernel
 public meta import Lean.PrettyPrinter
 
 /-!
@@ -632,6 +633,12 @@ structure CompiledLFCheckCache where
   kernelSig : Signature
   /-- Kernel replay context containing prior theorem/certificate entries. -/
   kernelReplayBase : KernelLFCheckContext := {}
+  /-- Structural replay signature built from checked artifacts for compact dual replay. -/
+  structuralKernelSig : Kernel.Signature := default
+  /-- Structural replay signature built from checked artifacts for expanded dual replay. -/
+  structuralKernelSigExpanded : Kernel.Signature := default
+  /-- Structural replay context containing prior theorem/certificate entries. -/
+  structuralKernelReplayBase : Kernel.KernelLFCheckContext := {}
   deriving Inhabited
 
 /-- State for compiled LF checking caches.

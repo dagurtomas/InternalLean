@@ -5,7 +5,7 @@ Authors: Dagur Asgeirsson
 -/
 module
 
-public import InternalLean.DSL
+public import InternalLean.Basic
 
 /-!
 # Parallel structural LF kernel prototype
@@ -81,9 +81,17 @@ structure KHead where
   name : KName
   /-- Head class. -/
   kind : KHeadKind := .primitive
-  /-- Optional declared arity. -/
+  /-- Optional declared arity for diagnostics and printing. -/
   arity? : Option Nat := none
   deriving Inhabited, Repr, BEq
+
+namespace KHead
+
+/-- Semantic equality for resolved heads; arity is diagnostic side data. -/
+def alphaEq (a b : KHead) : Bool :=
+  a.name == b.name && a.kind == b.kind
+
+end KHead
 
 /-- First-class structural kernel term.
 
@@ -127,8 +135,26 @@ def isLocallyClosed (e : KTerm) : Bool :=
   isLocallyClosedAt 0 e
 
 /-- Structural equality, valid as alpha-equivalence for locally closed `KTerm`s. -/
-def alphaEq (a b : KTerm) : Bool :=
-  a == b
+partial def alphaEq : KTerm → KTerm → Bool
+  | .ident a, .ident b => a.alphaEq b
+  | .fvar a, .fvar b => a == b
+  | .bvar a, .bvar b => a == b
+  | .mvar an as, .mvar bn bs => an == bn && as == bs
+  | .app af aa, .app bf ba => alphaEq af bf && alphaEq aa ba
+  | .lam a, .lam b => alphaEq a b
+  | .arrow aDom aCod, .arrow bDom bCod => alphaEq aDom bDom && alphaEq aCod bCod
+  | .sigma aDom aCod, .sigma bDom bCod => alphaEq aDom bDom && alphaEq aCod bCod
+  | .pair al ar, .pair bl br => alphaEq al bl && alphaEq ar br
+  | .fst a, .fst b => alphaEq a b
+  | .snd a, .snd b => alphaEq a b
+  | .univ a, .univ b => a == b
+  | .jeq al ar, .jeq bl br => alphaEq al bl && alphaEq ar br
+  | _, _ => false
+
+/-- Validate that a structural term has no loose de Bruijn indices. -/
+def ensureLocallyClosed (label : String) (e : KTerm) : Except String Unit := do
+  unless e.isLocallyClosed do
+    throw s!"{label} contains a loose de Bruijn index"
 
 /-- Whether a term mentions the de Bruijn index `target` under `depth` binders. -/
 partial def hasBVarAt (target depth : Nat) : KTerm → Bool
@@ -255,7 +281,17 @@ def instantiateMetas (σ : KInstantiation) (j : Judgment) : Except String Judgme
 
 /-- Structural equality, valid as alpha-equivalence for locally closed KTerm arguments. -/
 def alphaEq (a b : Judgment) : Bool :=
-  a == b
+  a.head == b.head && a.args.length == b.args.length &&
+    (a.args.zip b.args).all (fun pair => pair.1.alphaEq pair.2)
+
+/-- Whether every argument of a structural judgment is locally closed. -/
+def isLocallyClosed (j : Judgment) : Bool :=
+  j.args.all KTerm.isLocallyClosed
+
+/-- Validate that a structural judgment contains no loose de Bruijn indices. -/
+def ensureLocallyClosed (label : String) (j : Judgment) : Except String Unit := do
+  unless j.isLocallyClosed do
+    throw s!"{label} contains a loose de Bruijn index"
 
 end Judgment
 
@@ -288,6 +324,15 @@ structure SideCondition where
   name : KName
   args : List KTerm := []
   deriving Inhabited, Repr, BEq
+
+namespace SideCondition
+
+/-- Validate that a side condition contains no loose de Bruijn indices. -/
+def ensureLocallyClosed (label : String) (sc : SideCondition) : Except String Unit := do
+  for arg in sc.args do
+    KTerm.ensureLocallyClosed label arg
+
+end SideCondition
 
 /-- Side-condition certificate slot for structural replay. -/
 structure SideConditionCertificateSlot where
@@ -331,6 +376,13 @@ def withRhs (stmt : ConversionStatement) (rhs : KTerm) : ConversionStatement :=
 /-- Replace the source endpoint. -/
 def withLhs (stmt : ConversionStatement) (lhs : KTerm) : ConversionStatement :=
   { stmt with lhs := lhs }
+
+/-- Validate that a conversion statement contains no loose de Bruijn indices. -/
+def ensureLocallyClosed (label : String) (stmt : ConversionStatement) : Except String Unit := do
+  if let some ctx := stmt.context? then
+    KTerm.ensureLocallyClosed label ctx
+  KTerm.ensureLocallyClosed label stmt.lhs
+  KTerm.ensureLocallyClosed label stmt.rhs
 
 end ConversionStatement
 
@@ -393,12 +445,24 @@ def validateAgainst (σ : ScopedInstantiation) (metavariables : List RuleMetaVar
     if e.zone? != v.zone? then
       throw s!"scoped instantiation entry '{e.name}' has zone '{reprStr e.zone?}', expected \
         '{reprStr v.zone?}'"
-    if e.type? != v.type? then
-      throw s!"scoped instantiation entry '{e.name}' has a type annotation that differs from \
-        the rule telescope"
-    if e.evidence? != v.evidence? then
-      throw s!"scoped instantiation entry '{e.name}' has evidence that differs from the rule \
-        telescope"
+    match e.type?, v.type? with
+    | some actual, some expected =>
+        unless actual.alphaEq expected do
+          throw s!"scoped instantiation entry '{e.name}' has a type annotation that differs \
+            from the rule telescope"
+    | none, none => pure ()
+    | _, _ =>
+        throw s!"scoped instantiation entry '{e.name}' has a type annotation that differs from \
+          the rule telescope"
+    match e.evidence?, v.evidence? with
+    | some actual, some expected =>
+        unless actual.alphaEq expected do
+          throw s!"scoped instantiation entry '{e.name}' has evidence that differs from the \
+            rule telescope"
+    | none, none => pure ()
+    | _, _ =>
+        throw s!"scoped instantiation entry '{e.name}' has evidence that differs from the rule \
+          telescope"
     unless e.value.isLocallyClosed do
       throw s!"scoped instantiation entry '{e.name}' has a value with loose binders"
 
@@ -408,6 +472,7 @@ end ScopedInstantiation
 structure LFConstantSchema where
   name : KName
   params : List RuleMetaVar := []
+  kind : KHeadKind := .primitive
   resultType : KTerm
   deriving Inhabited, Repr, BEq
 
@@ -508,6 +573,13 @@ def ofSignature (sig : Signature) : Except String ValidatedSignature := do
     if constantsByKey.contains key then
       throw s!"signature '{sig.name}' has duplicate typed LF constant '{c.name}' with \
         arity {c.params.length}"
+    for p in c.params do
+      if let some ty := p.type? then
+        KTerm.ensureLocallyClosed s!"typed LF constant '{c.name}' parameter '{p.name}' type" ty
+      if let some ev := p.evidence? then
+        Judgment.ensureLocallyClosed
+          s!"typed LF constant '{c.name}' parameter '{p.name}' evidence" ev
+    KTerm.ensureLocallyClosed s!"typed LF constant '{c.name}' result type" c.resultType
     constantsByKey := constantsByKey.insert key c
     let prior := (constantsByName[c.name]?).getD #[]
     constantsByName := constantsByName.insert c.name (prior.push c)
@@ -556,6 +628,10 @@ def ofSignature (sig : Signature) : Except String ValidatedSignature := do
       if seenMetas.contains v.name then
         throw s!"rule '{r.name}' in signature '{sig.name}' has duplicate metavariable \
           '{v.name}'"
+      if let some ty := v.type? then
+        KTerm.ensureLocallyClosed s!"rule '{r.name}' metavariable '{v.name}' type" ty
+      if let some ev := v.evidence? then
+        Judgment.ensureLocallyClosed s!"rule '{r.name}' metavariable '{v.name}' evidence" ev
       seenMetas := seenMetas.insert v.name
       if let some zoneName := v.zone? then
         let zone ←
@@ -566,6 +642,17 @@ def ofSignature (sig : Signature) : Except String ValidatedSignature := do
         if v.sort != zone.sort then
           throw s!"rule '{r.name}' metavariable '{v.name}' has sort '{reprStr v.sort}' in \
             context zone '{zoneName}', expected zone sort '{reprStr zone.sort}'"
+    for p in r.premises do
+      Judgment.ensureLocallyClosed s!"rule '{r.name}' premise" p
+    for sc in r.sideConditions do
+      SideCondition.ensureLocallyClosed s!"rule '{r.name}' side condition '{sc.name}'" sc
+    for slot in r.sideConditionCertificates do
+      SideCondition.ensureLocallyClosed
+        s!"rule '{r.name}' certificate slot '{slot.name}'" slot.condition
+    for cert in r.checkedSideConditionCertificates do
+      SideCondition.ensureLocallyClosed
+        s!"rule '{r.name}' checked certificate '{cert.name}'" cert.condition
+    Judgment.ensureLocallyClosed s!"rule '{r.name}' conclusion" r.conclusionStmt
     seenRules := seenRules.insert r.name
     rulesByName := rulesByName.insert r.name r
   pure {
@@ -595,11 +682,13 @@ def ofContext (ctx : KernelLFCheckContext) : Except String ValidatedReplayContex
   for e in ctx.assumptions do
     if assumptionsByName.contains e.name then
       throw s!"checked replay context has duplicate assumption entry '{e.name}'"
+    Judgment.ensureLocallyClosed s!"checked replay assumption '{e.name}'" e.statement
     assumptionsByName := assumptionsByName.insert e.name e
   let mut theoremsByName : Std.HashMap KName KernelLFTheoremEntry := {}
   for e in ctx.theorems do
     if theoremsByName.contains e.name then
       throw s!"checked replay context has duplicate theorem entry '{e.name}'"
+    Judgment.ensureLocallyClosed s!"checked replay theorem '{e.name}'" e.statement
     theoremsByName := theoremsByName.insert e.name e
   let mut certificatesByName : Std.HashMap KName KernelLFCertificateEntry := {}
   let mut certificatesByCertificateName : Std.HashMap KName KernelLFCertificateEntry := {}
@@ -608,6 +697,7 @@ def ofContext (ctx : KernelLFCheckContext) : Except String ValidatedReplayContex
       throw s!"checked replay context has duplicate certificate entry '{e.name}'"
     if certificatesByCertificateName.contains e.certificateName then
       throw s!"checked replay context has duplicate certificate token '{e.certificateName}'"
+    Judgment.ensureLocallyClosed s!"checked replay certificate '{e.name}'" e.statement
     certificatesByName := certificatesByName.insert e.name e
     certificatesByCertificateName := certificatesByCertificateName.insert e.certificateName e
   let mut conversionCertificatesByCertificateName :
@@ -616,6 +706,8 @@ def ofContext (ctx : KernelLFCheckContext) : Except String ValidatedReplayContex
     if conversionCertificatesByCertificateName.contains e.certificateName then
       throw s!"checked replay context has duplicate conversion certificate token \
         '{e.certificateName}'"
+    ConversionStatement.ensureLocallyClosed
+      s!"checked replay conversion certificate '{e.certificateName}'" e.statement
     conversionCertificatesByCertificateName :=
       conversionCertificatesByCertificateName.insert e.certificateName e
   pure {
@@ -777,6 +869,9 @@ namespace CheckedKernelLFConversionCertificate
 def checkDetailed (signature : Signature) (context : KernelLFCheckContext)
     (statement : ConversionStatement) (certificate : KernelLFConversionCertificate) :
     Except ConversionCheckFailure CheckedKernelLFConversionCertificate := do
+  match ConversionStatement.ensureLocallyClosed "checked conversion statement" statement with
+  | .ok () => pure ()
+  | .error err => KernelLFConversionCertificate.throwFailure .malformedCertificate err
   let sig ←
     match ValidatedSignature.ofSignature signature with
     | .ok sig => pure sig
@@ -832,7 +927,7 @@ def validateRuleApplicationAgainstRule (sig : ValidatedSignature) (ruleName : KN
   let expectedConclusion ← r.instantiateConclusion inst.asInstantiation
   if !concl.alphaEq expectedConclusion then
     throw s!"rule application '{ruleName}' has a concl different from the instantiated \
-      rule conclusion"
+      rule conclusion: got {repr concl}; expected {repr expectedConclusion}"
   if premiseCount != r.premises.length then
     throw s!"rule application '{ruleName}' has {premiseCount} premise(s), expected \
       {r.premises.length}"
@@ -894,7 +989,8 @@ partial def checkWithValidatedContextCore (ctx : ValidatedReplayContext) (sig :
       validateCertificateWithContext ctx name stmt certificateName
   | .ruleApp ruleName concl inst premises certificateNames, expected => do
       if !concl.alphaEq expected then
-        throw s!"rule application '{ruleName}' has an unexpected conclusion"
+        throw s!"rule application '{ruleName}' has an unexpected conclusion: got {repr concl}; \
+          expected {repr expected}"
       let r ←
         match sig.rulesByName[ruleName]? with
         | some r => pure r
@@ -932,6 +1028,7 @@ def check (checked : CheckedKernelLFDerivation) : Except String Unit := do
 /-- Build a checked structural replay wrapper from a raw structural payload. -/
 def ofReplay (signature : Signature) (context : KernelLFCheckContext) (statement : Judgment)
     (derivation : KernelLFDerivation) : Except String CheckedKernelLFDerivation := do
+  Judgment.ensureLocallyClosed "checked replay wrapper statement" statement
   let sig ← ValidatedSignature.ofSignature signature
   let ctx ← ValidatedReplayContext.ofContext context
   KernelLFDerivation.checkWithValidatedContext ctx sig derivation statement
@@ -956,6 +1053,7 @@ namespace KernelLFReplayCertificate
 
 /-- Validate a compact structural replay certificate. -/
 def check (cert : KernelLFReplayCertificate) : Except String Unit := do
+  Judgment.ensureLocallyClosed "kernel replay certificate statement" cert.statement
   let ctx ← ValidatedReplayContext.ofContext cert.context
   let sig ← ValidatedSignature.ofSignature cert.signature
   KernelLFDerivation.checkWithValidatedContext ctx sig cert.derivation cert.statement
@@ -965,6 +1063,185 @@ def toChecked (cert : KernelLFReplayCertificate) : Except String CheckedKernelLF
   CheckedKernelLFDerivation.ofReplay cert.signature cert.context cert.statement cert.derivation
 
 end KernelLFReplayCertificate
+
+/-- Find a structural rule by name together with its source-order membership proof. -/
+def findRuleWithProof? (sig : Signature) (name : KName) :
+    Option { r : RuleSchema // r ∈ sig.rules } :=
+  let rec go : (rules : List RuleSchema) → Option { r : RuleSchema // r ∈ rules }
+    | [] => none
+    | r :: rs =>
+        if r.name == name then
+          some ⟨r, List.Mem.head _⟩
+        else
+          match go rs with
+          | some ⟨r', h⟩ => some ⟨r', List.Mem.tail _ h⟩
+          | none => none
+  go sig.rules
+
+/-- Find a theorem entry by name together with its source-order membership proof. -/
+def findTheoremEntryInListWithProof? (name : KName) :
+    (entries : List KernelLFTheoremEntry) →
+      Option { e : KernelLFTheoremEntry // e ∈ entries }
+  | [] => none
+  | e :: es =>
+      if e.name == name then
+        some ⟨e, List.Mem.head _⟩
+      else
+        match findTheoremEntryInListWithProof? name es with
+        | some ⟨e', h⟩ => some ⟨e', List.Mem.tail _ h⟩
+        | none => none
+
+/-- Find a certificate entry by name together with its source-order membership proof. -/
+def findCertificateEntryInListWithProof? (name : KName) :
+    (entries : List KernelLFCertificateEntry) →
+      Option { e : KernelLFCertificateEntry // e ∈ entries }
+  | [] => none
+  | e :: es =>
+      if e.name == name then
+        some ⟨e, List.Mem.head _⟩
+      else
+        match findCertificateEntryInListWithProof? name es with
+        | some ⟨e', h⟩ => some ⟨e', List.Mem.tail _ h⟩
+        | none => none
+
+namespace KernelLFDerivation
+
+mutual
+  /-- Context-relative structural replay evidence after executable validation. -/
+  inductive ContextDeriv (sig : Signature) (ctx : KernelLFCheckContext) :
+      Judgment → Type 1 where
+    | assumption (e : KernelLFTheoremEntry) :
+        e ∈ ctx.assumptions → ContextDeriv sig ctx e.statement
+    | theorem (e : KernelLFTheoremEntry) :
+        e ∈ ctx.theorems → ContextDeriv sig ctx e.statement
+    | certificate (e : KernelLFCertificateEntry) :
+        e ∈ ctx.certificates → ContextDeriv sig ctx e.statement
+    | rule (r : RuleSchema) (σ : KInstantiation) (concl : Judgment) :
+        r ∈ sig.rules →
+        r.instantiateConclusion σ = .ok concl →
+        ContextDerivList sig ctx σ r.premises →
+        ContextDeriv sig ctx concl
+
+  /-- Context-relative evidence for instantiated structural replay premises. -/
+  inductive ContextDerivList (sig : Signature) (ctx : KernelLFCheckContext) :
+      KInstantiation → List Judgment → Type 1 where
+    | nil {σ : KInstantiation} : ContextDerivList sig ctx σ []
+    | cons {σ : KInstantiation} {p : Judgment} {ps : List Judgment} {p' : Judgment} :
+        p.instantiateMetas σ = .ok p' →
+        ContextDeriv sig ctx p' →
+        ContextDerivList sig ctx σ ps →
+        ContextDerivList sig ctx σ (p :: ps)
+end
+
+noncomputable section ContextDerivProducer
+
+mutual
+  /-- Extract context-relative structural evidence from a replay tree.
+
+  Use `CheckedKernelLFDerivation.toContextDeriv?` at trust boundaries; it re-runs the executable
+  replay check before calling this producer. -/
+  partial def toContextDeriv? (ctx : KernelLFCheckContext) (sig : Signature) :
+      (d : KernelLFDerivation) → Except String (ContextDeriv sig ctx d.statement)
+    | .assumption name stmt => do
+        let some ⟨entry, hmem⟩ := findTheoremEntryInListWithProof? name ctx.assumptions
+          | throw s!"local theorem assumption '{name}' is not available in the checked replay \
+              context"
+        let _ : DecidableEq Judgment := Classical.typeDecidableEq Judgment
+        if h : entry.statement = stmt then
+          pure (h ▸ ContextDeriv.assumption entry hmem)
+        else
+          throw s!"local theorem assumption '{name}' has a statement different from the replay \
+            context"
+    | .theoremRef name stmt => do
+        let some ⟨entry, hmem⟩ := findTheoremEntryInListWithProof? name ctx.theorems
+          | throw s!"theorem reference '{name}' is not available in the checked replay context"
+        let _ : DecidableEq Judgment := Classical.typeDecidableEq Judgment
+        if h : entry.statement = stmt then
+          pure (h ▸ ContextDeriv.theorem entry hmem)
+        else
+          throw s!"theorem reference '{name}' has a statement different from the replay context"
+    | .certificate name stmt certificateName => do
+        let some ⟨entry, hmem⟩ := findCertificateEntryInListWithProof? name ctx.certificates
+          | throw s!"certificate-backed derivation '{name}' is not available in the checked \
+              certificate context"
+        if entry.certificateName != certificateName then
+          throw s!"certificate-backed derivation '{name}' uses certificate '{certificateName}', \
+            expected '{entry.certificateName}'"
+        let _ : DecidableEq Judgment := Classical.typeDecidableEq Judgment
+        if h : entry.statement = stmt then
+          pure (h ▸ ContextDeriv.certificate entry hmem)
+        else
+          throw s!"certificate-backed derivation '{name}' has a statement different from the \
+            certificate context"
+    | .ruleApp ruleName concl inst premises certificateNames => do
+        let some ⟨r, hr⟩ := findRuleWithProof? sig ruleName
+          | throw s!"rule application uses unknown rule '{ruleName}'"
+        match ValidatedSignature.ofSignature sig with
+        | .error err => throw err
+        | .ok validatedSig =>
+            match validateRuleApplicationAgainstRule validatedSig ruleName r concl inst
+                premises.length certificateNames with
+            | .ok () => pure PUnit.unit
+            | .error err => throw err
+            let σ := inst.asInstantiation
+            let premiseDerivs ← toContextDerivList? ctx sig σ premises r.premises
+            let _ : DecidableEq Judgment := Classical.typeDecidableEq Judgment
+            match hInst : r.instantiateConclusion σ with
+            | .ok expected =>
+                if h : expected = concl then
+                  pure (h ▸ ContextDeriv.rule r σ expected hr hInst premiseDerivs)
+                else
+                  throw s!"rule application '{ruleName}' has an unexpected conclusion"
+            | .error err => throw err
+
+  /-- Extract context-relative evidence for a list of replay premise trees. -/
+  partial def toContextDerivList? (ctx : KernelLFCheckContext) (sig : Signature)
+      (σ : KInstantiation) :
+      (ds : List KernelLFDerivation) → (ps : List Judgment) →
+        Except String (ContextDerivList sig ctx σ ps)
+    | [], [] => pure ContextDerivList.nil
+    | d :: ds, p :: ps => do
+        let rest ← toContextDerivList? ctx sig σ ds ps
+        let dDeriv ← toContextDeriv? ctx sig d
+        let _ : DecidableEq Judgment := Classical.typeDecidableEq Judgment
+        match hInst : p.instantiateMetas σ with
+        | .ok expected =>
+            if h : d.statement = expected then
+              pure (ContextDerivList.cons hInst (h ▸ dDeriv) rest)
+            else
+              throw s!"premise replay has an unexpected statement"
+        | .error err => throw err
+    | ds, ps =>
+        throw s!"context derivation producer has {ds.length} premise derivation(s), expected \
+          {ps.length}"
+end
+
+end ContextDerivProducer
+
+end KernelLFDerivation
+
+namespace CheckedKernelLFDerivation
+
+noncomputable section ContextDerivProducer
+
+/-- Produce context-relative structural evidence after re-running executable replay validation. -/
+def toContextDeriv? (checked : CheckedKernelLFDerivation) :
+    Except String
+      (KernelLFDerivation.ContextDeriv checked.signature checked.context checked.statement) :=
+  match checked.check with
+  | .error err => throw err
+  | .ok () => do
+      let derivation ← KernelLFDerivation.toContextDeriv? checked.context checked.signature
+        checked.derivation
+      let _ : DecidableEq Judgment := Classical.typeDecidableEq Judgment
+      if h : checked.derivation.statement = checked.statement then
+        pure (h ▸ derivation)
+      else
+        throw "checked replay wrapper statement differs from its derivation statement"
+
+end ContextDerivProducer
+
+end CheckedKernelLFDerivation
 
 /-- Interpretation data for structural replay premises. -/
 def InterpPremises (interpJudgment : Judgment → Type) (σ : KInstantiation) :
@@ -981,10 +1258,11 @@ structure Model (sig : Signature) where
   interpRule :
     (r : RuleSchema) →
     (σ : KInstantiation) →
+    (concl : Judgment) →
     r ∈ sig.rules →
+    r.instantiateConclusion σ = .ok concl →
     InterpPremises interpJudgment σ r.premises →
-    interpJudgment
-      (match r.instantiateConclusion σ with | .ok j => j | .error _ => r.conclusionStmt)
+    interpJudgment concl
 
 /-- Semantic model for a structural signature and replay context. -/
 structure ContextModel (sig : Signature) (ctx : KernelLFCheckContext) extends Model sig where
@@ -993,12 +1271,40 @@ structure ContextModel (sig : Signature) (ctx : KernelLFCheckContext) extends Mo
   interpCertificate :
     (e : KernelLFCertificateEntry) → e ∈ ctx.certificates → interpJudgment e.statement
 
+namespace KernelLFDerivation
+
+mutual
+  /-- Interpret context-relative structural replay evidence in a context model. -/
+  def ContextDeriv.interp {sig : Signature} {ctx : KernelLFCheckContext}
+      (M : ContextModel sig ctx) :
+      {J : Judgment} → ContextDeriv sig ctx J → M.interpJudgment J
+    | _, .assumption e h => M.interpAssumption e h
+    | _, .theorem e h => M.interpTheorem e h
+    | _, .certificate e h => M.interpCertificate e h
+    | _, .rule r σ concl hr hInst premises =>
+        M.interpRule r σ concl hr hInst (ContextDerivList.interp M premises)
+
+  /-- Interpret context-relative structural replay evidence for a premise list. -/
+  def ContextDerivList.interp {sig : Signature} {ctx : KernelLFCheckContext}
+      (M : ContextModel sig ctx) :
+      {σ : KInstantiation} → {ps : List Judgment} → ContextDerivList sig ctx σ ps →
+        InterpPremises M.interpJudgment σ ps
+    | _, [], .nil => PUnit.unit
+    | _, _ :: _, .cons hInst d ds => by
+        dsimp [InterpPremises]
+        rw [hInst]
+        exact ⟨ContextDeriv.interp M d, ContextDerivList.interp M ds⟩
+end
+
+end KernelLFDerivation
+
 namespace RawLowering
 
 /-- Metadata used while decoding old raw terms for Phase-5b dual replay. -/
 structure Context where
   binders : List (Option KLocalName) := []
   metas : Std.HashMap KName RawMetaSort := {}
+  heads : Std.HashMap KName KHeadKind := {}
 
 /-- Look up a de Bruijn index in a raw-lowering context. -/
 def findBinder? (ctx : Context) (name : KLocalName) : Option Nat :=
@@ -1017,8 +1323,9 @@ def pushAnonymousBinder (ctx : Context) : Context :=
   { ctx with binders := none :: ctx.binders }
 
 /-- Decode a non-structural old raw head kind. -/
-def oldHead (name : Name) (kind : KHeadKind := .primitive) : KTerm :=
-  .ident { name := KName.ofName name, kind := kind }
+def oldHead (ctx : Context) (name : Name) (kind : KHeadKind := .primitive) : KTerm :=
+  let k := KName.ofName name
+  .ident { name := k, kind := (ctx.heads[k]?).getD kind }
 
 /-- Decode an old raw local/metavariable reference. -/
 def lowerRef (ctx : Context) (name : Name) (_fallbackSort : RawMetaSort := .arg) : KTerm :=
@@ -1043,16 +1350,16 @@ partial def lowerLam (ctx : Context) (binders : List Raw) (body : Raw) : KTerm :
       let ctx' := names.foldl (fun c n => pushBinder c n) ctx
       let body := lowerRaw ctx' body
       names.foldr (fun _ acc => .lam acc) body
-  | none => KTerm.mkApps (oldHead `lam) ((binders ++ [body]).map (lowerRaw ctx))
+  | none => KTerm.mkApps (oldHead ctx `lam) ((binders ++ [body]).map (lowerRaw ctx))
 
 /-- Decode old raw syntax into structural KTerms for dual replay. -/
 partial def lowerRaw (ctx : Context) : Raw → KTerm
-  | .ctxNil => oldHead `emptyCtx
+  | .ctxNil => oldHead ctx `emptyCtx
   | .ctxMeta x => lowerRef { ctx with metas := ctx.metas.insert (KName.ofName x) .ctx } x .ctx
-  | .ctxExt Γ A => KTerm.mkApps (oldHead `ctxExt) [lowerRaw ctx Γ, lowerRaw ctx A]
+  | .ctxExt Γ A => KTerm.mkApps (oldHead ctx `ctxExt) [lowerRaw ctx Γ, lowerRaw ctx A]
   | .tyMeta x => lowerRef { ctx with metas := ctx.metas.insert (KName.ofName x) .ty } x .ty
   | .tyConst `Type => .univ .zero
-  | .tyConst c => oldHead c .syntaxSort
+  | .tyConst c => oldHead ctx c .syntaxSort
   | .tyApp `Type [.leanParam u] => .univ (.param u.eraseMacroScopes)
   | .tyApp `arrow [A, .tmApp `lam bindersAndBody] =>
       match bindersAndBody.reverse with
@@ -1060,9 +1367,9 @@ partial def lowerRaw (ctx : Context) : Raw → KTerm
           match revBinders.reverse with
           | [.leanParam x] => .arrow (lowerRaw ctx A) (lowerRaw (pushBinder ctx x) body)
           | _ =>
-              KTerm.mkApps (oldHead `arrow)
+              KTerm.mkApps (oldHead ctx `arrow)
                 [lowerRaw ctx A, lowerRaw ctx (.tmApp `lam bindersAndBody)]
-      | [] => KTerm.mkApps (oldHead `arrow) [lowerRaw ctx A]
+      | [] => KTerm.mkApps (oldHead ctx `arrow) [lowerRaw ctx A]
   | .tyApp `arrow [A, B] => .arrow (lowerRaw ctx A) (lowerRaw (pushAnonymousBinder ctx) B)
   | .tyApp `sigma [A, .tmApp `lam bindersAndBody] =>
       match bindersAndBody.reverse with
@@ -1070,35 +1377,35 @@ partial def lowerRaw (ctx : Context) : Raw → KTerm
           match revBinders.reverse with
           | [.leanParam x] => .sigma (lowerRaw ctx A) (lowerRaw (pushBinder ctx x) body)
           | _ =>
-              KTerm.mkApps (oldHead `sigma)
+              KTerm.mkApps (oldHead ctx `sigma)
                 [lowerRaw ctx A, lowerRaw ctx (.tmApp `lam bindersAndBody)]
-      | [] => KTerm.mkApps (oldHead `sigma) [lowerRaw ctx A]
+      | [] => KTerm.mkApps (oldHead ctx `sigma) [lowerRaw ctx A]
   | .tyApp `sigma [A, B] => .sigma (lowerRaw ctx A) (lowerRaw (pushAnonymousBinder ctx) B)
-  | .tyApp f args => KTerm.mkApps (oldHead f .syntaxSort) (args.map (lowerRaw ctx))
-  | .tySubst A τ => KTerm.mkApps (oldHead `tySubst) [lowerRaw ctx A, lowerRaw ctx τ]
+  | .tyApp f args => KTerm.mkApps (oldHead ctx f .syntaxSort) (args.map (lowerRaw ctx))
+  | .tySubst A τ => KTerm.mkApps (oldHead ctx `tySubst) [lowerRaw ctx A, lowerRaw ctx τ]
   | .tmVar i => .bvar i
   | .tmMeta x => lowerRef { ctx with metas := ctx.metas.insert (KName.ofName x) .tm } x .tm
-  | .tmConst c => oldHead c
+  | .tmConst c => oldHead ctx c
   | .tmApp `lam args =>
       match args.reverse with
       | body :: revBinders => lowerLam ctx revBinders.reverse body
-      | [] => oldHead `lam
+      | [] => oldHead ctx `lam
   | .tmApp `_app (fn :: args) => KTerm.mkApps (lowerRaw ctx fn) (args.map (lowerRaw ctx))
   | .tmApp `pair [a, b] => .pair (lowerRaw ctx a) (lowerRaw ctx b)
   | .tmApp `fst [e] => .fst (lowerRaw ctx e)
   | .tmApp `snd [e] => .snd (lowerRaw ctx e)
   | .tmApp `jeq [lhs, rhs] => .jeq (lowerRaw ctx lhs) (lowerRaw ctx rhs)
-  | .tmApp f args => KTerm.mkApps (oldHead f) (args.map (lowerRaw ctx))
-  | .tmSubst t τ => KTerm.mkApps (oldHead `tmSubst) [lowerRaw ctx t, lowerRaw ctx τ]
-  | .substId Γ => KTerm.mkApps (oldHead `substId) [lowerRaw ctx Γ]
+  | .tmApp f args => KTerm.mkApps (oldHead ctx f) (args.map (lowerRaw ctx))
+  | .tmSubst t τ => KTerm.mkApps (oldHead ctx `tmSubst) [lowerRaw ctx t, lowerRaw ctx τ]
+  | .substId Γ => KTerm.mkApps (oldHead ctx `substId) [lowerRaw ctx Γ]
   | .substMeta x =>
       lowerRef { ctx with metas := ctx.metas.insert (KName.ofName x) .subst } x .subst
-  | .substComp τ υ => KTerm.mkApps (oldHead `substComp) [lowerRaw ctx τ, lowerRaw ctx υ]
-  | .substEmpty => oldHead `substEmpty
-  | .substExt τ t => KTerm.mkApps (oldHead `substExt) [lowerRaw ctx τ, lowerRaw ctx t]
+  | .substComp τ υ => KTerm.mkApps (oldHead ctx `substComp) [lowerRaw ctx τ, lowerRaw ctx υ]
+  | .substEmpty => oldHead ctx `substEmpty
+  | .substExt τ t => KTerm.mkApps (oldHead ctx `substExt) [lowerRaw ctx τ, lowerRaw ctx t]
   | .scopedBind zone cls x ty body =>
-      KTerm.mkApps (oldHead `scopedBind)
-        [oldHead zone, oldHead cls, lowerRaw ctx ty, lowerRaw (pushBinder ctx x) body]
+      KTerm.mkApps (oldHead ctx `scopedBind)
+        [oldHead ctx zone, oldHead ctx cls, lowerRaw ctx ty, lowerRaw (pushBinder ctx x) body]
   | .leanParam x => lowerRef ctx x
 
 end
@@ -1118,6 +1425,22 @@ def lowerRawClosed (raw : Raw) : KTerm :=
 /-- Decode old raw syntax with a schema metavariable map. -/
 def lowerRawWithMetas (metas : Std.HashMap KName RawMetaSort) (raw : Raw) : KTerm :=
   lowerRaw { metas := metas } raw
+
+/-- Head-kind hints available from a structural replay signature. -/
+def headKindsOfSignature (sig : Signature) : Std.HashMap KName KHeadKind := Id.run do
+  let mut out : Std.HashMap KName KHeadKind := {}
+  for c in sig.constants do
+    out := out.insert c.name c.kind
+  return out
+
+/-- Decode old raw syntax with metavariable and head-kind metadata. -/
+def lowerRawWithMetasAndHeads (metas : Std.HashMap KName RawMetaSort)
+    (heads : Std.HashMap KName KHeadKind) (raw : Raw) : KTerm :=
+  lowerRaw { metas := metas, heads := heads } raw
+
+/-- Decode old raw syntax using head-kind hints from a structural signature. -/
+def lowerRawWithSignature (sig : Signature) (raw : Raw) : KTerm :=
+  lowerRaw { heads := headKindsOfSignature sig } raw
 
 end RawLowering
 
@@ -1150,6 +1473,45 @@ def Judgment.ofOldWithMetas (metas : Std.HashMap KName RawMetaSort) :
 /-- Convert an old raw-kernel judgment with no schema metavariable metadata. -/
 def Judgment.ofOld (j : _root_.InternalLean.Judgment) : Judgment :=
   Judgment.ofOldWithMetas {} j
+
+/-- Convert an old raw-kernel judgment with schema metavariables and head-kind hints. -/
+def Judgment.ofOldWithMetasAndHeads (metas : Std.HashMap KName RawMetaSort)
+    (heads : Std.HashMap KName KHeadKind) : _root_.InternalLean.Judgment → Judgment
+  | .wfCtx Γ =>
+      { head := KName.ofName `wfCtx
+        args := [RawLowering.lowerRawWithMetasAndHeads metas heads Γ] }
+  | .wfTy Γ A =>
+      { head := KName.ofName `wfTy
+        args := [RawLowering.lowerRawWithMetasAndHeads metas heads Γ,
+          RawLowering.lowerRawWithMetasAndHeads metas heads A] }
+  | .wfTm Γ t A =>
+      { head := KName.ofName `wfTm
+        args := [RawLowering.lowerRawWithMetasAndHeads metas heads Γ,
+          RawLowering.lowerRawWithMetasAndHeads metas heads t,
+          RawLowering.lowerRawWithMetasAndHeads metas heads A] }
+  | .wfSubst Δ τ Γ =>
+      { head := KName.ofName `wfSubst
+        args := [RawLowering.lowerRawWithMetasAndHeads metas heads Δ,
+          RawLowering.lowerRawWithMetasAndHeads metas heads τ,
+          RawLowering.lowerRawWithMetasAndHeads metas heads Γ] }
+  | .eqTy Γ A B =>
+      { head := KName.ofName `eqTy
+        args := [RawLowering.lowerRawWithMetasAndHeads metas heads Γ,
+          RawLowering.lowerRawWithMetasAndHeads metas heads A,
+          RawLowering.lowerRawWithMetasAndHeads metas heads B] }
+  | .eqTm Γ t u A =>
+      { head := KName.ofName `eqTm
+        args := [RawLowering.lowerRawWithMetasAndHeads metas heads Γ,
+          RawLowering.lowerRawWithMetasAndHeads metas heads t,
+          RawLowering.lowerRawWithMetasAndHeads metas heads u,
+          RawLowering.lowerRawWithMetasAndHeads metas heads A] }
+  | .custom k args =>
+      { head := KName.ofName k
+        args := args.map (RawLowering.lowerRawWithMetasAndHeads metas heads) }
+
+/-- Convert an old raw-kernel judgment using head-kind hints from a structural signature. -/
+def Judgment.ofOldWithSignature (sig : Signature) (j : _root_.InternalLean.Judgment) : Judgment :=
+  Judgment.ofOldWithMetasAndHeads {} (RawLowering.headKindsOfSignature sig) j
 
 /-- Convert an old rule metavariable schema. -/
 def RuleMetaVar.ofOld (metas : Std.HashMap KName RawMetaSort)
@@ -1188,10 +1550,25 @@ def ScopedInstantiationEntry.ofOld (e : _root_.InternalLean.ScopedInstantiationE
     evidence? := e.evidence?.map Judgment.ofOld
     value := RawLowering.lowerRawClosed e.value }
 
+/-- Convert an old scoped-instantiation entry with structural signature head-kind hints. -/
+def ScopedInstantiationEntry.ofOldWithSignature (sig : Signature)
+    (e : _root_.InternalLean.ScopedInstantiationEntry) : ScopedInstantiationEntry :=
+  { name := KName.ofName e.name
+    sort := e.sort
+    zone? := e.zone?.map KName.ofName
+    type? := e.type?.map (RawLowering.lowerRawWithSignature sig)
+    evidence? := e.evidence?.map (Judgment.ofOldWithSignature sig)
+    value := RawLowering.lowerRawWithSignature sig e.value }
+
 /-- Convert an old scoped instantiation. -/
 def ScopedInstantiation.ofOld (σ : _root_.InternalLean.ScopedInstantiation) :
     ScopedInstantiation :=
   { entries := σ.entries.map ScopedInstantiationEntry.ofOld }
+
+/-- Convert an old scoped instantiation with structural signature head-kind hints. -/
+def ScopedInstantiation.ofOldWithSignature (sig : Signature)
+    (σ : _root_.InternalLean.ScopedInstantiation) : ScopedInstantiation :=
+  { entries := σ.entries.map (ScopedInstantiationEntry.ofOldWithSignature sig) }
 
 /-- Convert an old typed LF constant schema. -/
 def LFConstantSchema.ofOld (c : _root_.InternalLean.LFConstantSchema) : LFConstantSchema :=
@@ -1243,11 +1620,23 @@ def KernelLFTheoremEntry.ofOld (e : _root_.InternalLean.KernelLFTheoremEntry) :
     KernelLFTheoremEntry :=
   { name := KName.ofName e.name, statement := Judgment.ofOld e.statement }
 
+/-- Convert an old theorem entry with structural signature head-kind hints. -/
+def KernelLFTheoremEntry.ofOldWithSignature (sig : Signature)
+    (e : _root_.InternalLean.KernelLFTheoremEntry) : KernelLFTheoremEntry :=
+  { name := KName.ofName e.name, statement := Judgment.ofOldWithSignature sig e.statement }
+
 /-- Convert an old external certificate entry. -/
 def KernelLFCertificateEntry.ofOld (e : _root_.InternalLean.KernelLFCertificateEntry) :
     KernelLFCertificateEntry :=
   { name := KName.ofName e.name
     statement := Judgment.ofOld e.statement
+    certificateName := KName.ofName e.certificateName }
+
+/-- Convert an old external certificate entry with structural signature head-kind hints. -/
+def KernelLFCertificateEntry.ofOldWithSignature (sig : Signature)
+    (e : _root_.InternalLean.KernelLFCertificateEntry) : KernelLFCertificateEntry :=
+  { name := KName.ofName e.name
+    statement := Judgment.ofOldWithSignature sig e.statement
     certificateName := KName.ofName e.certificateName }
 
 /-- Convert an old conversion statement. -/
@@ -1276,6 +1665,16 @@ def KernelLFCheckContext.ofOld (ctx : _root_.InternalLean.KernelLFCheckContext) 
     conversionCertificates :=
       ctx.conversionCertificates.map KernelLFConversionCertificateEntry.ofOld }
 
+/-- Convert an old replay context with structural signature head-kind hints. -/
+def KernelLFCheckContext.ofOldWithSignature (sig : Signature)
+    (ctx : _root_.InternalLean.KernelLFCheckContext) : KernelLFCheckContext :=
+  { localParameters := ctx.localParameters.map KLocalName.ofName
+    assumptions := ctx.assumptions.map (KernelLFTheoremEntry.ofOldWithSignature sig)
+    theorems := ctx.theorems.map (KernelLFTheoremEntry.ofOldWithSignature sig)
+    certificates := ctx.certificates.map (KernelLFCertificateEntry.ofOldWithSignature sig)
+    conversionCertificates :=
+      ctx.conversionCertificates.map KernelLFConversionCertificateEntry.ofOld }
+
 namespace KernelLFDerivation
 
 /-- Convert an old raw-kernel derivation to a structural derivation for dual replay. -/
@@ -1287,6 +1686,21 @@ partial def ofOld : _root_.InternalLean.KernelLFDerivation → KernelLFDerivatio
   | .ruleApp ruleName concl inst premises certificateNames =>
       .ruleApp (KName.ofName ruleName) (Judgment.ofOld concl) (ScopedInstantiation.ofOld inst)
         (premises.map ofOld) (certificateNames.map KName.ofName)
+
+/-- Convert an old raw-kernel derivation using structural signature head-kind hints. -/
+partial def ofOldWithSignature (sig : Signature) :
+    _root_.InternalLean.KernelLFDerivation → KernelLFDerivation
+  | .assumption name stmt =>
+      .assumption (KName.ofName name) (Judgment.ofOldWithSignature sig stmt)
+  | .theoremRef name stmt =>
+      .theoremRef (KName.ofName name) (Judgment.ofOldWithSignature sig stmt)
+  | .certificate name stmt certificateName =>
+      .certificate (KName.ofName name) (Judgment.ofOldWithSignature sig stmt)
+        (KName.ofName certificateName)
+  | .ruleApp ruleName concl inst premises certificateNames =>
+      .ruleApp (KName.ofName ruleName) (Judgment.ofOldWithSignature sig concl)
+        (ScopedInstantiation.ofOldWithSignature sig inst) (premises.map (ofOldWithSignature sig))
+        (certificateNames.map KName.ofName)
 
 end KernelLFDerivation
 

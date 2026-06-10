@@ -38,6 +38,16 @@ def appendObjectDef (cache : CompiledLFCheckCache) (d : CheckedLFObjectDef) :
   let defName := d.name.eraseMacroScopes
   let checkedLFDefValues := cache.checkedLFDefValues.insert defName d.checkedValue
   let kernelConst := checkedLFObjectDefToKernelConstant checkedLFDefValues d
+  let structuralKernelSig :=
+    match checkedLFObjectDefToKConstant checkedLFDefValues d with
+    | .ok c => { cache.structuralKernelSig with
+        constants := cache.structuralKernelSig.constants ++ [c] }
+    | .error _ => cache.structuralKernelSig
+  let structuralKernelSigExpanded :=
+    match checkedLFObjectDefToKConstant checkedLFDefValues d with
+    | .ok c => { cache.structuralKernelSigExpanded with
+        constants := cache.structuralKernelSigExpanded.constants ++ [c] }
+    | .error _ => cache.structuralKernelSigExpanded
   { cache with
     stamp := { cache.stamp with objectDefCount := cache.stamp.objectDefCount + 1 }
     checkedHL := cache.checkedHL.appendBlock { lfObjectDefs := #[checkedLFObjectDefToHLDecl d] }
@@ -47,14 +57,22 @@ def appendObjectDef (cache : CompiledLFCheckCache) (d : CheckedLFObjectDef) :
     knownLFDefTypes := cache.knownLFDefTypes.insert defName (eraseObjExprScopes d.typeExpr)
     knownLFDefValues := cache.knownLFDefValues.insert defName (eraseObjExprScopes d.value)
     checkedLFDefValues := checkedLFDefValues
-    kernelSig := { cache.kernelSig with constants := cache.kernelSig.constants ++ [kernelConst] } }
+    kernelSig := { cache.kernelSig with constants := cache.kernelSig.constants ++ [kernelConst] }
+    structuralKernelSig := structuralKernelSig
+    structuralKernelSigExpanded := structuralKernelSigExpanded }
 
 /-- Append a checked LF judgment theorem to a compiled LF checking cache. -/
 def appendJudgmentTheorem (cache : CompiledLFCheckCache) (t : CheckedLFJudgmentTheorem) :
     CompiledLFCheckCache :=
   let theoremName := t.name.eraseMacroScopes
   let kernelRule := kernelLFRuleSchemaOfTheorem cache.checkedLFDefValues t
+  let structuralRule? := kernelLFRuleSchemaOfTheoremToK false cache.checkedLFDefValues t
+  let structuralRuleExpanded? := kernelLFRuleSchemaOfTheoremToK true cache.checkedLFDefValues t
   let certificateEntries := kernelLFCertificateEntriesOfTheorems #[t]
+  let structuralCertificateEntries :=
+    match kernelLFCertificateEntriesOfTheoremsToK #[t] with
+    | .ok entries => entries
+    | .error _ => []
   let replayCtx := { cache.kernelReplayBase with
     certificates := cache.kernelReplayBase.certificates ++ certificateEntries }
   let replayCtx :=
@@ -64,6 +82,28 @@ def appendJudgmentTheorem (cache : CompiledLFCheckCache) (t : CheckedLFJudgmentT
       | none => replayCtx
     else
       replayCtx
+  let structuralReplayCtx := { cache.structuralKernelReplayBase with
+    certificates := cache.structuralKernelReplayBase.certificates ++ structuralCertificateEntries }
+  let structuralReplayCtx :=
+    if t.binders.isEmpty then
+      match checkedLFJudgmentTheoremStatementToK t with
+      | .ok stmt => { structuralReplayCtx with
+          theorems := structuralReplayCtx.theorems ++ [{
+            name := Kernel.KName.ofName t.name
+            statement := stmt }] }
+      | .error _ => structuralReplayCtx
+    else
+      structuralReplayCtx
+  let structuralKernelSig :=
+    match structuralRule? with
+    | .ok r => { cache.structuralKernelSig with
+        rules := cache.structuralKernelSig.rules ++ [r] }
+    | .error _ => cache.structuralKernelSig
+  let structuralKernelSigExpanded :=
+    match structuralRuleExpanded? with
+    | .ok r => { cache.structuralKernelSigExpanded with
+        rules := cache.structuralKernelSigExpanded.rules ++ [r] }
+    | .error _ => cache.structuralKernelSigExpanded
   let availableStatements :=
     if t.binders.isEmpty then
       let stmt := match t.derivation? with
@@ -82,7 +122,10 @@ def appendJudgmentTheorem (cache : CompiledLFCheckCache) (t : CheckedLFJudgmentT
     availableLFTheoremStatements := availableStatements
     availableLFTheoremNames := cache.availableLFTheoremNames.insert theoremName
     kernelSig := { cache.kernelSig with rules := cache.kernelSig.rules ++ [kernelRule] }
-    kernelReplayBase := replayCtx }
+    kernelReplayBase := replayCtx
+    structuralKernelSig := structuralKernelSig
+    structuralKernelSigExpanded := structuralKernelSigExpanded
+    structuralKernelReplayBase := structuralReplayCtx }
 
 end CompiledLFCheckCache
 
@@ -821,6 +864,24 @@ def appendDelta (cache : CompiledLFCheckCache) (checkedHLAfter : HLSignature)
   let (availableStatements, availableNames) :=
     appendDeltaTheoremAvailability cache.availableLFTheoremStatements
       cache.availableLFTheoremNames delta
+  let structuralKernelSig :=
+    match checkedSignatureToKSignature checkedAfter.name checkedAfter.lfSyntaxDefs
+        checkedAfter.lfOpaqueConsts checkedAfter.lfContextZones checkedAfter.lfBinderClasses
+        checkedAfter.lfConversionPlugins checkedAfter.lfRuleSchemas checkedAfter.lfObjectDefs
+        checkedAfter.lfJudgmentTheorems with
+    | .ok sig => sig
+    | .error _ => cache.structuralKernelSig
+  let structuralKernelSigExpanded :=
+    match checkedSignatureToKSignature checkedAfter.name checkedAfter.lfSyntaxDefs
+        checkedAfter.lfOpaqueConsts checkedAfter.lfContextZones checkedAfter.lfBinderClasses
+        checkedAfter.lfConversionPlugins checkedAfter.lfRuleSchemas checkedAfter.lfObjectDefs
+        checkedAfter.lfJudgmentTheorems true with
+    | .ok sig => sig
+    | .error _ => cache.structuralKernelSigExpanded
+  let structuralKernelReplayBase :=
+    match kernelLFReplayContextOfTheoremsToK checkedAfter.lfJudgmentTheorems with
+    | .ok ctx => ctx
+    | .error _ => cache.structuralKernelReplayBase
   { cache with
     stamp := CompiledLFCheckCacheStamp.ofCheckedSignature checkedAfter
     checkedHL := checkedHLAfter
@@ -851,7 +912,10 @@ def appendDelta (cache : CompiledLFCheckCache) (checkedHLAfter : HLSignature)
         delta.conversionPlugins.toList.map checkedLFConversionPluginToKernel
       rules := oldPrimitiveRules ++ newRuleSchemas.toList ++ oldTheoremRules ++
         newTheoremSchemas.toList }
-    kernelReplayBase := appendDeltaKernelReplayBase cache.kernelReplayBase delta }
+    kernelReplayBase := appendDeltaKernelReplayBase cache.kernelReplayBase delta
+    structuralKernelSig := structuralKernelSig
+    structuralKernelSigExpanded := structuralKernelSigExpanded
+    structuralKernelReplayBase := structuralKernelReplayBase }
 
 end CompiledLFCheckCache
 
@@ -867,6 +931,16 @@ structure IntraBlockKernelReplayContext where
   lfKernelGlobalHeads : NameMap (CheckedLFHeadKind × Option Nat)
   /-- LF definition values used by expanded fallback assumptions. -/
   lfKernelDefValues : LFDefinitionValueMap
+  /-- Checked LF definition values used by structural dual replay. -/
+  checkedLFDefValues : CheckedLFDefinitionValueMap := {}
+  /-- Checked primitive rule schemas used by structural dual replay. -/
+  checkedRuleSchemas : Array CheckedLFRuleSchema := #[]
+  /-- Structural compact signature built from checked artifacts for dual replay. -/
+  structuralKernelSig : Except String Kernel.Signature := .ok default
+  /-- Structural expanded signature built from checked artifacts for dual replay fallback. -/
+  structuralKernelSigExpanded : Except String Kernel.Signature := .ok default
+  /-- Structural replay context built from checked prior theorem artifacts. -/
+  structuralReplayCtx : Except String Kernel.KernelLFCheckContext := .ok default
   deriving Inhabited
 
 /-- Build cached replay state for a checked baseline plus one checked block delta. -/
@@ -908,7 +982,16 @@ def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignat
         lfJudgmentTheorems
     replayCtx := replayCtx
     lfKernelGlobalHeads := lfGlobalHeadInfo sig
-    lfKernelDefValues := lfDefinitionValueMapFromCheckedDefs lfSyntaxDefs lfObjectDefs }
+    lfKernelDefValues := lfDefinitionValueMapFromCheckedDefs lfSyntaxDefs lfObjectDefs
+    checkedLFDefValues := lfCheckedDefValues
+    checkedRuleSchemas := lfRuleSchemas
+    structuralKernelSig :=
+      checkedSignatureToKSignature sig.name lfSyntaxDefs lfOpaqueConsts lfContextZones
+        lfBinderClasses lfConversionPlugins lfRuleSchemas lfObjectDefs lfJudgmentTheorems
+    structuralKernelSigExpanded :=
+      checkedSignatureToKSignature sig.name lfSyntaxDefs lfOpaqueConsts lfContextZones
+        lfBinderClasses lfConversionPlugins lfRuleSchemas lfObjectDefs lfJudgmentTheorems true
+    structuralReplayCtx := kernelLFReplayContextOfTheoremsToK checked.lfJudgmentTheorems }
 
 /-- Replay-check one theorem against cached block-level kernel state and update availability. -/
 def validateLFTheoremKernelReplayInContext (sig : HLSignature)
@@ -921,14 +1004,35 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
   let localReplayCtx := { ctx.replayCtx with
     localParameters := t.binders.toList.map (fun b => b.name)
     assumptions := assumptions }
+  let structuralSig ← liftStructuralKernelExcept
+    s!"judgment_theorem '{t.name}' block compact signature" ctx.structuralKernelSig
+  let structuralReplayCtx ← liftStructuralKernelExcept
+    s!"judgment_theorem '{t.name}' block compact replay context" ctx.structuralReplayCtx
+  let structuralAssumptions ← liftStructuralKernelExcept
+    s!"judgment_theorem '{t.name}' block compact local assumptions" <|
+      kernelLFLocalAssumptionEntriesOfTheoremToK false ctx.checkedLFDefValues t
+  let structuralStmt ← liftStructuralKernelExcept s!"judgment_theorem '{t.name}' block statement" <|
+    checkedLFJudgmentTheoremStatementToK t
+  let structuralLocalReplayCtx := { structuralReplayCtx with
+    localParameters := t.binders.toList.map (fun b => Kernel.KLocalName.ofName b.name)
+    assumptions := structuralAssumptions }
   match CheckedKernelLFDerivation.ofReplay ctx.kernelSig localReplayCtx stmt kernelDeriv with
   | .ok checkedReplay =>
       validateStructuralKernelDualReplay s!"judgment_theorem '{t.name}' block compact replay"
-        ctx.kernelSig localReplayCtx stmt kernelDeriv
+        structuralSig structuralLocalReplayCtx structuralStmt kernelDeriv
       let t := { t with checkedKernelDerivation? := some checkedReplay }
       let replayCtx :=
         if t.binders.isEmpty then ctx.replayCtx.addTheorem t.name stmt else ctx.replayCtx
-      pure (t, { ctx with replayCtx := replayCtx })
+      let structuralReplayCtx :=
+        if t.binders.isEmpty then
+          { structuralReplayCtx with theorems := structuralReplayCtx.theorems ++ [{
+              name := Kernel.KName.ofName t.name
+              statement := structuralStmt }] }
+        else
+          structuralReplayCtx
+      pure (t, { ctx with
+        replayCtx := replayCtx
+        structuralReplayCtx := .ok structuralReplayCtx })
   | .error compactErr =>
       let expandedAssumptions ←
         kernelLFLocalAssumptionEntriesOfTheoremExpanded sig ctx.lfKernelGlobalHeads
@@ -936,16 +1040,33 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
       let expandedReplayCtx := { ctx.replayCtx with
         localParameters := t.binders.toList.map (fun b => b.name)
         assumptions := expandedAssumptions }
+      let structuralSigExpanded ← liftStructuralKernelExcept
+        s!"judgment_theorem '{t.name}' block expanded signature" ctx.structuralKernelSigExpanded
+      let structuralExpandedAssumptions ← liftStructuralKernelExcept
+        s!"judgment_theorem '{t.name}' block expanded local assumptions" <|
+          kernelLFLocalAssumptionEntriesOfTheoremToK true ctx.checkedLFDefValues t
+      let structuralExpandedReplayCtx := { structuralReplayCtx with
+        localParameters := t.binders.toList.map (fun b => Kernel.KLocalName.ofName b.name)
+        assumptions := structuralExpandedAssumptions }
       match CheckedKernelLFDerivation.ofReplay ctx.kernelSigExpanded expandedReplayCtx stmt
           kernelDeriv with
       | .ok checkedReplay =>
           validateStructuralKernelDualReplay
-            s!"judgment_theorem '{t.name}' block expanded replay" ctx.kernelSigExpanded
-            expandedReplayCtx stmt kernelDeriv
+            s!"judgment_theorem '{t.name}' block expanded replay" structuralSigExpanded
+            structuralExpandedReplayCtx structuralStmt kernelDeriv
           let t := { t with checkedKernelDerivation? := some checkedReplay }
           let replayCtx :=
             if t.binders.isEmpty then ctx.replayCtx.addTheorem t.name stmt else ctx.replayCtx
-          pure (t, { ctx with replayCtx := replayCtx })
+          let structuralReplayCtx :=
+            if t.binders.isEmpty then
+              { structuralReplayCtx with theorems := structuralReplayCtx.theorems ++ [{
+                  name := Kernel.KName.ofName t.name
+                  statement := structuralStmt }] }
+            else
+              structuralReplayCtx
+          pure (t, { ctx with
+            replayCtx := replayCtx
+            structuralReplayCtx := .ok structuralReplayCtx })
       | .error expandedErr =>
           throwError "kernel-facing replay check failed for judgment_theorem '{t.name}' in type \
             theory '{sig.name}': {compactErr}\nexpanded fallback also failed: {expandedErr}"
