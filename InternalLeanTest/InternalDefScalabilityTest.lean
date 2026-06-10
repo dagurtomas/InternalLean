@@ -181,6 +181,22 @@ theorem(s); rechecked=0 object def(s), 0 theorem(s); incremental=1
 #guard_msgs (whitespace := lax) in
 #print_internal_registration_profile ExtendProfileRecheckSmoke
 
+declare_type_theory IncrementalDeclareParentSmoke where
+  syntax_sort Obj
+  judgment J (x : Obj)
+  lf_opaque base : Obj
+  rule intro (x : Obj) : J x
+  lf_def parentDef : Obj := base
+
+declare_type_theory IncrementalDeclareChildSmoke extends IncrementalDeclareParentSmoke where
+  lf_def childDef : Obj := parentDef
+  judgment_theorem childTheorem : J childDef := intro childDef
+
+#check_type_theory IncrementalDeclareChildSmoke
+#guard_internal_registration_profile_totals IncrementalDeclareChildSmoke 1 2 0 0
+#guard_internal_registration_profile_strategy IncrementalDeclareChildSmoke
+  "incremental declare_type_theory extends (streaming block)"
+
 declare_type_theory IncrementalExtendUseInternalSmoke where
   syntax_sort Obj
   judgment J (x : Obj)

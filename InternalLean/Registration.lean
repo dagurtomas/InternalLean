@@ -1091,10 +1091,82 @@ def addInternalDeclarationAnchor (target : InternalDefTarget) (typeExpr : ObjExp
     isBinder := true
     isDisplayableTerm := false }
 
-/-- Register a high-level theory signature, failing on duplicate names. -/
-def registerTheory (sig : HLSignature) : CoreM Unit := do
-  if (← getTheory? sig.name).isSome then
-    throwError "type theory '{sig.name}' has already been declared"
+/-- Extract the declarations directly introduced by a source signature. -/
+def signatureOwnBlock (sig : HLSignature) : HLTheoryBlock := {
+  syntaxSorts := sig.syntaxSorts
+  syntaxAbbrevs := sig.syntaxAbbrevs
+  syntaxDefs := sig.syntaxDefs
+  judgmentAbbrevs := sig.judgmentAbbrevs
+  syntaxSortRoles := sig.syntaxSortRoles
+  contextZones := sig.contextZones
+  binderClasses := sig.binderClasses
+  judgments := sig.judgments
+  judgmentRoles := sig.judgmentRoles
+  rules := sig.rules
+  ruleRoles := sig.ruleRoles
+  rewriteRelations := sig.rewriteRelations
+  rewriteSymmetries := sig.rewriteSymmetries
+  rewriteCongruences := sig.rewriteCongruences
+  transportRules := sig.transportRules
+  transportPositions := sig.transportPositions
+  sideConditionSolvers := sig.sideConditionSolvers
+  conversionPlugins := sig.conversionPlugins
+  lfOpaqueConsts := sig.lfOpaqueConsts
+  modelVisibilities := sig.modelVisibilities
+  modelSections := sig.modelSections
+  modelSectionMemberships := sig.modelSectionMemberships
+  lfObjectDefs := sig.lfObjectDefs
+  lfJudgmentTheorems := sig.lfJudgmentTheorems }
+
+/-- Source signature containing only a theory's parent baseline and universe telescope. -/
+def signatureParentBase (sig : HLSignature) : HLSignature := {
+  name := sig.name
+  parents := sig.parents
+  levelParams := sig.levelParams }
+
+/-- View all checked artifacts of a signature as one appendable incremental delta. -/
+def checkedSignatureAsDelta (checked : CheckedSignature) : CheckedTheoryDelta := {
+  syntaxSorts := checked.lfSyntaxSorts
+  syntaxAbbrevs := checked.lfSyntaxAbbrevs
+  syntaxDefs := checked.lfSyntaxDefs
+  judgmentAbbrevs := checked.lfJudgmentAbbrevs
+  syntaxSortRoles := checked.lfSyntaxSortRoles
+  contextZones := checked.lfContextZones
+  binderClasses := checked.lfBinderClasses
+  judgments := checked.lfJudgments
+  judgmentRoles := checked.lfJudgmentRoles
+  opaqueConsts := checked.lfOpaqueConsts
+  sideConditionSolvers := checked.lfSideConditionSolvers
+  conversionPlugins := checked.lfConversionPlugins
+  rules := checked.lfRules
+  ruleRoles := checked.lfRuleRoles
+  rewriteRelations := checked.lfRewriteRelations
+  rewriteSymmetries := checked.lfRewriteSymmetries
+  rewriteCongruences := checked.lfRewriteCongruences
+  transportRules := checked.lfTransportRules
+  transportPositions := checked.lfTransportPositions
+  ruleSchemas := checked.lfRuleSchemas
+  sideConditionCertificates := checked.lfSideConditionCertificates
+  objectDefs := checked.lfObjectDefs
+  judgmentTheorems := checked.lfJudgmentTheorems
+  modelVisibilities := checked.modelVisibilities
+  modelSections := checked.modelSections
+  modelSectionMemberships := checked.modelSectionMemberships }
+
+/-- Combine already checked parent artifacts into a checked baseline for a new child theory. -/
+def checkedParentBaseForSignature (sig : HLSignature) (flatSourceBase : HLSignature) :
+    CoreM CheckedSignature := do
+  let mut checked : CheckedSignature := {
+    name := sig.name.eraseMacroScopes
+    levelParams := flatSourceBase.levelParams.map Name.eraseMacroScopes }
+  for parentName in sig.parents do
+    let some parentChecked ← getCheckedTheory? parentName
+      | throwError "no checked artifact stored for parent type theory '{parentName}'"
+    checked := appendCheckedTheoryDelta checked (checkedSignatureAsDelta parentChecked)
+  pure checked
+
+/-- Register a theory by checking its whole flattened signature. -/
+def registerTheoryFull (sig : HLSignature) : CoreM Unit := do
   let headSig ← flattenSignature sig
   let sig ← elaborateImplicitAppsInSignatureWithEnv headSig sig
   let checked ← checkSignatureForRegistration sig
@@ -1121,6 +1193,54 @@ def registerTheory (sig : HLSignature) : CoreM Unit := do
     let env := setCompiledLFCheckCacheInEnv env sig.name compiledCache
     syntaxDefAdmissionRecords.foldl (init := env) fun env admission =>
       internalAdmissionExt.addEntry env (.admission admission)
+
+/-- Register `declare_type_theory Child extends Parent ...` by checking only the child block. -/
+def registerTheoryIncrementalFromParents (sig : HLSignature) (block : HLTheoryBlock) :
+    CoreM Unit := do
+  let baseSig := signatureParentBase sig
+  let flatSourceBase ← profileLFCheckPhase m!"{sig.name}: flatten parent base" do
+    flattenSignature baseSig
+  profileLFCheckPhase m!"{sig.name}: parent duplicate-name check" do
+    checkNoDuplicateNamesInSignature flatSourceBase
+  profileLFCheckPhase m!"{sig.name}: parent universe-level check" do
+    checkNoDuplicateLevelParamsInSignature flatSourceBase
+  let checkedBase ← checkedParentBaseForSignature sig flatSourceBase
+  let checkedBaseHL := checkedSignatureIncrementalHLSignature flatSourceBase checkedBase
+  let baseCache ← mkCompiledLFCheckCacheFromHL checkedBaseHL checkedBase
+  let result ←
+    checkTheoryBlockExtensionIncrementalWithFlatBase sig.name flatSourceBase checkedBase block
+      (some checkedBaseHL)
+  let candidate := baseSig.appendBlock result.blockForRegistry
+  let compiledCache := baseCache.appendDelta result.checkedHL result.checked result.delta
+  let syntaxDefAdmissionRecords := syntaxDefAdmissions sig.name result.delta.syntaxDefs
+  recordInternalRegistrationProfile {
+    theoryName := sig.name.eraseMacroScopes
+    declName := `declare_type_theory
+    strategy := "incremental declare_type_theory extends (streaming block)"
+    priorObjectDefs := checkedBase.lfObjectDefs.size
+    priorJudgmentTheorems := checkedBase.lfJudgmentTheorems.size
+    recheckedObjectDefs := 0
+    recheckedJudgmentTheorems := 0
+    incrementallyChecked := theoryBlockIncrementalDeclCount result.blockForRegistry }
+  modifyEnv fun env =>
+    let env := theoryExt.addEntry env (.sig candidate)
+    let env := checkedTheoryExt.addEntry env (.sig result.checked)
+    let env := checkedHLSignatureExt.addEntry env (.sig sig.name result.checkedHL)
+    let env := setCompiledLFCheckCacheInEnv env sig.name compiledCache
+    syntaxDefAdmissionRecords.foldl (init := env) fun env admission =>
+      internalAdmissionExt.addEntry env (.admission admission)
+
+/-- Register a high-level theory signature, failing on duplicate names. -/
+def registerTheory (sig : HLSignature) : CoreM Unit := do
+  if (← getTheory? sig.name).isSome then
+    throwError "type theory '{sig.name}' has already been declared"
+  let block := signatureOwnBlock sig
+  if sig.parents.isEmpty || !(sig.macros.isEmpty && sig.roles.isEmpty) then
+    registerTheoryFull sig
+  else
+    match unsupportedIncrementalTheoryBlockReason? block with
+    | none => registerTheoryIncrementalFromParents sig block
+    | some _ => registerTheoryFull sig
 
 /-- Reopen an existing type theory and append one declaration block. -/
 def registerTheoryBlockExtension (theoryName : Name) (block : HLTheoryBlock) : CoreM Unit := do

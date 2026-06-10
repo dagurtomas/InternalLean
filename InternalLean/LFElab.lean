@@ -8272,14 +8272,12 @@ structure CheckedTheoryBlockExtensionResult where
   delta : CheckedTheoryDelta
   deriving Inhabited
 
-/-- Incrementally check a supported `extend_type_theory` block against a checked baseline. -/
-def checkTheoryBlockExtensionIncremental (theoryName : Name) (sig : HLSignature)
-    (checked : CheckedSignature) (block : HLTheoryBlock) (checkBase? : Option HLSignature := none) :
-    CoreM CheckedTheoryBlockExtensionResult := do
+/-- Incrementally check a supported theory block against an already flattened baseline. -/
+def checkTheoryBlockExtensionIncrementalWithFlatBase (theoryName : Name)
+    (flatSourceBase : HLSignature) (checked : CheckedSignature) (block : HLTheoryBlock)
+    (checkBase? : Option HLSignature := none) : CoreM CheckedTheoryBlockExtensionResult := do
   if let some reason := unsupportedIncrementalTheoryBlockReason? block then
     throwError "cannot incrementally register extension for type theory '{theoryName}': {reason}"
-  let flatSourceBase ← profileLFCheckPhase m!"{theoryName}: flatten source base" do
-    flattenSignature sig
   profileLFCheckPhase m!"{theoryName}: extension collision check" do
     checkNoExtensionNameCollisions flatSourceBase block
   let priorKnownTypes :=
@@ -8307,6 +8305,15 @@ def checkTheoryBlockExtensionIncremental (theoryName : Name) (sig : HLSignature)
     checked := checked
     checkedHL := flatForCheck
     delta := delta }
+
+/-- Incrementally check a supported `extend_type_theory` block against a checked baseline. -/
+def checkTheoryBlockExtensionIncremental (theoryName : Name) (sig : HLSignature)
+    (checked : CheckedSignature) (block : HLTheoryBlock) (checkBase? : Option HLSignature := none) :
+    CoreM CheckedTheoryBlockExtensionResult := do
+  let flatSourceBase ← profileLFCheckPhase m!"{theoryName}: flatten source base" do
+    flattenSignature sig
+  checkTheoryBlockExtensionIncrementalWithFlatBase theoryName flatSourceBase checked block
+    checkBase?
 
 /-- Check a candidate signature with the direct-LF checker and report command errors. -/
 def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature := do
