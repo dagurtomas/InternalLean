@@ -718,6 +718,28 @@ partial def lfMirrorObjExprNodeCount : ObjExpr → Nat
   | .fst e | .snd e => 1 + lfMirrorObjExprNodeCount e
   | .lam _ body => 1 + lfMirrorObjExprNodeCount body
 
+/-- Return true iff the source LF expression has at most `limit` nodes, short-circuiting once
+`limit` has been exceeded. -/
+partial def lfMirrorObjExprNodeCountLE (limit : Nat) (e : ObjExpr) : Bool :=
+  let rec go (fuel : Nat) : ObjExpr → Option Nat
+    | .ident _ | .sort | .univ _ =>
+        match fuel with
+        | 0 => none
+        | fuel + 1 => some fuel
+    | .app f a | .pair f a | .jeq f a =>
+        match fuel with
+        | 0 => none
+        | fuel + 1 => (go fuel f).bind fun fuel => go fuel a
+    | .arrow _ A B | .funArrow _ A B | .sigma _ A B =>
+        match fuel with
+        | 0 => none
+        | fuel + 1 => (go fuel A).bind fun fuel => go fuel B
+    | .fst e | .snd e | .lam _ e =>
+        match fuel with
+        | 0 => none
+        | fuel + 1 => go fuel e
+  (go limit e).isSome
+
 /-- Checked `syntax_def` bodies are currently left to the ordinary LF checker in fast-path mode. -/
 def lfMirrorBestEffortSyntaxDefNodeLimit : Nat := 0
 
@@ -729,23 +751,23 @@ def addLFMirrorPendingDeclBestEffort (theoryName : Name) (levelParams : List Nam
     (levelArgs : List Level) (decl : LFMirrorPendingDecl) : CoreM Unit := do
   match decl with
   | .syntaxAbbrev d =>
-      if lfMirrorObjExprNodeCount d.value > lfMirrorBestEffortSyntaxDefNodeLimit then
-        return
-      else
+      if lfMirrorObjExprNodeCountLE lfMirrorBestEffortSyntaxDefNodeLimit d.value then
         addLFMirrorPendingDecl theoryName levelParams levelArgs decl
+      else
+        return
   | .syntaxDef d =>
       match d.value? with
       | some value =>
-          if lfMirrorObjExprNodeCount value > lfMirrorBestEffortSyntaxDefNodeLimit then
-            return
-          else
+          if lfMirrorObjExprNodeCountLE lfMirrorBestEffortSyntaxDefNodeLimit value then
             addLFMirrorPendingDecl theoryName levelParams levelArgs decl
+          else
+            return
       | none => addLFMirrorPendingDecl theoryName levelParams levelArgs decl
   | .lfObjectDef d =>
-      if lfMirrorObjExprNodeCount d.value > lfMirrorBestEffortObjectDefNodeLimit then
-        return
-      else
+      if lfMirrorObjExprNodeCountLE lfMirrorBestEffortObjectDefNodeLimit d.value then
         addLFMirrorPendingDecl theoryName levelParams levelArgs decl
+      else
+        return
   | _ => addLFMirrorPendingDecl theoryName levelParams levelArgs decl
 
 /-- Add every currently unblocked mirror declaration, leaving blocked declarations for later. -/

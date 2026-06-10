@@ -5457,7 +5457,7 @@ def checkLFObjectDefInContextSelected (ctx : IntraBlockLFCheckContext) (d : LFOb
     CoreM (CheckedLFObjectDef × IntraBlockLFCheckContext) := do
   let useMirror :=
     (← getBoolOption `internalLean.mirrorBackend.checkTheoryBodies) &&
-      lfMirrorObjExprNodeCount d.value <= lfMirrorBestEffortObjectDefNodeLimit
+      lfMirrorObjExprNodeCountLE lfMirrorBestEffortObjectDefNodeLimit d.value
   if useMirror then
     checkLFObjectDefInContextWithMirror ctx d
   else
@@ -5759,7 +5759,7 @@ def checkOneSyntaxDefMetadataInSignatureSelected (mirrorSig : HLSignature)
   let useMirror :=
     (← getBoolOption `internalLean.mirrorBackend.checkTheoryBodies) &&
       match d.value? with
-      | some value => lfMirrorObjExprNodeCount value <= lfMirrorBestEffortSyntaxDefNodeLimit
+      | some value => lfMirrorObjExprNodeCountLE lfMirrorBestEffortSyntaxDefNodeLimit value
       | none => false
   if useMirror then
     checkOneSyntaxDefParameterMetadataInSignatureWithLookup lookup sig lfGlobals opaqueArities
