@@ -32,6 +32,12 @@ declare_type_theory GenericInductionSimpleSmoke where
     premise prev : Ok x
     conclusion : Ok (step x)
 
+  judgment_theorem base_ok_thm : Ok base := base_ok
+
+  judgment_theorem step_base_ok_thm : Ok (step base) := step_ok base base_ok_thm
+
+  judgment_theorem step_preserves_ok (x : Obj) (h : Ok x) : Ok (step x) := step_ok x h
+
 /--
 info: rule induction for GenericInductionSimpleSmoke over Ok
 cases: 2
@@ -61,6 +67,12 @@ generate_judgment_induction GenericInductionSimpleSmoke Ok
 #check GenericInductionSimpleSmoke.OkDerivation.base_ok
 #check GenericInductionSimpleSmoke.OkDerivation.step_ok
 
+#print_rule_induction_witnesses GenericInductionSimpleSmoke for Ok
+generate_rule_induction_witnesses GenericInductionSimpleSmoke for Ok
+#check GenericInductionSimpleSmoke.base_ok_thmDerivationWitness
+#check GenericInductionSimpleSmoke.step_base_ok_thmDerivationWitness
+#check GenericInductionSimpleSmoke.step_preserves_okDerivationWitness
+
 declare_type_theory GenericInductionMutualSmoke where
   syntax_sort Obj
   judgment Even (x : Obj)
@@ -79,6 +91,10 @@ declare_type_theory GenericInductionMutualSmoke where
   rule even_succ (x : Obj) where
     premise prev : Odd x
     conclusion : Even (succ x)
+
+  judgment_theorem odd_one : Odd (succ zero) := odd_succ zero even_zero
+
+  judgment_theorem even_two : Even (succ (succ zero)) := even_succ (succ zero) odd_one
 
 /--
 info: rule induction for GenericInductionMutualSmoke over Even, Odd
@@ -115,6 +131,10 @@ generate_rule_induction GenericInductionMutualSmoke for Even, Odd
 #check GenericInductionMutualSmoke.EvenDerivation.even_zero
 #check GenericInductionMutualSmoke.OddDerivation.odd_succ
 #check GenericInductionMutualSmoke.EvenDerivation.even_succ
+
+generate_rule_induction_witnesses GenericInductionMutualSmoke for Even, Odd
+#check GenericInductionMutualSmoke.odd_oneDerivationWitness
+#check GenericInductionMutualSmoke.even_twoDerivationWitness
 
 /--
 error: rule-induction metadata for type theory 'GenericInductionSimpleSmoke' is not usable:

@@ -497,6 +497,254 @@ elab "generate_rule_induction " theory:ident " for " judgments:ident,* : command
     throwError "generate_rule_induction requires at least one judgment after `for`"
   elabGeneratedInductionPrinciple <| checked.judgmentInductionPrinciple names
 
+/-- Generated witness name for a checked LF theorem in a derivation family. -/
+def ruleInductionWitnessName (theoremName : Name) : String :=
+  structuralMetaNameString theoremName ++ "DerivationWitness"
+
+/-- Find a checked LF judgment theorem by local name. -/
+def findCheckedStructuralLFTheorem? (theorems : Array CheckedLFJudgmentTheorem)
+    (name : Name) : Option CheckedLFJudgmentTheorem :=
+  theorems.find? fun t => t.name.eraseMacroScopes == name.eraseMacroScopes
+
+/-- Whether a name belongs to a generated-rule-induction target set. -/
+def ruleInductionTargetContains (targets : Array Name) (name : Name) : Bool :=
+  targets.any fun target => target.eraseMacroScopes == name.eraseMacroScopes
+
+/-- Whether a checked head is a covered judgment for generated derivation witnesses. -/
+def isRuleInductionTargetHead (targets : Array Name) (head : CheckedLFHead) : Bool :=
+  head.kind == .judgment && ruleInductionTargetContains targets head.name
+
+/-- Statement carried by a shallow checked LF derivation. -/
+partial def structuralCheckedLFDerivationStatement : CheckedLFDerivation → ObjExpr
+  | .localAssumption _ statement => statement
+  | .theoremRef _ statement _ _ => statement
+  | .ruleApp _ statement _ _ _ => statement
+
+/-- Binder type used by generated checked-derivation witnesses. -/
+def renderRuleInductionWitnessBinderType (targets : Array Name) (locals : GeneratedObjLocals)
+    (b : CheckedLFBinding) : String :=
+  match b.head? with
+  | some h =>
+      if isRuleInductionTargetHead targets h then
+        s!"{judgmentDerivationFamilyName h.name} {renderObjExprTerm locals b.typeExpr}"
+      else
+        "InternalLean.ObjExpr"
+  | none => "InternalLean.ObjExpr"
+
+/-- Render one binder for a generated checked-derivation witness. -/
+def renderRuleInductionWitnessBinder (targets : Array Name) (locals : GeneratedObjLocals)
+    (b : CheckedLFBinding) : String :=
+  renderGeneratedArg b.name (renderRuleInductionWitnessBinderType targets locals b)
+
+/-- Object-valued locals available after a generated checked-derivation witness binder. -/
+def updateRuleInductionWitnessLocals (targets : Array Name) (locals : GeneratedObjLocals)
+    (b : CheckedLFBinding) : GeneratedObjLocals :=
+  match b.head? with
+  | some h =>
+      if isRuleInductionTargetHead targets h then locals else generatedObjLocalInsert locals b.name
+  | none => generatedObjLocalInsert locals b.name
+
+/-- Render a certificate-name placeholder as an object expression for generated witness terms. -/
+def renderRuleInductionCertificateObj (certName : Name) : String :=
+  s!"(InternalLean.ObjExpr.ident {renderLeanNameLiteral certName})"
+
+mutual
+
+/-- Render the arguments of a checked theorem reference in a generated derivation witness. -/
+partial def renderRuleInductionTheoremRefArgs (checked : CheckedSignature) (targets : Array Name)
+    (locals : GeneratedObjLocals) (ref : CheckedLFJudgmentTheorem) (args : Array ObjExpr)
+    (premises : Array CheckedLFDerivation) : Except String (List String) := do
+  let mut rendered : List String := []
+  let mut argIndex := 0
+  let mut premiseIndex := 0
+  let mut subst : NameMap ObjExpr := {}
+  let mut locals := locals
+  for b in ref.binders do
+    let targetBinder := match b.head? with
+      | some h => isRuleInductionTargetHead targets h
+      | none => false
+    let nonTargetJudgment : Bool := match b.head? with
+      | some h => h.kind == .judgment && !targetBinder
+      | none => false
+    if targetBinder then
+      let some premDeriv := premises[premiseIndex]?
+        | throw s!"theorem reference '{ref.name}' has too few recursive premise witnesses"
+      premiseIndex := premiseIndex + 1
+      let term ← renderRuleInductionDerivation checked targets locals premDeriv
+      rendered := rendered ++ [term]
+    else if nonTargetJudgment then
+      let some premDeriv := premises[premiseIndex]?
+        | throw s!"theorem reference '{ref.name}' has too few non-target premise witnesses"
+      premiseIndex := premiseIndex + 1
+      let statement := structuralCheckedLFDerivationStatement premDeriv
+      rendered := rendered ++ [renderObjExprTerm locals statement]
+      locals := generatedObjLocalInsert locals b.name
+      subst := subst.insert b.name.eraseMacroScopes statement
+    else
+      let some arg := args[argIndex]?
+        | throw s!"theorem reference '{ref.name}' has too few object arguments"
+      argIndex := argIndex + 1
+      rendered := rendered ++ [renderObjExprTerm locals arg]
+      locals := generatedObjLocalInsert locals b.name
+      subst := subst.insert b.name.eraseMacroScopes arg
+  if argIndex != args.size then
+    throw s!"theorem reference '{ref.name}' has unused object argument(s)"
+  if premiseIndex != premises.size then
+    throw s!"theorem reference '{ref.name}' has unused premise witness(es)"
+  pure rendered
+
+/-- Render a shallow checked LF derivation as a generated derivation-family term. -/
+partial def renderRuleInductionDerivation (checked : CheckedSignature) (targets : Array Name)
+    (locals : GeneratedObjLocals) : CheckedLFDerivation → Except String String
+  | .localAssumption name _ => pure (structuralMetaNameString name)
+  | .theoremRef name _ args premises => do
+      let some ref := findCheckedStructuralLFTheorem? checked.lfJudgmentTheorems name
+        | throw s!"unknown theorem reference '{name}' in generated derivation witness"
+      let renderedArgs ← renderRuleInductionTheoremRefArgs checked targets locals ref args premises
+      let suffix := if renderedArgs.isEmpty then "" else " " ++ String.intercalate " " renderedArgs
+      pure s!"({ruleInductionWitnessName name}{suffix})"
+  | .ruleApp ruleName _ ruleArgs premises sideConditionCertificateNames => do
+      let some appliedRule := findCheckedLFRule? checked.lfRules ruleName
+        | throw s!"unknown rule '{ruleName}' in generated derivation witness"
+      let mut rendered : List String := []
+      let mut subst : NameMap ObjExpr := {}
+      for param in appliedRule.params, arg in ruleArgs[:appliedRule.params.size] do
+        rendered := rendered ++ [renderObjExprTerm locals arg]
+        subst := subst.insert param.name.eraseMacroScopes arg
+      for ev in appliedRule.paramEvidences do
+        rendered := rendered ++ [renderObjExprTerm locals (substLFParams subst ev.judgmentExpr)]
+      let mut directIndex := 0
+      let mut evidenceIndex := appliedRule.params.size
+      for p in appliedRule.premises do
+        match p.head? with
+        | some h =>
+            if h.kind == .judgment then
+              let some premDeriv := premises[directIndex]?
+                | throw s!"rule '{ruleName}' has too few direct premise witnesses"
+              directIndex := directIndex + 1
+              if ruleInductionTargetContains targets h.name then
+                let renderedPrem ← renderRuleInductionDerivation checked targets locals premDeriv
+                rendered := rendered ++ [renderedPrem]
+              else
+                rendered := rendered ++
+                  [renderObjExprTerm locals (structuralCheckedLFDerivationStatement premDeriv)]
+            else
+              let some arg := ruleArgs[evidenceIndex]?
+                | throw s!"rule '{ruleName}' has too few evidence arguments"
+              evidenceIndex := evidenceIndex + 1
+              rendered := rendered ++ [renderObjExprTerm locals arg]
+        | none =>
+            let some arg := ruleArgs[evidenceIndex]?
+              | throw s!"rule '{ruleName}' has too few evidence arguments"
+            evidenceIndex := evidenceIndex + 1
+            rendered := rendered ++ [renderObjExprTerm locals arg]
+      if directIndex != premises.size then
+        throw s!"rule '{ruleName}' has unused premise witness(es)"
+      if evidenceIndex != ruleArgs.size then
+        throw s!"rule '{ruleName}' has unused evidence argument(s)"
+      for certName in sideConditionCertificateNames do
+        rendered := rendered ++ [renderRuleInductionCertificateObj certName]
+      let constructor := judgmentDerivationFamilyName appliedRule.conclusionHead.name ++ "." ++
+        structuralMetaNameString appliedRule.name
+      let suffix := if rendered.isEmpty then "" else " " ++ String.intercalate " " rendered
+      pure s!"({constructor}{suffix})"
+
+end
+
+/-- Render a checked LF theorem as a Lean definition in a generated derivation family. -/
+def renderRuleInductionTheoremWitness (checked : CheckedSignature) (targets : Array Name)
+    (t : CheckedLFJudgmentTheorem) : Except String String := do
+  unless t.checkedKernelDerivation?.isSome do
+    throw s!"judgment_theorem '{t.name}' does not have a checked kernel replay artifact"
+  let some derivation := t.derivation?
+    | throw s!"judgment_theorem '{t.name}' does not have a shallow checked derivation"
+  unless ruleInductionTargetContains targets t.judgmentHead.name do
+    throw s!"judgment_theorem '{t.name}' does not conclude in a covered judgment"
+  let mut locals : GeneratedObjLocals := {}
+  let mut binders : List String := []
+  for b in t.binders do
+    binders := binders ++ [renderRuleInductionWitnessBinder targets locals b]
+    locals := updateRuleInductionWitnessLocals targets locals b
+  let bindersText := if binders.isEmpty then "" else " " ++ String.intercalate " " binders
+  let statement := s!"{judgmentDerivationFamilyName t.judgmentHead.name} \
+    {renderObjExprTerm locals t.judgmentExpr}"
+  let body ← renderRuleInductionDerivation checked targets locals derivation
+  pure s!"def {ruleInductionWitnessName t.name}{bindersText} : {statement} :=\n  {body}"
+
+/-- Render all checked theorem witnesses covered by a generated rule-induction principle. -/
+def renderRuleInductionWitnessCommands (checked : CheckedSignature)
+    (p : LFJudgmentInductionPrinciple) : Except String (Array String) := do
+  let mut theoremLines : List String := []
+  for t in checked.lfJudgmentTheorems do
+    if ruleInductionTargetContains p.judgmentNames t.judgmentHead.name then
+      let theoremLine ← renderRuleInductionTheoremWitness checked p.judgmentNames t
+      theoremLines := theoremLines ++ [theoremLine]
+  if theoremLines.isEmpty then
+    pure #[]
+  else
+    pure <| #[s!"namespace {structuralMetaNameString p.theoryName}"] ++ theoremLines.toArray ++
+      #[s!"end {structuralMetaNameString p.theoryName}"]
+
+/-- Render generated checked-derivation witness definitions as one diagnostic string. -/
+def renderRuleInductionWitnessCommand (checked : CheckedSignature)
+    (p : LFJudgmentInductionPrinciple) : Except String String := do
+  let commands ← renderRuleInductionWitnessCommands checked p
+  if commands.isEmpty then
+    pure s!"no checked judgment_theorem replay artifacts for \
+      {structuralMetaNameList p.judgmentNames}"
+  else
+    pure (String.intercalate "\n\n" commands.toList)
+
+/-- Run generated command elaboration while restoring command state after a failure. -/
+def withRestoredStructuralCommandStateOnError (x : CommandElabM α) : CommandElabM α := do
+  let savedState ← get
+  try
+    x
+  catch ex =>
+    set savedState
+    throw ex
+
+/-- Elaborate checked LF theorem witnesses for already generated derivation families. -/
+def elabRuleInductionWitnesses (checked : CheckedSignature)
+    (p : LFJudgmentInductionPrinciple) : CommandElabM Unit := do
+  ensureUsableInductionPrinciple p
+  let commands ← match renderRuleInductionWitnessCommands checked p with
+    | .ok commands => pure commands
+    | .error err => throwError "failed to render checked derivation witnesses for type theory \
+        '{p.theoryName}': {err}"
+  let parsedCommands ← commands.mapM fun commandString => do
+    match Lean.Parser.runParserCategory (← getEnv) `command commandString with
+    | .ok stx => pure stx
+    | .error err =>
+        let full := String.intercalate "\n\n" commands.toList
+        throwError "failed to generate checked derivation witnesses for type theory \
+          '{p.theoryName}':\n{err}\ngenerated command:\n{full}"
+  withRestoredStructuralCommandStateOnError do
+    for commandStx in parsedCommands do
+      elabCommand commandStx
+
+/-- Print generated witnesses from checked LF theorem replay artifacts into derivation families. -/
+elab "#print_rule_induction_witnesses " theory:ident " for " judgments:ident,* : command => do
+  let checked ← getCheckedStructuralMetatheoryTheory theory.getId
+  let names := judgments.getElems.map (·.getId)
+  if names.isEmpty then
+    throwError "#print_rule_induction_witnesses requires at least one judgment after `for`"
+  let p := checked.judgmentInductionPrinciple names
+  ensureUsableInductionPrinciple p
+  match renderRuleInductionWitnessCommand checked p with
+  | .ok text => logInfo m!"{text}"
+  | .error err => throwError "failed to render checked derivation witnesses for type theory \
+      '{p.theoryName}': {err}"
+
+/-- Generate witnesses from checked LF theorem replay artifacts into derivation families. -/
+elab "generate_rule_induction_witnesses " theory:ident " for " judgments:ident,* : command => do
+  let checked ← getCheckedStructuralMetatheoryTheory theory.getId
+  let names := judgments.getElems.map (·.getId)
+  if names.isEmpty then
+    throwError "generate_rule_induction_witnesses requires at least one judgment after `for`"
+  let p := checked.judgmentInductionPrinciple names
+  elabRuleInductionWitnesses checked p
+
 /-- Whether a role tag matches a normalized structural-metatheory role name. -/
 def structuralRoleMatches (kind expected : Name) : Bool :=
   kind.eraseMacroScopes == expected.eraseMacroScopes

@@ -6,6 +6,7 @@ Authors: Dagur Asgeirsson
 module
 
 public import InternalLean.Basic
+public import InternalLean.DSL
 public import InternalLean.Registry
 public meta import InternalLean.ModelTransport
 public meta import InternalLean.LeanFrontend.Elab
