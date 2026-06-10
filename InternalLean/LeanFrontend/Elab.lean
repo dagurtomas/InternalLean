@@ -166,56 +166,66 @@ def lfQuoteSourceNameOfConst? (theoryName : Name) (constName : Name) : Option Na
   else
     none
 
-/-- Number of source LF parameters expected by a quoted declaration head. -/
-def lfQuoteSourceArity? (sig : HLSignature) (sourceName : Name) : Option Nat :=
-  let n := sourceName.eraseMacroScopes
-  if let some d := sig.syntaxSorts.find? (fun d => d.name == n) then
-    some d.params.size
-  else if let some d := sig.syntaxAbbrevs.find? (fun d => d.name == n) then
-    some d.params.size
-  else if let some d := sig.syntaxDefs.find? (fun d => d.name == n) then
-    some d.params.size
-  else if let some d := sig.judgmentAbbrevs.find? (fun d => d.name == n) then
-    some d.params.size
-  else if let some d := sig.judgments.find? (fun d => d.name == n) then
-    some d.params.size
-  else if let some d := sig.rules.find? (fun d => d.name == n) then
-    some (lfQuoteParamsOfRule d).size
-  else if let some d := sig.lfOpaqueConsts.find? (fun d => d.name == n) then
-    some (lfQuoteParamsOfLFOpaqueConst d).size
-  else if sig.lfObjectDefs.any (fun d => d.name == n) then
-    some 0
-  else if let some d := sig.lfJudgmentTheorems.find? (fun d => d.name == n) then
-    some d.binders.size
-  else
-    none
+/-- Cached quoted-frontend metadata for one LF signature. -/
+structure LFQuoteSignatureContext where
+  /-- Source LF head arities keyed by erased local source name. -/
+  sourceArities : NameMap Nat := {}
 
-/-- Resolve a Lean constant against a supplied LF signature to an LF source name and arity. -/
-def lfQuoteSourceNameAndArityOfConstInSignature? (theoryName : Name) (sig : HLSignature)
-    (constName : Name) : Option (Name × Nat × Bool) :=
+/-- Insert an arity in quoted-frontend source lookup metadata. -/
+def insertLFQuoteSourceArity (arities : NameMap Nat) (name : Name) (arity : Nat) :
+    NameMap Nat :=
+  arities.insert name.eraseMacroScopes arity
+
+/-- Build the quoted-frontend source-arity map once for a signature. -/
+def mkLFQuoteSourceArityMap (sig : HLSignature) : NameMap Nat := Id.run do
+  let mut arities : NameMap Nat := {}
+  for d in sig.syntaxSorts do
+    arities := insertLFQuoteSourceArity arities d.name d.params.size
+  for d in sig.syntaxAbbrevs do
+    arities := insertLFQuoteSourceArity arities d.name d.params.size
+  for d in sig.syntaxDefs do
+    arities := insertLFQuoteSourceArity arities d.name d.params.size
+  for d in sig.judgmentAbbrevs do
+    arities := insertLFQuoteSourceArity arities d.name d.params.size
+  for d in sig.judgments do
+    arities := insertLFQuoteSourceArity arities d.name d.params.size
+  for d in sig.rules do
+    arities := insertLFQuoteSourceArity arities d.name (lfQuoteParamsOfRule d).size
+  for d in sig.lfOpaqueConsts do
+    arities := insertLFQuoteSourceArity arities d.name (lfQuoteParamsOfLFOpaqueConst d).size
+  for d in sig.lfObjectDefs do
+    arities := insertLFQuoteSourceArity arities d.name 0
+  for d in sig.lfJudgmentTheorems do
+    arities := insertLFQuoteSourceArity arities d.name d.binders.size
+  return arities
+
+/-- Build quoted-frontend lookup metadata once for a signature. -/
+def mkLFQuoteSignatureContext (sig : HLSignature) : LFQuoteSignatureContext :=
+  { sourceArities := mkLFQuoteSourceArityMap sig }
+
+/-- Number of source LF parameters expected by a quoted declaration head. -/
+def lfQuoteSourceArityIn? (ctx : LFQuoteSignatureContext) (sourceName : Name) : Option Nat :=
+  ctx.sourceArities.find? sourceName.eraseMacroScopes
+
+/-- Resolve a Lean constant against quoted-frontend lookup metadata. -/
+def lfQuoteSourceNameAndArityOfConstInContext? (theoryName : Name)
+    (ctx : LFQuoteSignatureContext) (constName : Name) : Option (Name × Nat × Bool) :=
   if let some localName := lfQuoteSourceNameOfConst? theoryName constName then
-    some (localName, (lfQuoteSourceArity? sig localName).getD 0, false)
+    some (localName, (lfQuoteSourceArityIn? ctx localName).getD 0, false)
   else if constName.isAnonymous then
     none
   else
     let candidate := Name.mkSimple constName.getString!
-    match lfQuoteSourceArity? sig candidate with
+    match lfQuoteSourceArityIn? ctx candidate with
     | some arity => some (candidate, arity, true)
     | none => none
 
-/-- Resolve a Lean constant used in a quoted LF body to an LF source name and arity. -/
-def lfQuoteSourceNameAndArityOfConst? (theoryName : Name) (constName : Name) : CoreM
-    (Option (Name × Nat × Bool)) := do
-  let some checkedHL ← getCheckedHLSignature? theoryName
-    | return none
-  return lfQuoteSourceNameAndArityOfConstInSignature? theoryName checkedHL constName
-
-/-- Resolve a Lean constant through either a supplied signature or the checked registry. -/
-def lfQuoteSourceNameAndArityOfConstFrom? (theoryName : Name) (sig? : Option HLSignature)
-    (constName : Name) : CoreM (Option (Name × Nat × Bool)) := do
-  match sig? with
-  | some sig => return lfQuoteSourceNameAndArityOfConstInSignature? theoryName sig constName
-  | none => lfQuoteSourceNameAndArityOfConst? theoryName constName
+/-- Resolve a Lean constant through supplied quoted-frontend lookup metadata. -/
+def lfQuoteSourceNameAndArityOfConstFrom? (theoryName : Name)
+    (ctx? : Option LFQuoteSignatureContext) (constName : Name) : Option (Name × Nat × Bool) :=
+  match ctx? with
+  | some ctx => lfQuoteSourceNameAndArityOfConstInContext? theoryName ctx constName
+  | none => none
 
 /-- Drop Lean-only arguments from a fallback application that resolved to an LF head. -/
 def lfQuoteArgsForSourceArity (constName : Name) (arity : Nat) (args : Array Expr) : Array Expr :=
@@ -278,7 +288,7 @@ partial def qualifyLFQuoteSourceIdents (theoryName : Name) (sig : HLSignature)
 mutual
 
 /-- Reflect a unary binder argument to a quoted LF structural constructor. -/
-partial def reflectLFQuoteUnaryBinder (theoryName : Name) (sig? : Option HLSignature)
+partial def reflectLFQuoteUnaryBinder (theoryName : Name) (ctx? : Option LFQuoteSignatureContext)
     (locals : LFQuoteLocalMap) (e : Expr) : MetaM (Name × ObjExpr) := do
   lambdaTelescope e fun xs body => do
     unless xs.size == 1 do
@@ -288,10 +298,10 @@ partial def reflectLFQuoteUnaryBinder (theoryName : Name) (sig? : Option HLSigna
     let localDecl ← x.fvarId!.getDecl
     let userName := localDecl.userName.eraseMacroScopes
     let locals := locals.push (x.fvarId!, userName)
-    pure (userName, ← reflectLFQuoteExprWithSignature theoryName sig? locals body)
+    pure (userName, ← reflectLFQuoteExprWithSignature theoryName ctx? locals body)
 
 /-- Reflect an application of one built-in quoted LF structural constructor, if present. -/
-partial def reflectLFQuoteBuiltinApp? (theoryName : Name) (sig? : Option HLSignature)
+partial def reflectLFQuoteBuiltinApp? (theoryName : Name) (ctx? : Option LFQuoteSignatureContext)
     (locals : LFQuoteLocalMap) (constName : Name) (args : Array Expr) :
     MetaM (Option ObjExpr) := do
   let explicitArgs (expected : Nat) : Array Expr :=
@@ -301,23 +311,23 @@ partial def reflectLFQuoteBuiltinApp? (theoryName : Name) (sig? : Option HLSigna
     unless args.size == 2 do
       throwError "quoted LF constructor '{constName}' expected 2 explicit argument(s), got \
         {args.size}"
-    pure <| some <| ctor (← reflectLFQuoteExprWithSignature theoryName sig? locals args[0]!)
-      (← reflectLFQuoteExprWithSignature theoryName sig? locals args[1]!)
+    pure <| some <| ctor (← reflectLFQuoteExprWithSignature theoryName ctx? locals args[0]!)
+      (← reflectLFQuoteExprWithSignature theoryName ctx? locals args[1]!)
   let dependent (ctor : Option Name → ObjExpr → ObjExpr → ObjExpr) :
       MetaM (Option ObjExpr) := do
     let args := explicitArgs 2
     unless args.size == 2 do
       throwError "quoted LF constructor '{constName}' expected 2 explicit argument(s), got \
         {args.size}"
-    let domain ← reflectLFQuoteExprWithSignature theoryName sig? locals args[0]!
-    let (binderName, codomain) ← reflectLFQuoteUnaryBinder theoryName sig? locals args[1]!
+    let domain ← reflectLFQuoteExprWithSignature theoryName ctx? locals args[0]!
+    let (binderName, codomain) ← reflectLFQuoteUnaryBinder theoryName ctx? locals args[1]!
     pure <| some <| ctor (some binderName) domain codomain
   let unary (ctor : ObjExpr → ObjExpr) : MetaM (Option ObjExpr) := do
     let args := explicitArgs 1
     unless args.size == 1 do
       throwError "quoted LF constructor '{constName}' expected 1 explicit argument(s), got \
         {args.size}"
-    pure <| some <| ctor (← reflectLFQuoteExprWithSignature theoryName sig? locals args[0]!)
+    pure <| some <| ctor (← reflectLFQuoteExprWithSignature theoryName ctx? locals args[0]!)
   if constName == ``InternalLean.LFQuote.arrow then
     binary (fun A B => .arrow none A B)
   else if constName == ``InternalLean.LFQuote.arrowDep then
@@ -342,34 +352,35 @@ partial def reflectLFQuoteBuiltinApp? (theoryName : Name) (sig? : Option HLSigna
     pure none
 
 /-- Reflect one Lean expression elaborated against quoted-LF stubs back to an `ObjExpr`. -/
-partial def reflectLFQuoteExprWithSignature (theoryName : Name) (sig? : Option HLSignature)
-    (locals : LFQuoteLocalMap) : Expr → MetaM ObjExpr
-  | .mdata _ e => reflectLFQuoteExprWithSignature theoryName sig? locals e
+partial def reflectLFQuoteExprWithSignature (theoryName : Name)
+    (ctx? : Option LFQuoteSignatureContext) (locals : LFQuoteLocalMap) :
+    Expr → MetaM ObjExpr
+  | .mdata _ e => reflectLFQuoteExprWithSignature theoryName ctx? locals e
   | e@(.app ..) => do
       match e.getAppFn with
       | .const n _ =>
-          match ← reflectLFQuoteBuiltinApp? theoryName sig? locals n e.getAppArgs with
+          match ← reflectLFQuoteBuiltinApp? theoryName ctx? locals n e.getAppArgs with
           | some out => pure out
           | none =>
-              match ← lfQuoteSourceNameAndArityOfConstFrom? theoryName sig? n with
+              match lfQuoteSourceNameAndArityOfConstFrom? theoryName ctx? n with
               | some (localName, arity, _) =>
                   let args := lfQuoteArgsForSourceArity n arity e.getAppArgs
                   let mut out : ObjExpr := .ident localName
                   for arg in args do
                     out := .app out
-                      (← reflectLFQuoteExprWithSignature theoryName sig? locals arg)
+                      (← reflectLFQuoteExprWithSignature theoryName ctx? locals arg)
                   pure out
               | none =>
-                  pure (.app (← reflectLFQuoteExprWithSignature theoryName sig? locals e.appFn!)
-                    (← reflectLFQuoteExprWithSignature theoryName sig? locals e.appArg!))
+                  pure (.app (← reflectLFQuoteExprWithSignature theoryName ctx? locals e.appFn!)
+                    (← reflectLFQuoteExprWithSignature theoryName ctx? locals e.appArg!))
       | _ =>
-          pure (.app (← reflectLFQuoteExprWithSignature theoryName sig? locals e.appFn!)
-            (← reflectLFQuoteExprWithSignature theoryName sig? locals e.appArg!))
+          pure (.app (← reflectLFQuoteExprWithSignature theoryName ctx? locals e.appFn!)
+            (← reflectLFQuoteExprWithSignature theoryName ctx? locals e.appArg!))
   | .const n _ => do
       if n == ``InternalLean.LFQuote.sort then
         pure .sort
       else
-        match ← lfQuoteSourceNameAndArityOfConstFrom? theoryName sig? n with
+        match lfQuoteSourceNameAndArityOfConstFrom? theoryName ctx? n with
         | some (localName, _, _) =>
             pure (.ident localName)
         | none =>
@@ -395,7 +406,7 @@ partial def reflectLFQuoteExprWithSignature (theoryName : Name) (sig? : Option H
           let userName := localDecl.userName.eraseMacroScopes
           locals := locals.push (x.fvarId!, userName)
           names := names.push userName
-        pure (.lam names (← reflectLFQuoteExprWithSignature theoryName sig? locals body))
+        pure (.lam names (← reflectLFQuoteExprWithSignature theoryName ctx? locals body))
   | .mvar _ => do
       -- Lean metavariables introduced for omitted implicit quote-stub arguments are reflected as
       -- ordinary InternalLean placeholders.  InternalLean's own implicit-argument elaboration and
@@ -407,8 +418,9 @@ end
 
 /-- Reflect one Lean expression through the checked registry for its theory. -/
 def reflectLFQuoteExpr (theoryName : Name) (locals : LFQuoteLocalMap) (e : Expr) :
-    MetaM ObjExpr :=
-  reflectLFQuoteExprWithSignature theoryName none locals e
+    MetaM ObjExpr := do
+  let ctx? := (← getCheckedHLSignature? theoryName).map mkLFQuoteSignatureContext
+  reflectLFQuoteExprWithSignature theoryName ctx? locals e
 
 /-- Elaborate `body` as a quoted LF term and reflect it to `ObjExpr`. -/
 def elabLeanQuotedLFBody (target : InternalDefTarget) (params : Array HLBinding)
@@ -832,7 +844,8 @@ def elabLeanQuotedObjTerm (theoryName : Name) (sigPrefix : HLSignature)
             let value ← withoutErrToSorry <| Term.elabTerm body expectedType?
             Term.synthesizeSyntheticMVarsNoPostponing
             instantiateMVars value
-          reflectLFQuoteExprWithSignature theoryName (some sigPrefix) reflectedLocals value
+          reflectLFQuoteExprWithSignature theoryName (some (mkLFQuoteSignatureContext sigPrefix))
+            reflectedLocals value
       withLocals 0 #[] #[] {}
   match stagedEnv? with
   | some env => withEnv env run
