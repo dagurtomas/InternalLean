@@ -172,6 +172,45 @@ declare_type_theory CheckerPerfLazyLFDefKernelSchemaSmoke where
 
 #guard_kernel_rule_conclusion_first_arg_head CheckerPerfLazyLFDefKernelSchemaSmoke usesAlias alias
 
+/-- Synthetic version of the HoTT/MLTT rule-extension cliff.  Rebuilding an expanded structural
+signature for the child rule eagerly would unfold `d24` into a large duplicated `pairObj` tree, even
+though the rule-only extension does not need theorem replay. -/
+declare_type_theory CheckerPerfLazyStructuralBase where
+  syntax_sort Obj
+  judgment J (x : Obj)
+  lf_opaque base : Obj
+  lf_opaque pairObj (x : Obj) (y : Obj) : Obj
+  lf_def d00 : Obj := base
+  lf_def d01 : Obj := pairObj d00 d00
+  lf_def d02 : Obj := pairObj d01 d01
+  lf_def d03 : Obj := pairObj d02 d02
+  lf_def d04 : Obj := pairObj d03 d03
+  lf_def d05 : Obj := pairObj d04 d04
+  lf_def d06 : Obj := pairObj d05 d05
+  lf_def d07 : Obj := pairObj d06 d06
+  lf_def d08 : Obj := pairObj d07 d07
+  lf_def d09 : Obj := pairObj d08 d08
+  lf_def d10 : Obj := pairObj d09 d09
+  lf_def d11 : Obj := pairObj d10 d10
+  lf_def d12 : Obj := pairObj d11 d11
+  lf_def d13 : Obj := pairObj d12 d12
+  lf_def d14 : Obj := pairObj d13 d13
+  lf_def d15 : Obj := pairObj d14 d14
+  lf_def d16 : Obj := pairObj d15 d15
+  lf_def d17 : Obj := pairObj d16 d16
+  lf_def d18 : Obj := pairObj d17 d17
+  lf_def d19 : Obj := pairObj d18 d18
+  lf_def d20 : Obj := pairObj d19 d19
+  lf_def d21 : Obj := pairObj d20 d20
+  lf_def d22 : Obj := pairObj d21 d21
+  lf_def d23 : Obj := pairObj d22 d22
+  lf_def d24 : Obj := pairObj d23 d23
+
+declare_type_theory CheckerPerfLazyStructuralChild extends CheckerPerfLazyStructuralBase where
+  rule introHuge : J d24
+
+#guard_kernel_rule_conclusion_first_arg_head CheckerPerfLazyStructuralChild introHuge d24
+
 declare_type_theory CheckerPerfLazyLFDefConversionFallbackSmoke where
   syntax_sort Ty
   judgment J (A : Ty)
