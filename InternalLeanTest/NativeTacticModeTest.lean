@@ -411,6 +411,77 @@ internal def rw_empty_rejected : Rel a a := (by
   rw []
   exact rel_refl a)
 
+/-- error: native tactic `simp` supports only `simp`, `simp [name, ...]`, and
+`simp only [name, ...]` in this milestone; unsupported Lean simp features include wildcard
+simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), configurations/dischargers,
+and `simp at` locations. -/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.nativeTacticMode true in
+internal def simp_star_rejected : Rel aliasA aliasA := (by
+  simp [*]
+  exact rel_refl aliasA)
+
+/-- error: native tactic `simp` supports only `simp`, `simp [name, ...]`, and
+`simp only [name, ...]` in this milestone; unsupported Lean simp features include wildcard
+simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), configurations/dischargers,
+and `simp at` locations. -/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.nativeTacticMode true in
+internal def simp_only_star_rejected : Rel aliasA aliasA := (by
+  simp only [*, aliasA]
+  exact rel_refl aliasA)
+
+/-- error: native tactic `simp` supports only `simp`, `simp [name, ...]`, and
+`simp only [name, ...]` in this milestone; unsupported Lean simp features include wildcard
+simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), configurations/dischargers,
+and `simp at` locations. -/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.nativeTacticMode true in
+internal def simp_erase_rejected : Rel aliasA aliasA := (by
+  simp [-aliasA]
+  exact rel_refl aliasA)
+
+/-- error: native tactic `simp` supports only `simp`, `simp [name, ...]`, and
+`simp only [name, ...]` in this milestone; unsupported Lean simp features include wildcard
+simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), configurations/dischargers,
+and `simp at` locations. -/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.nativeTacticMode true in
+internal def simp_reverse_rejected : Rel aliasA aliasA := (by
+  simp [← aliasA]
+  exact rel_refl aliasA)
+
+/-- error: native tactic `simp` supports only `simp`, `simp [name, ...]`, and
+`simp only [name, ...]` in this milestone; unsupported Lean simp features include wildcard
+simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), configurations/dischargers,
+and `simp at` locations. -/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.nativeTacticMode true in
+internal def simp_config_rejected : Rel aliasA aliasA := (by
+  simp (config := {}) [aliasA]
+  exact rel_refl aliasA)
+
+/-- error: native tactic `simp` supports only `simp`, `simp [name, ...]`, and
+`simp only [name, ...]` in this milestone; unsupported Lean simp features include wildcard
+simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), configurations/dischargers,
+and `simp at` locations. -/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.nativeTacticMode true in
+internal def simp_discharger_rejected : Rel aliasA aliasA := (by
+  simp (discharger := assumption) [aliasA]
+  exact rel_refl aliasA)
+
+/-- error: native tactic `simp` supports only `simp`, `simp [name, ...]`, and
+`simp only [name, ...]` in this milestone; unsupported Lean simp features include wildcard
+simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), configurations/dischargers,
+and `simp at` locations. -/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.nativeTacticMode true in
+internal def simp_at_rejected : Rel aliasA aliasA := (by
+  have h : Rel aliasA aliasA := rel_refl aliasA
+  simp at h
+  exact h)
+
 #check rw_alias_lean
 #check rw_alias_legacy
 #check rw_transport_lean

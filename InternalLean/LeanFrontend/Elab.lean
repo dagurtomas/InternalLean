@@ -1744,20 +1744,34 @@ def internalNativeSimpLemmaName? (stx : Syntax) : Option Name :=
     | .ident _ _ rawName _ => some rawName
     | _ => none
 
+/-- Punctuation used by Lean's `simp` lemma-list syntax. -/
+def internalNativeSimpListPunctuation : String → Bool
+  | "[" | "]" | "," => true
+  | _ => false
+
 /-- Extract all supported Lean `simp` lemma names below a syntax node. -/
 partial def internalNativeSimpLemmaNames? (stx : Syntax) : Option (Array Name) :=
-  if stx.isOfKind `Lean.Parser.Tactic.simpLemma then
+  if internalNativeSyntaxIsEmpty stx then
+    some #[]
+  else if stx.isOfKind `Lean.Parser.Tactic.simpLemma then
     match internalNativeSimpLemmaName? stx with
     | some name => some #[name]
     | none => none
-  else Id.run do
-    let mut names := #[]
-    let mut ok := true
-    for child in stx.getArgs do
-      match internalNativeSimpLemmaNames? child with
-      | some childNames => names := names ++ childNames
-      | none => ok := false
-    if ok then some names else none
+  else
+    match stx with
+    | .atom _ value => if internalNativeSimpListPunctuation value then some #[] else none
+    | .node _ kind args =>
+        if kind != nullKind then
+          none
+        else Id.run do
+          let mut names := #[]
+          let mut ok := true
+          for child in args do
+            match internalNativeSimpLemmaNames? child with
+            | some childNames => names := names ++ childNames
+            | none => ok := false
+          if ok then some names else none
+    | _ => none
 
 /-- Extract a supported Lean `simp`/`simp only` configuration. -/
 def internalNativeSimpConfig? (stx : Syntax) : Option ObjectSimpConfig :=
@@ -1819,6 +1833,8 @@ mutual
         else
           .simpRules config.names config.onlyMode
       return (#[{ stx, step }], #[{ goal with target := result.newGoal }])
+    if stx.isOfKind `Lean.Parser.Tactic.simp then
+      return (#[{ stx, step := .unsupportedSimpSyntax }], #[goal])
     match (⟨stx⟩ : TSyntax `tactic) with
     | `(tactic| skip) => pure (#[{ stx, step := .skip }], #[goal])
     | `(tactic| intro $name:ident) =>

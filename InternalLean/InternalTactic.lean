@@ -2899,6 +2899,7 @@ mutual
     | rwRules (items : Array (Name × Bool))
     | simp
     | simpRules (names : Array Name) (onlyMode : Bool)
+    | unsupportedSimpSyntax
     | haveTerm (name : Name) (typeExpr proof : ObjExpr)
     | haveStart (name : Name) (typeExpr : ObjExpr)
     | applyPlan (plan : InternalNativeApplyPlan)
@@ -3009,6 +3010,13 @@ def internalNativeUnsupportedTacticMessage (stx : Syntax) : MessageData :=
     native tactics in this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, \
     `assumption`, `show`, `change`, `rw`, `simp`, term- and tactic-form `have`, focus \
     bullets, and `skip`."
+
+/-- Unsupported-feature diagnostic for recognized Lean `simp` syntax in native mode. -/
+def internalNativeUnsupportedSimpMessage : MessageData :=
+  m!"native tactic `simp` supports only `simp`, `simp [name, ...]`, and \
+    `simp only [name, ...]` in this milestone; unsupported Lean simp features include \
+    wildcard simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), \
+    configurations/dischargers, and `simp at` locations."
 
 /-- Syntax kinds rejected before native tactic execution by the linear-script policy. -/
 def internalNativeRejectedTacticKinds : NameSet := Id.run do
@@ -3313,6 +3321,8 @@ def evalInternalNativeResolvedTacticStep (stx : Syntax) (step : InternalNativeTa
   | .simpRules names onlyMode =>
       let (_, mvarId, goal) ← getInternalNativeMainGoal stx
       simpInternalNativeMainGoal stx mvarId goal { names, onlyMode }
+  | .unsupportedSimpSyntax =>
+      throwErrorAt stx internalNativeUnsupportedSimpMessage
   | .haveTerm name typeExpr proof =>
       let (_, mvarId, goal) ← getInternalNativeMainGoal stx
       if internalObjectContextHasName goal.ctx name then
