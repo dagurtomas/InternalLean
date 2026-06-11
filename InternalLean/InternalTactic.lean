@@ -2769,8 +2769,7 @@ structure InternalProofHoleId where
   name : Name
   deriving Inhabited, Repr, BEq
 
-/-- Partial LF proof/object term built by native tactic mode.  Milestone 9a only allocates holes;
-closing constructors are populated by later milestones. -/
+/-- Partial LF proof/object term built by native tactic mode. -/
 inductive InternalPartialTerm where
   | hole (id : InternalProofHoleId)
   | closed (term : ObjExpr)
@@ -2778,6 +2777,59 @@ inductive InternalPartialTerm where
   | lam (names : Array Name) (body : InternalPartialTerm)
   | substitute (name : Name) (value body : InternalPartialTerm)
   deriving Inhabited, Repr
+
+/-- Wrapper accumulated while a native tactic focuses a single LF proof hole. -/
+inductive InternalNativeFrame where
+  | lam (name : Name)
+  | substitute (name : Name) (value : ObjExpr)
+  deriving Inhabited, Repr
+
+/-- Apply a native goal's accumulated wrappers to a solved proof term. -/
+def applyInternalNativeFrames (frames : Array InternalNativeFrame) (term : ObjExpr) : ObjExpr :=
+  frames.foldr (init := term) fun frame body =>
+    match frame with
+    | .lam name => .lam #[name] body
+    | .substitute name value =>
+        substObjectVars (({} : NameMap ObjExpr).insert name.eraseMacroScopes value) body
+
+/-- Apply a native goal's accumulated wrappers to a partial proof term. -/
+def applyInternalNativeFramesToPartial (frames : Array InternalNativeFrame)
+    (term : InternalPartialTerm) : InternalPartialTerm :=
+  frames.foldr (init := term) fun frame body =>
+    match frame with
+    | .lam name => .lam #[name] body
+    | .substitute name value => .substitute name (.closed value) body
+
+/-- One argument in a native `apply` plan. -/
+inductive InternalNativeApplyArg where
+  | closed (term : ObjExpr)
+  | subgoal (target : ObjExpr)
+  deriving Inhabited, Repr
+
+/-- Pre-elaborated native `apply` plan. -/
+structure InternalNativeApplyPlan where
+  rawName : Name
+  candidateName : Name
+  args : Array InternalNativeApplyArg := #[]
+  deriving Inhabited, Repr
+
+/-- Convert a native `apply` plan into a partial candidate application, allocating fresh holes. -/
+def mkInternalNativeApplyPartialTerm (startHole : Nat) (plan : InternalNativeApplyPlan) :
+    InternalPartialTerm × Array (InternalProofHoleId × ObjExpr) × Nat := Id.run do
+  let mut nextHole := startHole
+  let mut subgoals : Array (InternalProofHoleId × ObjExpr) := #[]
+  let mut term : InternalPartialTerm := .closed (.ident plan.candidateName)
+  for arg in plan.args do
+    let argTerm : InternalPartialTerm ←
+      match arg with
+      | .closed argValue => pure (.closed argValue)
+      | .subgoal target => do
+          let id : InternalProofHoleId := { name := Name.mkSimple s!"nativeGoal{nextHole}" }
+          nextHole := nextHole + 1
+          subgoals := subgoals.push (id, target)
+          pure (.hole id)
+    term := .app term argTerm
+  return (term, subgoals, nextHole)
 
 /-- LF goal state associated to a live display metavariable in native tactic mode. -/
 structure InternalNativeGoal where
@@ -2789,6 +2841,8 @@ structure InternalNativeGoal where
   targetExpr : ObjExpr
   /-- Partial-term hole solved by this goal. -/
   hole : InternalProofHoleId
+  /-- Wrappers to apply when the focused proof hole is solved. -/
+  frames : Array InternalNativeFrame := #[]
   /-- Native mode should not produce stale goals; this is reserved for future diagnostics. -/
   stale : Bool := false
   deriving Inhabited, Repr
@@ -2807,8 +2861,30 @@ structure InternalNativeTacticSession where
   sig : HLSignature
   /-- Declaration-local universe parameters. -/
   levels : Array Name := #[]
+  /-- Goal-display fallbacks created while running this native block. -/
+  fallbacks : Array InternalGoalDisplayFallback := #[]
   /-- Counter for fresh native holes. -/
   nextHole : Nat := 1
+
+/-- One pre-elaborated native tactic step. -/
+inductive InternalNativeTacticStep where
+  | evalLeanForAudit
+  | skip
+  | intro (name : Name)
+  | intros (names : Array Name)
+  | exact (term : ObjExpr)
+  | assumption
+  | showGoal (target : ObjExpr)
+  | changeGoal (target : ObjExpr)
+  | haveTerm (name : Name) (typeExpr proof : ObjExpr)
+  | applyPlan (plan : InternalNativeApplyPlan)
+  deriving Inhabited, Repr
+
+/-- Native tactic step with its source syntax. -/
+structure InternalNativeResolvedStep where
+  stx : Syntax
+  step : InternalNativeTacticStep
+  deriving Inhabited
 
 /-- Per-step authorization data checked by the post-step assignment audit. -/
 structure InternalNativeTacticTransaction where
@@ -2818,7 +2894,7 @@ structure InternalNativeTacticTransaction where
   replaced : NameSet := {}
   deriving Inhabited
 
-/-- Result of running the Phase 9a native tactic skeleton. -/
+/-- Result of running a native tactic block. -/
 structure InternalNativeTacticRunResult where
   /-- Initial live display goal. -/
   initialGoal : MVarId
@@ -2849,6 +2925,11 @@ def setCurrentInternalNativeTacticSession (session : InternalNativeTacticSession
   match stack.back? with
   | none => internalNativeTacticSessionStack.set #[session]
   | some _ => internalNativeTacticSessionStack.set (stack.pop.push session)
+
+/-- Modify the current native tactic transaction. -/
+def modifyInternalNativeTacticTransaction (f : InternalNativeTacticTransaction →
+    InternalNativeTacticTransaction) : CoreM Unit := do
+  internalNativeTacticTransaction.modify f
 
 /-- Run a term elaboration action with one active native tactic session. -/
 def withInternalNativeTacticSession (session : InternalNativeTacticSession)
@@ -2894,21 +2975,15 @@ def internalNativeUnsupportedTacticMessage (stx : Syntax) : MessageData :=
     else
       (firstInternalNativeTacticToken? stx).getD kindLabel
   m!"tactic `{tacticName}` is not part of InternalLean native tactic mode yet; supported \
-    Phase 9a skeleton tactic: `skip`. Core object tactics are enabled in later Phase 9 \
-    milestones."
+    native tactics in this milestone: `intro`, `intros`, `exact`, `apply`, `assumption`, \
+    `show`, `change`, term-form `have`, and `skip`."
 
-/-- Syntax kinds rejected before native tactic execution in milestone 9a. -/
+/-- Syntax kinds rejected before native tactic execution by the linear-script policy. -/
 def internalNativeRejectedTacticKinds : NameSet := Id.run do
   let mut out : NameSet := {}
   for n in [
       ``Lean.Parser.Tactic.first,
       ``Lean.Parser.Tactic.firstPar,
-      ``Lean.Parser.Tactic.intro,
-      ``Lean.Parser.Tactic.apply,
-      ``Lean.Parser.Tactic.exact,
-      ``Lean.Parser.Tactic.assumption,
-      ``Lean.Parser.Tactic.show,
-      ``Lean.Parser.Tactic.change,
       ``Lean.Parser.Tactic.tacticTry_,
       ``Lean.Parser.Tactic.tacticRepeat_,
       ``Lean.Parser.Tactic.repeat',
@@ -2923,7 +2998,7 @@ def internalNativeRejectedTacticKinds : NameSet := Id.run do
     out := out.insert n
   out
 
-/-- Return true for tactic syntax rejected by the Phase 9a linear-script policy. -/
+/-- Return true for tactic syntax rejected by the native linear-script policy. -/
 def internalNativeRejectsTacticSyntax (stx : Syntax) : Bool :=
   internalNativeRejectedTacticKinds.contains stx.getKind
 
@@ -2971,14 +3046,21 @@ def internalNativeLeanBySteps? (stx : Syntax) : Option (Array Syntax) :=
   else
     none
 
-/-- Run the Phase 9a post-step assignment audit. -/
+/-- True when a native Lean tactic block contains a direct declaration-wide `sorry` tactic. -/
+def internalNativeStepsContainDirectSorry (steps : Array Syntax) : Bool :=
+  steps.any (·.isOfKind `Lean.Parser.Tactic.tacticSorry)
+
+/-- Run the native post-step assignment audit. -/
 def auditInternalNativeTacticStep (stx : Syntax) (sessionBefore sessionAfter :
     InternalNativeTacticSession) (tx : InternalNativeTacticTransaction)
     (goalsAfter : List MVarId) : Term.TermElabM Unit := do
   let goalSet := goalsAfter.foldl (fun acc g => acc.insert g.name) ({} : NameSet)
   for (name, _) in sessionBefore.goals.toList do
     let assigned ← (MVarId.mk name).isAssigned
-    if assigned && !tx.closed.contains name && !tx.replaced.contains name then
+    let authorized := tx.closed.contains name || tx.replaced.contains name
+    if assigned && !authorized then
+      throwErrorAt stx (internalNativeUnsupportedTacticMessage stx)
+    if !goalSet.contains name && !(sessionAfter.goals.find? name).isSome && !authorized then
       throwErrorAt stx (internalNativeUnsupportedTacticMessage stx)
   for mvarId in goalsAfter do
     unless (sessionAfter.goals.find? mvarId.name).isSome do
@@ -2987,33 +3069,206 @@ def auditInternalNativeTacticStep (stx : Syntax) (sessionBefore sessionAfter :
     unless goalSet.contains name || tx.closed.contains name || tx.replaced.contains name do
       throwErrorAt stx (internalNativeUnsupportedTacticMessage stx)
 
+/-- Read the current native tactic session from inside Lean's tactic monad. -/
+def getInternalNativeTacticSessionInTactic : Tactic.TacticM InternalNativeTacticSession := do
+  let some session ← currentInternalNativeTacticSession?
+    | throwError "internal native tactic session disappeared"
+  pure session
+
+/-- Commit the current native tactic session from inside Lean's tactic monad. -/
+def setInternalNativeTacticSessionInTactic (session : InternalNativeTacticSession) :
+    Tactic.TacticM Unit := do
+  setCurrentInternalNativeTacticSession session
+
+/-- Mark one session-owned display mvar as closed in the current transaction. -/
+def markInternalNativeGoalClosed (mvarId : MVarId) : Tactic.TacticM Unit := do
+  modifyInternalNativeTacticTransaction fun tx =>
+    { tx with closed := tx.closed.insert mvarId.name }
+
+/-- Mark one session-owned display mvar as replaced in the current transaction. -/
+def markInternalNativeGoalReplaced (mvarId : MVarId) : Tactic.TacticM Unit := do
+  modifyInternalNativeTacticTransaction fun tx =>
+    { tx with replaced := tx.replaced.insert mvarId.name }
+
+/-- Fetch the current native LF goal associated to the main Lean display metavariable. -/
+def getInternalNativeMainGoal (stx : Syntax) :
+    Tactic.TacticM (InternalNativeTacticSession × MVarId × InternalNativeGoal) := do
+  let mvarId ← Tactic.getMainGoal
+  let session ← getInternalNativeTacticSessionInTactic
+  let some goal := session.goals.find? mvarId.name
+    | throwErrorAt stx (internalNativeUnsupportedTacticMessage stx)
+  pure (session, mvarId, goal)
+
+/-- Create live display mvars for updated native goals. -/
+def mkInternalNativeLiveGoals (session : InternalNativeTacticSession)
+    (goals : Array InternalNativeGoal) :
+    Tactic.TacticM (Array MVarId × Array InternalGoalDisplayFallback) := do
+  let mut mvars : Array MVarId := #[]
+  let mut fallbacks : Array InternalGoalDisplayFallback := #[]
+  for goal in goals do
+    let displayGoal := mkInternalGoalDisplayGoal goal.ctx goal.targetExpr
+    let (mvarId, goalFallbacks) ←
+      mkLiveInternalGoalDisplayMVarWithContext goal.target session.displayCtx displayGoal
+    mvars := mvars.push mvarId
+    fallbacks := fallbacks ++ goalFallbacks
+  pure (mvars, fallbacks)
+
+/-- Replace the current live display goal by zero or more fresh display mvars. -/
+def replaceInternalNativeMainGoalWith (oldMVarId : MVarId)
+    (newGoals : Array InternalNativeGoal) (holesUpdate : NameMap InternalPartialTerm →
+      NameMap InternalPartialTerm := id) (nextHole? : Option Nat := none) :
+    Tactic.TacticM Unit := do
+  let session ← getInternalNativeTacticSessionInTactic
+  let (newMVars, fallbacks) ← mkInternalNativeLiveGoals session newGoals
+  let mut goals := session.goals.erase oldMVarId.name
+  for mvarId in newMVars, goal in newGoals do
+    goals := goals.insert mvarId.name goal
+  let session := {
+    session with
+    goals
+    holes := holesUpdate session.holes
+    fallbacks := session.fallbacks ++ fallbacks
+    nextHole := nextHole?.getD session.nextHole }
+  markInternalNativeGoalReplaced oldMVarId
+  setInternalNativeTacticSessionInTactic session
+  Tactic.replaceMainGoal newMVars.toList
+
+/-- Replace the current live display goal by a fresh display mvar for an updated LF goal. -/
+def replaceInternalNativeMainGoal (oldMVarId : MVarId) (goal : InternalNativeGoal) :
+    Tactic.TacticM Unit :=
+  replaceInternalNativeMainGoalWith oldMVarId #[goal]
+
+/-- Close the current native goal with a checked LF term. -/
+def closeInternalNativeMainGoal (mvarId : MVarId) (goal : InternalNativeGoal)
+    (term : ObjExpr) : Tactic.TacticM Unit := do
+  let session ← getInternalNativeTacticSessionInTactic
+  let term := applyInternalNativeFramesToPartial goal.frames (.closed term)
+  let session := {
+    session with
+    goals := session.goals.erase mvarId.name
+    holes := session.holes.insert goal.hole.name term }
+  markInternalNativeGoalClosed mvarId
+  setInternalNativeTacticSessionInTactic session
+  Tactic.replaceMainGoal []
+
+/-- Execute one pre-elaborated InternalLean native tactic action. -/
+def evalInternalNativeResolvedTacticStep (stx : Syntax) (step : InternalNativeTacticStep) :
+    Tactic.TacticM Unit := do
+  match step with
+  | .evalLeanForAudit =>
+      Tactic.evalTactic stx
+  | .skip =>
+      pure ()
+  | .intro name =>
+      let (_, mvarId, goal) ← getInternalNativeMainGoal stx
+      let goal' ←
+        match introObjectGoal { ctx := goal.ctx, target := goal.targetExpr } name with
+        | .ok goal' => pure goal'
+        | .error err => throwErrorAt stx err
+      replaceInternalNativeMainGoal mvarId {
+        goal with
+        ctx := goal'.ctx
+        targetExpr := goal'.target
+        frames := goal.frames.push (.lam name) }
+  | .intros names =>
+      let (_, mvarId, goal) ← getInternalNativeMainGoal stx
+      let (names, goal') ←
+        if names.isEmpty then
+          let (names, goal') := autoIntroGoal { ctx := goal.ctx, target := goal.targetExpr }
+          pure (names, goal')
+        else
+          match introsObjectGoal { ctx := goal.ctx, target := goal.targetExpr } names with
+          | .ok goal' => pure (names, goal')
+          | .error err => throwErrorAt stx err
+      let frames := names.foldl (fun frames name => frames.push (.lam name)) goal.frames
+      replaceInternalNativeMainGoal mvarId {
+        goal with
+        ctx := goal'.ctx
+        targetExpr := goal'.target
+        frames }
+  | .exact term =>
+      let (_, mvarId, goal) ← getInternalNativeMainGoal stx
+      closeInternalNativeMainGoal mvarId goal term
+  | .assumption =>
+      let (session, mvarId, goal) ← getInternalNativeMainGoal stx
+      let some hypName := findAssumption? session.sig session.levels goal.ctx goal.targetExpr
+        | throwErrorAt stx (String.intercalate "\n" [
+            "native tactic `assumption` failed for object goal",
+            s!"  {diagnosticObjExprString goal.targetExpr}",
+            "",
+            "Available object hypotheses:",
+            renderInternalObjectContext goal.ctx])
+      closeInternalNativeMainGoal mvarId goal (.ident hypName)
+  | .showGoal targetExpr | .changeGoal targetExpr =>
+      let (_, mvarId, goal) ← getInternalNativeMainGoal stx
+      replaceInternalNativeMainGoal mvarId { goal with targetExpr }
+  | .haveTerm name typeExpr proof =>
+      let (_, mvarId, goal) ← getInternalNativeMainGoal stx
+      if internalObjectContextHasName goal.ctx name then
+        throwErrorAt stx "native tactic `have {name}` failed: local name '{name}' is already in \
+          the object context"
+      let goal := {
+        goal with
+        ctx := goal.ctx.push { name, typeExpr, visibility := .explicit }
+        frames := goal.frames.push (.substitute name proof) }
+      replaceInternalNativeMainGoal mvarId goal
+  | .applyPlan plan =>
+      let (session, mvarId, goal) ← getInternalNativeMainGoal stx
+      let (partialTerm, subgoals, nextHole) :=
+        mkInternalNativeApplyPartialTerm session.nextHole plan
+      let partialTerm := applyInternalNativeFramesToPartial goal.frames partialTerm
+      let newGoals := subgoals.map fun (hole, targetExpr) =>
+        { goal with targetExpr := targetExpr, hole := hole, frames := #[] }
+      let holesUpdate := fun holes => Id.run do
+        let mut holes := holes.insert goal.hole.name partialTerm
+        for (hole, _) in subgoals do
+          holes := holes.insert hole.name (.hole hole)
+        return holes
+      replaceInternalNativeMainGoalWith mvarId newGoals holesUpdate (some nextHole)
+
 /-- Run one top-level native tactic step transactionally. -/
-def runInternalNativeTacticStep (goal : MVarId) (stx : Syntax) :
-    Term.TermElabM (List MVarId) := do
-  if internalNativeRejectsTacticSyntax stx then
-    throwErrorAt stx (internalNativeUnsupportedTacticMessage stx)
+def runInternalNativeResolvedTacticStep (goal : MVarId) (restGoals : List MVarId)
+    (resolved : InternalNativeResolvedStep) : Term.TermElabM (List MVarId) := do
+  if internalNativeRejectsTacticSyntax resolved.stx then
+    throwErrorAt resolved.stx (internalNativeUnsupportedTacticMessage resolved.stx)
   let some sessionBefore ← currentInternalNativeTacticSession?
-    | throwErrorAt stx "internal native tactic step executed without an active session"
+    | throwErrorAt resolved.stx "internal native tactic step executed without an active session"
   let saved ← Term.saveState
   let txBefore ← internalNativeTacticTransaction.get
   internalNativeTacticTransaction.set {}
   try
-    let goalsAfter ← Tactic.run goal (Tactic.evalTactic stx)
+    let goalsAfter ← Tactic.run goal <|
+      Tactic.withTacticInfoContext resolved.stx <|
+        evalInternalNativeResolvedTacticStep resolved.stx resolved.step
     let tx ← internalNativeTacticTransaction.get
     let some sessionAfter ← currentInternalNativeTacticSession?
-      | throwErrorAt stx "internal native tactic session disappeared"
-    auditInternalNativeTacticStep stx sessionBefore sessionAfter tx goalsAfter
-    unless internalNativeAllowsSkeletonTacticSyntax stx do
-      throwErrorAt stx (internalNativeUnsupportedTacticMessage stx)
-    pure goalsAfter
+      | throwErrorAt resolved.stx "internal native tactic session disappeared"
+    let allGoalsAfter := goalsAfter ++ restGoals
+    auditInternalNativeTacticStep resolved.stx sessionBefore sessionAfter tx allGoalsAfter
+    if let .evalLeanForAudit := resolved.step then
+      throwErrorAt resolved.stx (internalNativeUnsupportedTacticMessage resolved.stx)
+    pure allGoalsAfter
   catch ex =>
     saved.restore (restoreInfo := true)
     setCurrentInternalNativeTacticSession sessionBefore
-    throw ex
+    if let .evalLeanForAudit := resolved.step then
+      throwErrorAt resolved.stx (internalNativeUnsupportedTacticMessage resolved.stx)
+    else
+      throw ex
   finally
     internalNativeTacticTransaction.set txBefore
 
-/-- Build the initial Phase 9a native tactic session and live display mvar. -/
+/-- Run one syntax-only Phase 9a skeleton tactic step. -/
+def runInternalNativeTacticStep (goal : MVarId) (stx : Syntax) :
+    Term.TermElabM (List MVarId) := do
+  let step :=
+    if internalNativeAllowsSkeletonTacticSyntax stx then
+      .skip
+    else
+      .evalLeanForAudit
+  runInternalNativeResolvedTacticStep goal [] { stx, step }
+
+/-- Build the initial native tactic session and live display mvar. -/
 def mkInitialInternalNativeTacticSession (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (targetExpr : ObjExpr) :
     Term.TermElabM (InternalNativeTacticSession × MVarId × Array InternalGoalDisplayFallback) := do
@@ -3028,26 +3283,88 @@ def mkInitialInternalNativeTacticSession (target : InternalDefTarget) (sig : HLS
     holes := ({} : NameMap InternalPartialTerm).insert rootHole.name (.hole rootHole)
     displayCtx
     sig
-    levels }
+    levels
+    fallbacks }
   pure (session, mvarId, fallbacks)
 
 /-- Run the Phase 9a native tactic skeleton without finalizing the partial term. -/
 def runInternalNativeTacticSkeleton (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (targetExpr : ObjExpr)
     (steps : Array Syntax) : CommandElabM InternalNativeTacticRunResult := do
-  let (result, fallbacks) ← liftTermElabM do
-    let (session, initialGoal, fallbacks) ←
+  let result ← liftTermElabM do
+    let (session, initialGoal, _) ←
       mkInitialInternalNativeTacticSession target sig levels ctx targetExpr
     let ((finalGoals, initialGoal), session) ← withInternalNativeTacticSession session do
       let mut goals := [initialGoal]
       for step in steps do
         let some goal := goals.head? | throwErrorAt step "no remaining InternalLean native goals"
+        let restGoals := goals.tail
         goals ← runInternalNativeTacticStep goal step
+        goals := goals ++ restGoals
       pure (goals, initialGoal)
     let mctx ← getMCtx
-    pure ({ initialGoal, finalGoals, mctx, session }, fallbacks)
-  recordInternalGoalDisplayFallbacks (← getRef) fallbacks
+    pure { initialGoal, finalGoals, mctx, session }
+  recordInternalGoalDisplayFallbacks (← getRef) result.session.fallbacks
   pure result
+
+/-- Run pre-elaborated native tactic steps. -/
+def runInternalNativeResolvedTactic (target : InternalDefTarget) (sig : HLSignature)
+    (levels : Array Name) (ctx : Array HLBinding) (targetExpr : ObjExpr)
+    (steps : Array InternalNativeResolvedStep) : CommandElabM InternalNativeTacticRunResult := do
+  let result ← liftTermElabM do
+    let (session, initialGoal, _) ←
+      mkInitialInternalNativeTacticSession target sig levels ctx targetExpr
+    let ((finalGoals, initialGoal), session) ← withInternalNativeTacticSession session do
+      let mut goals := [initialGoal]
+      for step in steps do
+        let some goal := goals.head?
+          | throwErrorAt step.stx "no remaining InternalLean native goals"
+        goals ← runInternalNativeResolvedTacticStep goal goals.tail step
+      pure (goals, initialGoal)
+    let mctx ← getMCtx
+    pure { initialGoal, finalGoals, mctx, session }
+  recordInternalGoalDisplayFallbacks (← getRef) result.session.fallbacks
+  pure result
+
+/-- Finalize a native partial LF term, failing if any proof hole remains open. -/
+partial def finalizeInternalNativePartialTerm (holes : NameMap InternalPartialTerm)
+    (fuel : Nat) : InternalPartialTerm → Except String ObjExpr
+  | .closed term => pure term
+  | .app fn arg => do
+      let fn ← finalizeInternalNativePartialTerm holes fuel fn
+      let arg ← finalizeInternalNativePartialTerm holes fuel arg
+      pure (.app fn arg)
+  | .lam names body => do
+      let body ← finalizeInternalNativePartialTerm holes fuel body
+      pure (.lam names body)
+  | .substitute name value body => do
+      let value ← finalizeInternalNativePartialTerm holes fuel value
+      let body ← finalizeInternalNativePartialTerm holes fuel body
+      pure <| substObjectVars (({} : NameMap ObjExpr).insert name.eraseMacroScopes value) body
+  | .hole id => do
+      if fuel == 0 then
+        throw s!"native tactic partial proof appears cyclic at hole '{id.name}'"
+      let some term := holes.find? id.name
+        | throw s!"native tactic partial proof is missing hole '{id.name}'"
+      match term with
+      | .hole id' =>
+          if id'.name == id.name then
+            throw s!"native tactic proof hole '{id.name}' is still open"
+          else
+            finalizeInternalNativePartialTerm holes (fuel - 1) term
+      | _ => finalizeInternalNativePartialTerm holes (fuel - 1) term
+
+/-- Finalize the root native partial term after all live LF goals have closed. -/
+def finalizeInternalNativeTacticResult (stx : Syntax)
+    (result : InternalNativeTacticRunResult) : CommandElabM ObjExpr := do
+  unless result.finalGoals.isEmpty && result.session.goals.isEmpty do
+    throwErrorAt stx "InternalLean native tactic block left unsolved object goal(s)"
+  let some root := result.session.holes.find? result.session.rootHole.name
+    | throwErrorAt stx "InternalLean native tactic root proof term is missing"
+  let fuel := result.session.holes.toList.length + 1
+  match finalizeInternalNativePartialTerm result.session.holes fuel root with
+  | .ok term => pure term
+  | .error err => throwErrorAt stx err
 
 /-- User-facing finalization error for milestone 9a's skeleton implementation. -/
 def throwInternalNativeTacticSkeletonIncomplete (stx : Syntax)

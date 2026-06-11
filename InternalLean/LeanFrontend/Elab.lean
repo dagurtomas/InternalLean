@@ -1378,6 +1378,219 @@ def elabExtendInternalLeanQuoted (doc? : Option (TSyntax ``Parser.Command.docCom
       recordInternalFrontendFallbackException `extendTypeTheory nm.raw ex
       elabExtendInternalLean doc? nm decls
 
+/-- Native tactic elaboration state used while pre-elaborating term arguments. -/
+structure InternalNativePreElabGoal where
+  ctx : Array HLBinding := #[]
+  target : ObjExpr
+
+/-- Parse one legacy `internalTactic` source span as a Lean tactic. -/
+def parseInternalNativeLeanTacticFromSource (stx : Syntax) : CommandElabM (TSyntax `tactic) := do
+  let some startPos := stx.getPos? (canonicalOnly := true)
+    | throwErrorAt stx "cannot recover source range for native tactic parsing"
+  let some stopPos := stx.getTailPos? (canonicalOnly := true)
+    | throwErrorAt stx "cannot recover source range for native tactic parsing"
+  let source := String.Pos.Raw.extract (← getFileMap).source startPos stopPos
+  match Lean.Parser.runParserCategory (← getEnv) `tactic source with
+  | .ok stx => pure ⟨stx⟩
+  | .error err => throwErrorAt stx "could not parse InternalLean native tactic as Lean tactic: \
+      {err}"
+
+/-- Known LF local types for a native tactic context. -/
+def internalNativeKnownTypesOfContext (ctx : Array HLBinding) : LFLocalTypes := Id.run do
+  let mut out : LFLocalTypes := {}
+  for b in ctx do
+    out := out.insert b.name.eraseMacroScopes (eraseObjExprScopes b.typeExpr)
+  out
+
+/-- Elaborate a Lean-quoted object term in a native tactic context. -/
+def elabInternalNativeQuotedTerm (target : InternalDefTarget) (sig : HLSignature)
+    (ctx : Array HLBinding) (expected? : Option ObjExpr) (term : TSyntax `term) :
+    CommandElabM ObjExpr :=
+  elabLeanQuotedObjTerm target.theoryName sig ctx expected? term
+
+/-- Extract the object-theory candidate name from a native `apply` argument. -/
+def internalNativeApplyTermName? (term : TSyntax `term) : Option Name :=
+  match term.raw with
+  | .ident _ _ n _ => some n
+  | _ => none
+
+/-- Build the native `apply` plan and its immediate object subgoals. -/
+def mkInternalNativeApplyPlan (target : InternalDefTarget) (sig : HLSignature)
+    (goal : InternalNativePreElabGoal) (rawName : Name) (ref : Syntax) :
+    CommandElabM (InternalNativeApplyPlan × Array InternalNativePreElabGoal) := do
+  let some cand := findInternalApplyCandidate? target sig rawName
+    | throwErrorAt ref "native tactic `apply {rawName}` failed: unknown rule or internal \
+        declaration '{rawName}' in type theory '{target.theoryName}'"
+  let some subst0 := matchInternalCandidateConclusion? sig goal.ctx cand.params
+      cand.conclusionExpr goal.target
+    | throwErrorAt ref ("native tactic `apply {rawName}` failed: " ++
+        internalCandidateConclusionMismatchMessage sig goal.ctx cand.conclusionExpr goal.target)
+  let mut subst := subst0
+  let mut args : Array InternalNativeApplyArg := #[]
+  let mut newGoals : Array InternalNativePreElabGoal := #[]
+  for param in cand.params do
+    let key := param.name.eraseMacroScopes
+    match subst.find? key with
+    | some arg => args := args.push (.closed arg)
+    | none =>
+        let paramTy := substObjectVars subst param.typeExpr
+        args := args.push (.subgoal paramTy)
+        newGoals := newGoals.push { ctx := goal.ctx, target := paramTy }
+        subst := subst.insert key (internalObjectGoalPlaceholder param.name)
+  for premiseTarget in cand.subgoalTargets do
+    let premiseTarget := substObjectVars subst premiseTarget
+    args := args.push (.subgoal premiseTarget)
+    newGoals := newGoals.push { ctx := goal.ctx, target := premiseTarget }
+  for sc in cand.sideConditions do
+    let scInput := substObjectVars subst sc.input
+    match classifySideConditionHook sc.solver with
+    | .builtinTrivial => pure ()
+    | .opaque =>
+        throwErrorAt ref
+          (internalOpaqueSideConditionMessage "apply" rawName cand.name sc.name sc.solver scInput)
+  pure ({ rawName, candidateName := cand.name, args }, newGoals)
+
+/-- Check and normalize a native `exact`/`have` proof term against an LF target. -/
+def checkInternalNativeProofTerm (target : InternalDefTarget) (sig : HLSignature)
+    (ctx : Array HLBinding) (expected proof : ObjExpr) (tacticName : String) (ref : Syntax) :
+    CommandElabM ObjExpr := withRef ref do
+  let proof ←
+    match elaborateInternalDirectTermPlaceholders target sig ctx expected proof with
+    | .ok proof => pure proof
+    | .error err => throwError err
+  try
+    liftCoreM <| checkLFExprHasType sig "native tactic" target.localName
+      s!"{tacticName} proof" (internalNativeKnownTypesOfContext ctx) proof expected
+  catch ex =>
+    throwError "native tactic `{tacticName}` failed to check proof against the current object \
+      goal:\n{exceptionMessageData ex}"
+  pure proof
+
+/-- Pre-elaborate one native tactic step enough that execution need not run Lean proof search
+for supported InternalLean tactics. Unsupported steps are still passed to Lean and then
+rejected/audited, which catches user macros that assign display metavariables. -/
+def elabInternalNativeResolvedStep (target : InternalDefTarget) (sig : HLSignature)
+    (levels : Array Name) (goal : InternalNativePreElabGoal) (stx : Syntax) :
+    CommandElabM (InternalNativeResolvedStep × Array InternalNativePreElabGoal) := do
+  let unsupported : CommandElabM (InternalNativeResolvedStep × Array InternalNativePreElabGoal) :=
+    pure ({ stx, step := .evalLeanForAudit }, #[goal])
+  match (⟨stx⟩ : TSyntax `tactic) with
+  | `(tactic| skip) => pure ({ stx, step := .skip }, #[goal])
+  | `(tactic| intro $name:ident) =>
+      let goal' ←
+        match introObjectGoal { ctx := goal.ctx, target := goal.target } name.getId with
+        | .ok goal' => pure goal'
+        | .error err => throwErrorAt stx err
+      pure ({ stx, step := .intro name.getId }, #[{ ctx := goal'.ctx, target := goal'.target }])
+  | `(tactic| intros $names:ident*) =>
+      let rawNames := names.map (·.getId)
+      let (introNames, goal') ←
+        if rawNames.isEmpty then
+          let (introNames, goal') := autoIntroGoal { ctx := goal.ctx, target := goal.target }
+          pure (introNames, goal')
+        else
+          match introsObjectGoal { ctx := goal.ctx, target := goal.target } rawNames with
+          | .ok goal' => pure (rawNames, goal')
+          | .error err => throwErrorAt stx err
+      pure ({ stx, step := .intros introNames }, #[{ ctx := goal'.ctx, target := goal'.target }])
+  | `(tactic| exact $proof:term) =>
+      let proofExpr ← withRef proof.raw <|
+        elabInternalNativeQuotedTerm target sig goal.ctx (some goal.target) proof
+      let proofExpr ← checkInternalNativeProofTerm target sig goal.ctx goal.target proofExpr
+        "exact" proof.raw
+      pure ({ stx, step := .exact proofExpr }, #[])
+  | `(tactic| assumption) =>
+      let some _ := findAssumption? sig levels goal.ctx goal.target
+        | throwErrorAt stx (String.intercalate "\n" [
+            "native tactic `assumption` failed for object goal",
+            s!"  {diagnosticObjExprString goal.target}",
+            "",
+            "Available object hypotheses:",
+            renderInternalObjectContext goal.ctx])
+      pure ({ stx, step := .assumption }, #[])
+  | `(tactic| show $newTarget:term) =>
+      let newTargetExpr ← withRef newTarget.raw <|
+        elabInternalNativeQuotedTerm target sig goal.ctx none newTarget
+      unless objectGoalsConvertible sig levels goal.ctx goal.target newTargetExpr do
+        throwErrorAt newTarget.raw (String.intercalate "\n" [
+          "native tactic `show` cannot replace the current object goal",
+          s!"  {diagnosticObjExprString goal.target}",
+          "with non-convertible/non-identical object goal",
+          s!"  {diagnosticObjExprString newTargetExpr}",
+          "",
+          "This is object judgmental conversion, not Lean equality."])
+      pure ({ stx, step := .showGoal newTargetExpr }, #[{ goal with target := newTargetExpr }])
+  | `(tactic| change $newTarget:term) =>
+      let newTargetExpr ← withRef newTarget.raw <|
+        elabInternalNativeQuotedTerm target sig goal.ctx none newTarget
+      match objectGoalConversionCheck sig levels goal.ctx goal.target newTargetExpr with
+      | .ok _ =>
+          pure ({ stx, step := .changeGoal newTargetExpr },
+            #[{ goal with target := newTargetExpr }])
+      | .error err =>
+          if objectGoalsConvertible sig levels goal.ctx goal.target newTargetExpr then
+            pure ({ stx, step := .changeGoal newTargetExpr },
+              #[{ goal with target := newTargetExpr }])
+          else
+            throwErrorAt newTarget.raw (String.intercalate "\n" [
+              "native tactic `change` cannot replace the current object goal",
+              s!"  {diagnosticObjExprString goal.target}",
+              s!"with\n  {diagnosticObjExprString newTargetExpr}",
+              "",
+              "The endpoints are not judgmentally convertible in the active object theory.",
+              "This tactic checks object conversion evidence; it does not use Lean equality or \
+                an internal equality proof.",
+              "",
+              s!"conversion failure: {err}",
+              "",
+              objectGoalNormalizationMismatchString sig goal.ctx goal.target newTargetExpr])
+  | `(tactic| have $name:ident : $typeTerm:term := $proofTerm:term) =>
+      if proofTerm.raw.isOfKind `Lean.Parser.Term.byTactic then
+        throwErrorAt proofTerm.raw "tactic-form `have ... := by` in InternalLean native tactic \
+          mode is implemented in Phase 9c; use term-form `have h : T := proof` for now"
+      if internalObjectContextHasName goal.ctx name.getId then
+        throwErrorAt name.raw "native tactic `have {name.getId}` failed: local name \
+          '{name.getId}' is already in the object context"
+      let typeExpr ← withRef typeTerm.raw <|
+        elabInternalNativeQuotedTerm target sig goal.ctx none typeTerm
+      let proofExpr ← withRef proofTerm.raw <|
+        elabInternalNativeQuotedTerm target sig goal.ctx (some typeExpr) proofTerm
+      let proofExpr ← checkInternalNativeProofTerm target sig goal.ctx typeExpr proofExpr
+        "have" proofTerm.raw
+      let goal' := {
+        ctx := goal.ctx.push { name := name.getId, typeExpr, visibility := .explicit }
+        target := goal.target }
+      pure ({ stx, step := .haveTerm name.getId typeExpr proofExpr }, #[goal'])
+  | `(tactic| apply $candidate:term) =>
+      let some rawName := internalNativeApplyTermName? candidate
+        | throwErrorAt candidate.raw "native tactic `apply` expects an object rule, theorem, or \
+          declaration name"
+      let (plan, newGoals) ← mkInternalNativeApplyPlan target sig goal rawName stx
+      pure ({ stx, step := .applyPlan plan }, newGoals)
+  | _ => unsupported
+
+/-- Pre-elaborate a native tactic block. -/
+def elabInternalNativeResolvedSteps (target : InternalDefTarget) (sig : HLSignature)
+    (levels : Array Name) (ctx : Array HLBinding) (targetExpr : ObjExpr)
+    (steps : Array Syntax) : CommandElabM (Array InternalNativeResolvedStep) := do
+  let mut goals : List InternalNativePreElabGoal := [{ ctx, target := targetExpr }]
+  let mut out := #[]
+  for stx in steps do
+    let some goal := goals.head?
+      | throwErrorAt stx "no remaining InternalLean native goals"
+    let (step, newGoals) ← elabInternalNativeResolvedStep target sig levels goal stx
+    out := out.push step
+    goals := newGoals.toList ++ goals.tail
+  pure out
+
+/-- Run a native tactic block and return its finalized LF proof/body term. -/
+def elabInternalNativeByTerm (target : InternalDefTarget) (sig : HLSignature)
+    (levels : Array Name) (ctx : Array HLBinding) (targetExpr : ObjExpr) (bodyStx : Syntax)
+    (steps : Array Syntax) : CommandElabM ObjExpr := do
+  let resolved ← elabInternalNativeResolvedSteps target sig levels ctx targetExpr steps
+  let result ← runInternalNativeResolvedTactic target sig levels ctx targetExpr resolved
+  finalizeInternalNativeTacticResult bodyStx result
+
 /-- Elaborate a canonical checked `internal def` Lean-term body through the quoted frontend. -/
 def elabCanonicalLeanQuotedDefChecked (doc? : Option (TSyntax ``Parser.Command.docComment))
     (declNameStx : Syntax) (declName : Name) (binders : TSyntaxArray `ttBinder)
@@ -1391,10 +1604,19 @@ def elabCanonicalLeanQuotedDefChecked (doc? : Option (TSyntax ``Parser.Command.d
   let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
   if (← liftCoreM internalNativeTacticModeEnabled) then
     if let some steps := internalNativeLeanBySteps? bodyStx.raw then
+      if internalNativeStepsContainDirectSorry steps then
+        elabInternalDefSorryWithBinders doc? declNameStx declName #[] binders typeStx
+        return ()
       let some sig ← liftCoreM <| getTheory? target.theoryName
         | throwError "unknown type theory '{target.theoryName}'"
       let flatSig ← liftCoreM <| flattenSignature sig
-      elabInternalDefNativeTacticSkeleton target flatSig #[] params typeExpr bodyStx.raw steps
+      let valueExpr ← elabInternalNativeByTerm target flatSig #[] params typeExpr bodyStx.raw steps
+      if params.isEmpty then
+        elabInternalDefCheckedExpr doc? declNameStx declName #[] typeExpr valueExpr
+          "internal def := by (native)"
+      else
+        elabInternalDefCheckedWithBindersExpr doc? declNameStx declName #[] params typeExpr
+          valueExpr "internal def := by (native)"
       return ()
   let valueExpr ← elabLeanQuotedLFBody target params typeExpr bodyStx
   compareLeanQuotedBodyWithLegacyIfEnabled .objectDef `compareLegacyInternalDef declName target
@@ -1420,16 +1642,75 @@ def elabCanonicalLeanQuotedTheoremChecked (doc? : Option (TSyntax ``Parser.Comma
   let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
   if (← liftCoreM internalNativeTacticModeEnabled) then
     if let some steps := internalNativeLeanBySteps? bodyStx.raw then
+      if internalNativeStepsContainDirectSorry steps then
+        elabInternalTheoremSorryWithBinders doc? declNameStx declName #[] binders typeStx
+        return ()
       let some sig ← liftCoreM <| getTheory? target.theoryName
         | throwError "unknown type theory '{target.theoryName}'"
       let flatSig ← liftCoreM <| flattenSignature sig
-      elabInternalDefNativeTacticSkeleton target flatSig #[] params typeExpr bodyStx.raw steps
+      let valueExpr ← elabInternalNativeByTerm target flatSig #[] params typeExpr bodyStx.raw steps
+      elabLeanQuotedInternalTheoremCheckedExpr doc? declNameStx declName params typeExpr
+        valueExpr "internal theorem := by (native)"
       return ()
   let valueExpr ← elabLeanQuotedLFBody target params typeExpr bodyStx
   compareLeanQuotedBodyWithLegacyIfEnabled .judgmentTheorem `compareLegacyInternalTheorem
     declName target params typeExpr valueExpr bodyStx
   saveLeanQuotedLFBodyInfo target params typeExpr bodyStx.raw
   elabLeanQuotedInternalTheoremCheckedExpr doc? declNameStx declName params typeExpr valueExpr
+
+/-- Elaborate a legacy-parsed `internal def ... := by` block through native tactic mode when the
+native option is enabled.  This lets borrowed Lean spellings such as `exact h` and `intro x` use
+the canonical quoted frontend instead of the compatibility object-tactic compiler. -/
+def elabNativeInternalDefByFromParsedTactics
+    (doc? : Option (TSyntax ``Parser.Command.docComment)) (declNameStx : Syntax)
+    (declName : Name) (levels : Array Name) (binders : TSyntaxArray `ttBinder)
+    (typeStx : TSyntax `ttExpr) (tactics : TSyntaxArray `internalTactic) : CommandElabM Unit := do
+  unless (← liftCoreM internalNativeTacticModeEnabled) do
+    throwUnsupportedSyntax
+  let steps ← tactics.mapM fun tac => parseInternalNativeLeanTacticFromSource tac.raw
+  let stepSyntax := steps.map (·.raw)
+  if internalNativeStepsContainDirectSorry stepSyntax then
+    elabInternalDefSorryWithBinders doc? declNameStx declName levels binders typeStx
+    return ()
+  let target ← resolveInternalDefTarget declName
+  let params ← binders.mapM elabHLBinding
+  let typeExpr ← elabObjExpr typeStx
+  let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
+  let some sig ← liftCoreM <| getTheory? target.theoryName
+    | throwError "unknown type theory '{target.theoryName}'"
+  let flatSig ← liftCoreM <| flattenSignature sig
+  let bodyRef := (tactics[0]?).map (·.raw) |>.getD declNameStx
+  let valueExpr ← elabInternalNativeByTerm target flatSig levels params typeExpr bodyRef stepSyntax
+  if params.isEmpty then
+    elabInternalDefCheckedExpr doc? declNameStx declName levels typeExpr valueExpr
+      "internal def := by (native)"
+  else
+    elabInternalDefCheckedWithBindersExpr doc? declNameStx declName levels params typeExpr
+      valueExpr "internal def := by (native)"
+
+elab_rules (kind := internalDefBy) : command
+  | `($[$doc?:docComment]? internal def $declName:ident : $typeStx:ttExpr := by
+      $tactics:internalTactic*) =>
+      elabNativeInternalDefByFromParsedTactics doc? declName declName.getId #[] #[] typeStx
+        tactics
+
+elab_rules (kind := internalDefLevelBy) : command
+  | `($[$doc?:docComment]? internal def $declName:ident {$levels:ident,*} : $typeStx:ttExpr :=
+      by $tactics:internalTactic*) =>
+      elabNativeInternalDefByFromParsedTactics doc? declName declName.getId
+        (levels.getElems.map (·.getId)) #[] typeStx tactics
+
+elab_rules (kind := internalDefBinderBy) : command
+  | `($[$doc?:docComment]? internal def $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := by $tactics:internalTactic*) =>
+      elabNativeInternalDefByFromParsedTactics doc? declName declName.getId #[] binders typeStx
+        tactics
+
+elab_rules (kind := internalDefLevelBinderBy) : command
+  | `($[$doc?:docComment]? internal def $declName:ident {$levels:ident,*}
+      $binders:ttBinder* : $typeStx:ttExpr := by $tactics:internalTactic*) =>
+      elabNativeInternalDefByFromParsedTactics doc? declName declName.getId
+        (levels.getElems.map (·.getId)) binders typeStx tactics
 
 /-- Elaborate one `internal_defs where` Lean-term declaration through the quoted frontend. -/
 partial def elabLeanQuotedInternalDefsDecl (decl : TSyntax `internalDefsDecl) :
