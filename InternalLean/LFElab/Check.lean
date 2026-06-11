@@ -1876,6 +1876,20 @@ def lowerLFDerivationToKernel (sig : HLSignature) (rules : Array CheckedLFRule)
     lowerLFDerivationToKernelWithMode sig rules globalHeads knownTypes defValues localNames
       theoremName true derivation
 
+/-- Try to lower legacy raw-kernel replay without making that compatibility path authoritative. -/
+def tryLowerLFDerivationToKernel? (sig : HLSignature) (rules : Array CheckedLFRule)
+    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (knownTypes : LFLocalTypes)
+    (defValues : LFDefinitionValueMap) (localNames : NameSet) (theoremName : Name)
+    (derivation : CheckedLFDerivation) : CoreM (Option KernelLFDerivation) := do
+  try
+    let kernelDerivation ← lowerLFDerivationToKernel sig rules globalHeads knownTypes defValues
+      localNames theoremName derivation
+    pure (some kernelDerivation)
+  catch ex =>
+    logInfo m!"legacy raw kernel replay lowering failed for judgment_theorem '{theoremName}' \
+      in type theory '{sig.name}'; structural replay will decide acceptance.\n{ex.toMessageData}"
+    pure none
+
 /-- Summarize the outer layer of a shallow checked LF derivation for legacy diagnostics. -/
 def summarizeLFRuleApplication? : CheckedLFDerivation → LFRuleApplicationSummary
   | .localAssumption .. => {}

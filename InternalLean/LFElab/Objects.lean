@@ -138,8 +138,8 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
       | throwError "judgment_theorem '{t.name}' in type theory '{sig.name}' has unchecked proof \
         '{diagnosticObjExprString t.proof}'; expected a local theorem assumption, checked \
           judgment theorem, or LF rule application"
-    let kernelDerivation ←
-      lowerLFDerivationToKernel sig rules globalHeads theoremKnownTypes knownLFDefValues
+    let kernelDerivation? ←
+      tryLowerLFDerivationToKernel? sig rules globalHeads theoremKnownTypes knownLFDefValues
         theoremLocals t.name derivation
     let ruleSummary := summarizeLFRuleApplication? derivation
     checkedTheorems := checkedTheorems.push {
@@ -156,7 +156,7 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
       premiseTheorems := ruleSummary.premiseTheorems
       sideConditionCertificateNames := ruleSummary.sideConditionCertificateNames
       derivation? := some derivation
-      kernelDerivation? := some kernelDerivation }
+      kernelDerivation? := kernelDerivation? }
     let stmt := match derivation with
       | .localAssumption _ stmt => stmt
       | .theoremRef _ stmt _ _ => stmt
@@ -671,9 +671,9 @@ def checkLFJudgmentTheoremInContext (ctx : IntraBlockLFCheckContext)
     | throwError "judgment_theorem '{t.name}' in type theory '{sig.name}' has unchecked proof \
       '{diagnosticObjExprString t.proof}'; expected a local theorem assumption, checked \
         judgment theorem, or LF rule application"
-  let kernelDerivation ←
-    lowerLFDerivationToKernel sig rules globalHeads theoremKnownTypes knownLFDefValues theoremLocals
-      t.name derivation
+  let kernelDerivation? ←
+    tryLowerLFDerivationToKernel? sig rules globalHeads theoremKnownTypes knownLFDefValues
+      theoremLocals t.name derivation
   let ruleSummary := summarizeLFRuleApplication? derivation
   let checkedTheorem : CheckedLFJudgmentTheorem := {
     name := t.name.eraseMacroScopes
@@ -689,7 +689,7 @@ def checkLFJudgmentTheoremInContext (ctx : IntraBlockLFCheckContext)
     premiseTheorems := ruleSummary.premiseTheorems
     sideConditionCertificateNames := ruleSummary.sideConditionCertificateNames
     derivation? := some derivation
-    kernelDerivation? := some kernelDerivation }
+    kernelDerivation? := kernelDerivation? }
   let theoremName := t.name.eraseMacroScopes
   let availableStatements :=
     if t.binders.isEmpty then

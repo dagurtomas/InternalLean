@@ -139,11 +139,11 @@ partial def substParams (σ : NameMap LevelExpr) : LevelExpr → LevelExpr
 end LevelExpr
 
 
-/-- LF head names still reserved by surface grammar or legacy raw replay compatibility. -/
+/-- LF head names that still collide with surface grammar tokens after the structural cutover. -/
 public def lfKernelReservedNameList : List Name :=
-  [`fst, `snd, `Type, `lam]
+  [`fst, `snd, `Type]
 
-/-- Set of LF head names still reserved by surface grammar or legacy replay compatibility. -/
+/-- Set of LF head names that still collide with surface grammar tokens. -/
 public def lfKernelReservedNames : NameSet :=
   lfKernelReservedNameList.foldl (init := {}) fun names n => names.insert n
 
@@ -151,7 +151,7 @@ public def lfKernelReservedNames : NameSet :=
 public def lfKernelReservedNamesString : String :=
   String.intercalate ", " (lfKernelReservedNameList.map (fun n => toString n))
 
-/-- Whether a user LF declaration name is still reserved by syntax or replay compatibility. -/
+/-- Whether a user LF declaration name is still reserved by surface grammar. -/
 public def isLFKernelReservedName (n : Name) : Bool :=
   lfKernelReservedNames.contains n.eraseMacroScopes
 
@@ -163,8 +163,8 @@ public def lfKernelReservedNameError (kind : String) (rawName : Name) : String :
       kind
     else
       s!"{kind} declaration"
-  s!"{label} '{rawName}' uses reserved name '{n}', which is reserved by InternalLean syntax or \
-    legacy replay compatibility. Reserved LF names: {lfKernelReservedNamesString}"
+  s!"{label} '{rawName}' uses reserved name '{n}', which is reserved by InternalLean syntax. \
+    Reserved LF names: {lfKernelReservedNamesString}"
 
 /-- A small universe-polymorphic equivalence type used by generated structural model
 equivalence interfaces. InternalLean avoids depending on an external `Equiv` definition here so

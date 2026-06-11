@@ -91,10 +91,9 @@ Notes:
 - `A × B` and `Σ x : A, B` are structural product/record type expressions.
 - `⟨a, b⟩`, `fst p`, and `snd p` build and project structural record values. The tokens
   `fst`, `snd`, and `Type` are surface syntax, so they cannot be used as declaration names unless
-  Lean accepts an escaped identifier and InternalLean then rejects it. The name `lam` also remains
-  reserved while legacy raw replay still gates acceptance. Former raw-kernel names such as `_app`,
-  `pair`, `arrow`, `sigma`, and `jeq` are ordinary LF head names after the structural-kernel
-  cutover.
+  Lean accepts an escaped identifier and InternalLean then rejects it. Former raw-kernel names such
+  as `lam`, `_app`, `pair`, `arrow`, `sigma`, and `jeq` are ordinary LF head names after the
+  structural-kernel cutover.
 - `lhs ≡ rhs` is internal syntax for judgmental-equality-shaped expressions.
 - `{x := value}` is an explicit implicit-argument marker used by the LF elaborator.
 

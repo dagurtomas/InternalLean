@@ -77,8 +77,8 @@ def appendJudgmentTheorem (cache : CompiledLFCheckCache) (t : CheckedLFJudgmentT
     certificates := cache.kernelReplayBase.certificates ++ certificateEntries }
   let replayCtx :=
     if t.binders.isEmpty then
-      match t.kernelDerivation? with
-      | some priorKernel => replayCtx.addTheorem t.name (KernelLFDerivation.statement priorKernel)
+      match t.checkedKernelDerivation? with
+      | some checkedReplay => replayCtx.addTheorem t.name checkedReplay.statement
       | none => replayCtx
     else
       replayCtx
@@ -832,8 +832,8 @@ def appendDeltaKernelReplayBase (replayCtx : KernelLFCheckContext)
     certificates := replayCtx.certificates ++ certificateEntries }
   for t in delta.judgmentTheorems do
     if t.binders.isEmpty then
-      if let some kernelDeriv := t.kernelDerivation? then
-        replayCtx := replayCtx.addTheorem t.name (KernelLFDerivation.statement kernelDeriv)
+      if let some checkedReplay := t.checkedKernelDerivation? then
+        replayCtx := replayCtx.addTheorem t.name checkedReplay.statement
   return replayCtx
 
 /-- Append one checked extension delta to a compiled LF checking cache without rebuilding old
@@ -977,8 +977,8 @@ def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignat
       certificates := kernelLFCertificateEntriesOfTheorems lfJudgmentTheorems }
     for prior in checked.lfJudgmentTheorems do
       if prior.binders.isEmpty then
-        if let some priorKernel := prior.kernelDerivation? then
-          replayCtx := replayCtx.addTheorem prior.name (KernelLFDerivation.statement priorKernel)
+        if let some checkedReplay := prior.checkedKernelDerivation? then
+          replayCtx := replayCtx.addTheorem prior.name checkedReplay.statement
     return replayCtx
   { kernelSig := kernelSig
     kernelSigExpanded :=
@@ -1001,11 +1001,9 @@ def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignat
 def validateLFTheoremKernelReplayInContext (sig : HLSignature)
     (ctx : IntraBlockKernelReplayContext) (t : CheckedLFJudgmentTheorem) :
     CoreM (CheckedLFJudgmentTheorem × IntraBlockKernelReplayContext) := do
-  let some kernelDeriv := t.kernelDerivation?
-    | pure (t, ctx)
   let some shallowDeriv := t.derivation?
     | pure (t, ctx)
-  let stmt := KernelLFDerivation.statement kernelDeriv
+  let kernelDeriv? := t.kernelDerivation?
   let assumptions := kernelLFLocalAssumptionEntriesOfTheoremCompact t
   let localReplayCtx := { ctx.replayCtx with
     localParameters := t.binders.toList.map (fun b => b.name)
@@ -1023,67 +1021,13 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
   let structuralLocalReplayCtx := { structuralReplayCtx with
     localParameters := t.binders.toList.map (fun b => Kernel.KLocalName.ofName b.name)
     assumptions := structuralAssumptions }
-  match CheckedKernelLFDerivation.ofReplay ctx.kernelSig localReplayCtx stmt kernelDeriv with
-  | .ok checkedReplay =>
-      try
-        let checkedStructuralReplay ← checkStructuralKernelReplay
-          s!"judgment_theorem '{t.name}' block compact replay" structuralSig
-          structuralLocalReplayCtx structuralStmt structuralDeriv
-        let t := { t with
-          checkedKernelDerivation? := some checkedReplay
-          structuralKernelDerivation? := some structuralDeriv
-          checkedStructuralKernelDerivation? := some checkedStructuralReplay }
-        let replayCtx :=
-          if t.binders.isEmpty then ctx.replayCtx.addTheorem t.name stmt else ctx.replayCtx
-        let structuralReplayCtx :=
-          if t.binders.isEmpty then
-            { structuralReplayCtx with theorems := structuralReplayCtx.theorems ++ [{
-                name := Kernel.KName.ofName t.name
-                statement := structuralStmt }] }
-          else
-            structuralReplayCtx
-        pure (t, { ctx with
-          replayCtx := replayCtx
-          structuralReplayCtx := .ok structuralReplayCtx })
-      catch _ =>
-        let structuralSigExpanded ← liftStructuralKernelExcept
-          s!"judgment_theorem '{t.name}' block expanded signature" ctx.structuralKernelSigExpanded
-        let structuralExpandedAssumptions ← liftStructuralKernelExcept
-          s!"judgment_theorem '{t.name}' block expanded local assumptions" <|
-            kernelLFLocalAssumptionEntriesOfTheoremToK true ctx.checkedLFDefValues t
-        let structuralDerivExpanded ← lowerLFDerivationToStructuralKernelWithMode sig
-          ctx.lfKernelGlobalHeads ctx.lfKernelDefValues (theoremBinderFreeLocals t) t.name true
-          structuralSigExpanded shallowDeriv
-        let structuralStmtExpanded := Kernel.KernelLFDerivation.statement structuralDerivExpanded
-        let structuralExpandedReplayCtx := { structuralReplayCtx with
-          localParameters := t.binders.toList.map (fun b => Kernel.KLocalName.ofName b.name)
-          assumptions := structuralExpandedAssumptions }
-        let checkedStructuralReplay ← checkStructuralKernelReplay
-          s!"judgment_theorem '{t.name}' block expanded replay" structuralSigExpanded
-          structuralExpandedReplayCtx structuralStmtExpanded structuralDerivExpanded
-        let t := { t with
-          checkedKernelDerivation? := some checkedReplay
-          structuralKernelDerivation? := some structuralDerivExpanded
-          checkedStructuralKernelDerivation? := some checkedStructuralReplay }
-        let replayCtx :=
-          if t.binders.isEmpty then ctx.replayCtx.addTheorem t.name stmt else ctx.replayCtx
-        let structuralReplayCtx :=
-          if t.binders.isEmpty then
-            { structuralReplayCtx with theorems := structuralReplayCtx.theorems ++ [{
-                name := Kernel.KName.ofName t.name
-                statement := structuralStmtExpanded }] }
-          else
-            structuralReplayCtx
-        pure (t, { ctx with
-          replayCtx := replayCtx
-          structuralReplayCtx := .ok structuralReplayCtx })
-  | .error compactErr =>
-      let expandedAssumptions ←
-        kernelLFLocalAssumptionEntriesOfTheoremExpanded sig ctx.lfKernelGlobalHeads
-          ctx.lfKernelDefValues t
-      let expandedReplayCtx := { ctx.replayCtx with
-        localParameters := t.binders.toList.map (fun b => b.name)
-        assumptions := expandedAssumptions }
+  let (structuralDeriv, structuralStmt, checkedStructuralReplay) ←
+    try
+      let checkedStructuralReplay ← checkStructuralKernelReplay
+        s!"judgment_theorem '{t.name}' block compact replay" structuralSig
+        structuralLocalReplayCtx structuralStmt structuralDeriv
+      pure (structuralDeriv, structuralStmt, checkedStructuralReplay)
+    catch _ =>
       let structuralSigExpanded ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' block expanded signature" ctx.structuralKernelSigExpanded
       let structuralExpandedAssumptions ← liftStructuralKernelExcept
@@ -1096,31 +1040,53 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
       let structuralExpandedReplayCtx := { structuralReplayCtx with
         localParameters := t.binders.toList.map (fun b => Kernel.KLocalName.ofName b.name)
         assumptions := structuralExpandedAssumptions }
-      match CheckedKernelLFDerivation.ofReplay ctx.kernelSigExpanded expandedReplayCtx stmt
-          kernelDeriv with
-      | .ok checkedReplay =>
-          let checkedStructuralReplay ← checkStructuralKernelReplay
-            s!"judgment_theorem '{t.name}' block expanded replay" structuralSigExpanded
-            structuralExpandedReplayCtx structuralStmtExpanded structuralDerivExpanded
-          let t := { t with
-            checkedKernelDerivation? := some checkedReplay
-            structuralKernelDerivation? := some structuralDerivExpanded
-            checkedStructuralKernelDerivation? := some checkedStructuralReplay }
-          let replayCtx :=
-            if t.binders.isEmpty then ctx.replayCtx.addTheorem t.name stmt else ctx.replayCtx
-          let structuralReplayCtx :=
-            if t.binders.isEmpty then
-              { structuralReplayCtx with theorems := structuralReplayCtx.theorems ++ [{
-                  name := Kernel.KName.ofName t.name
-                  statement := structuralStmtExpanded }] }
-            else
-              structuralReplayCtx
-          pure (t, { ctx with
-            replayCtx := replayCtx
-            structuralReplayCtx := .ok structuralReplayCtx })
-      | .error expandedErr =>
-          throwError "kernel-facing replay check failed for judgment_theorem '{t.name}' in type \
-            theory '{sig.name}': {compactErr}\nexpanded fallback also failed: {expandedErr}"
+      let checkedStructuralReplay ← checkStructuralKernelReplay
+        s!"judgment_theorem '{t.name}' block expanded replay" structuralSigExpanded
+        structuralExpandedReplayCtx structuralStmtExpanded structuralDerivExpanded
+      pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay)
+  let checkedReplay? ←
+    match kernelDeriv? with
+    | none => pure none
+    | some kernelDeriv =>
+        let stmt := KernelLFDerivation.statement kernelDeriv
+        match CheckedKernelLFDerivation.ofReplay ctx.kernelSig localReplayCtx stmt kernelDeriv with
+        | .ok checkedReplay => pure (some checkedReplay)
+        | .error compactErr => do
+            let expandedAssumptions ←
+              kernelLFLocalAssumptionEntriesOfTheoremExpanded sig ctx.lfKernelGlobalHeads
+                ctx.lfKernelDefValues t
+            let expandedReplayCtx := { ctx.replayCtx with
+              localParameters := t.binders.toList.map (fun b => b.name)
+              assumptions := expandedAssumptions }
+            match CheckedKernelLFDerivation.ofReplay ctx.kernelSigExpanded expandedReplayCtx stmt
+                kernelDeriv with
+            | .ok checkedReplay => pure (some checkedReplay)
+            | .error expandedErr => do
+                logLegacyRawReplayComparisonFailure
+                  s!"judgment_theorem '{t.name}' in type theory '{sig.name}'"
+                  compactErr expandedErr
+                pure none
+  let t := { t with
+    checkedKernelDerivation? := checkedReplay?
+    structuralKernelDerivation? := some structuralDeriv
+    checkedStructuralKernelDerivation? := some checkedStructuralReplay }
+  let replayCtx :=
+    if t.binders.isEmpty then
+      match checkedReplay? with
+      | some checkedReplay => ctx.replayCtx.addTheorem t.name checkedReplay.statement
+      | none => ctx.replayCtx
+    else
+      ctx.replayCtx
+  let structuralReplayCtx :=
+    if t.binders.isEmpty then
+      { structuralReplayCtx with theorems := structuralReplayCtx.theorems ++ [{
+          name := Kernel.KName.ofName t.name
+          statement := structuralStmt }] }
+    else
+      structuralReplayCtx
+  pure (t, { ctx with
+    replayCtx := replayCtx
+    structuralReplayCtx := .ok structuralReplayCtx })
 
 /-- Replay-check all new theorem artifacts in one block using one cached kernel signature. -/
 def validateLFTheoremKernelReplayBlock (sig : HLSignature)

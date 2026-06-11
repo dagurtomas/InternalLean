@@ -42,7 +42,7 @@ end Phase2HoleSmoke
 
 /--
 error: LF opaque constant declaration 'fst' uses reserved name 'fst', which is reserved by
-InternalLean syntax or legacy replay compatibility. Reserved LF names: fst, snd, Type, lam
+InternalLean syntax. Reserved LF names: fst, snd, Type
 -/
 #guard_msgs (whitespace := lax) in
 declare_type_theory Phase2FailedTheory where
@@ -164,7 +164,7 @@ end Phase2SinglePathSmoke
 
 /--
 error: LF opaque constant declaration 'fst' uses reserved name 'fst', which is reserved by
-InternalLean syntax or legacy replay compatibility. Reserved LF names: fst, snd, Type, lam
+InternalLean syntax. Reserved LF names: fst, snd, Type
 -/
 #guard_msgs (whitespace := lax) in
 set_option internalLean.requireLeanQuotedTheoryBlocks true in

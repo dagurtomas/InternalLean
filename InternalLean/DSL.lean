@@ -1068,11 +1068,11 @@ structure CheckedLFJudgmentTheorem where
   /-- Shallow checked proof replay tree, when the proof uses checked rule/theorem-reference
   syntax rather than an opaque placeholder. -/
   derivation? : Option CheckedLFDerivation := none
-  /-- Kernel-facing replay artifact with low-level judgments and scoped typed instantiations,
-  if the shallow derivation could be lowered. This is raw replay payload syntax; prefer
-  `checkedKernelDerivation?` at trust boundaries. -/
+  /-- Legacy raw replay artifact with low-level judgments and scoped typed instantiations,
+  if the shallow derivation could be lowered. This compatibility payload is no longer an
+  acceptance authority; prefer `checkedStructuralKernelDerivation?` at trust boundaries. -/
   kernelDerivation? : Option KernelLFDerivation := none
-  /-- Checked kernel-facing replay artifact accepted during signature registration. -/
+  /-- Checked legacy raw replay comparison artifact, when the compatibility path still accepts. -/
   checkedKernelDerivation? : Option CheckedKernelLFDerivation := none
   /-- Structural-kernel replay artifact lowered directly from the checked LF derivation. -/
   structuralKernelDerivation? : Option Kernel.KernelLFDerivation := none
