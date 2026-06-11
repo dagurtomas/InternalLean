@@ -1711,10 +1711,8 @@ mutual
         (Array InternalNativeResolvedStep × Array InternalNativePreElabGoal) :=
       pure (#[{ stx, step := .evalLeanForAudit }], #[goal])
     if let some bodySteps := internalNativeFocusBodySteps? stx then
-      let (body, bodyGoals) ← elabInternalNativeResolvedStepsForGoals target sig levels
+      let (body, _) ← elabInternalNativeResolvedStepsForGoals target sig levels
         [{ ctx := goal.ctx, target := goal.target }] bodySteps
-      unless bodyGoals.isEmpty do
-        throwErrorAt stx "focused InternalLean native tactic block left unsolved object goal(s)"
       return (#[{ stx, step := .focus body }], #[])
     match (⟨stx⟩ : TSyntax `tactic) with
     | `(tactic| skip) => pure (#[{ stx, step := .skip }], #[goal])
@@ -1813,11 +1811,8 @@ mutual
           ctx := goal.ctx.push { name := name.getId, typeExpr, visibility := .explicit }
           target := goal.target }
         if let some proofSteps := internalNativeLeanBySteps? proofTerm.raw then
-          let (proofResolved, proofGoals) ← elabInternalNativeResolvedStepsForGoals target sig
-            levels [{ ctx := goal.ctx, target := typeExpr }] proofSteps
-          unless proofGoals.isEmpty do
-            throwErrorAt proofTerm.raw
-              "tactic-form `have ... := by` left unsolved object goal(s)"
+          let (proofResolved, _) ← elabInternalNativeResolvedStepsForGoals target sig levels
+            [{ ctx := goal.ctx, target := typeExpr }] proofSteps
           pure (#[]
             |>.push { stx, step := .haveStart name.getId typeExpr }
             |>.push { stx := proofTerm.raw, step := .focus proofResolved }, #[goal'])

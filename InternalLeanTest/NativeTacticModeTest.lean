@@ -168,6 +168,54 @@ internal def refine_infer_placeholder_rejected : Good o := by
   exact good_o
 
 /--
+error: tactic `decide` is not part of InternalLean native tactic mode yet; supported native tactics
+in this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, `show`, `change`,
+term- and tactic-form `have`, focus bullets, and `skip`.
+-/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.nativeTacticMode true in
+internal def nested_have_decide_rejected : Good o := (by
+  have h : Good o := by
+    decide
+  exact h)
+
+/--
+error: tactic `try` is not part of InternalLean native tactic mode yet; supported native tactics in
+this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, `show`, `change`,
+term- and tactic-form `have`, focus bullets, and `skip`.
+-/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.nativeTacticMode true in
+internal def nested_have_try_rejected : Good o := (by
+  have h : Good o := by
+    try skip
+  exact h)
+
+/--
+error: tactic `decide` is not part of InternalLean native tactic mode yet; supported native tactics
+in this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, `show`, `change`,
+term- and tactic-form `have`, focus bullets, and `skip`.
+-/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.nativeTacticMode true in
+internal def focused_apply_decide_rejected : Good o := (by
+  apply good_twice
+  · decide
+  · exact good_o)
+
+/--
+error: tactic `try` is not part of InternalLean native tactic mode yet; supported native tactics in
+this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, `show`, `change`,
+term- and tactic-form `have`, focus bullets, and `skip`.
+-/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.nativeTacticMode true in
+internal def focused_refine_try_rejected : Good o := (by
+  refine good_twice ?left ?right
+  · try skip
+  · exact good_o)
+
+/--
 warning: internal declaration 'NativeTacticModeSmoke.direct_sorry_admitted' was admitted by
 `sorry`; the annotation was checked in theory 'NativeTacticModeSmoke', but the body was not checked.
 Use `#lint_type_theory_sorries NativeTacticModeSmoke` to list current admissions.
