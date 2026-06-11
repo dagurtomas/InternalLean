@@ -215,10 +215,8 @@ elab "#print_lf_model_artifacts " theory:ident : command => do
       let replayStatus :=
         if t.checkedStructuralKernelDerivation?.isSome then
           "checked structural kernel replay artifact"
-        else if t.checkedKernelDerivation?.isSome then
-          "checked kernel replay artifact"
         else
-          "no checked kernel replay artifact"
+          "no checked structural kernel replay artifact"
       logInfo m!"  judgment_theorem {t.name}: {statementText}{proofHead}; {derivationStatus}, \
         {replayStatus}"
 

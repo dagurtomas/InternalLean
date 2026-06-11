@@ -94,17 +94,21 @@ elab "#guard_compiled_cache_matches_rebuild " theory:ident : command => do
     throwError "compiled cache stamp for '{theory.getId}' differs from a full rebuild"
   unless checkedHLSignatureMatchesChecked cache.checkedHL checked do
     throwError "compiled cache checked-HL signature for '{theory.getId}' does not match"
-  unless cache.kernelSig.constants.length == rebuilt.kernelSig.constants.length do
+  unless cache.structuralKernelSig.constants.length ==
+      rebuilt.structuralKernelSig.constants.length do
     throwError "compiled cache constants for '{theory.getId}' differ from a full rebuild"
-  unless cache.kernelSig.rules.length == rebuilt.kernelSig.rules.length do
+  unless cache.structuralKernelSig.rules.length == rebuilt.structuralKernelSig.rules.length do
     throwError "compiled cache rules for '{theory.getId}' differ from a full rebuild"
-  unless cache.kernelSig.contextZones.length == rebuilt.kernelSig.contextZones.length do
+  unless cache.structuralKernelSig.contextZones.length ==
+      rebuilt.structuralKernelSig.contextZones.length do
     throwError "compiled cache context zones for '{theory.getId}' differ from a full rebuild"
-  unless cache.kernelSig.binderClasses.length == rebuilt.kernelSig.binderClasses.length do
+  unless cache.structuralKernelSig.binderClasses.length ==
+      rebuilt.structuralKernelSig.binderClasses.length do
     throwError "compiled cache binder classes for '{theory.getId}' differ from a full rebuild"
-  unless cache.kernelSig.conversionPlugins.length == rebuilt.kernelSig.conversionPlugins.length do
+  unless cache.structuralKernelSig.conversionPlugins.length ==
+      rebuilt.structuralKernelSig.conversionPlugins.length do
     throwError "compiled cache conversion plugins for '{theory.getId}' differ from a full rebuild"
-  unless cache.kernelSig == rebuilt.kernelSig do
+  unless cache.structuralKernelSig == rebuilt.structuralKernelSig do
     throwError "compiled cache kernel signature for '{theory.getId}' differs from a full rebuild"
 
 declare_type_theory IncrementalCacheSmoke where

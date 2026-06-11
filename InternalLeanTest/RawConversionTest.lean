@@ -8,10 +8,13 @@ module
 public import InternalLean.Command
 
 /-!
-# Raw conversion-certificate regression tests
+# Legacy raw conversion-certificate regression tests
 
-These tests exercise low-level executable conversion checks used by the kernel-facing replay
-boundary.
+These tests exercise the legacy low-level raw executable conversion checker retained for
+compatibility smoke coverage. Registered LF replay and object-tactic conversion plugins use the
+structural kernel.
+
+Deep structural conversion coverage lives in `KernelDualReplayTest.lean`.
 -/
 
 @[expose] public section

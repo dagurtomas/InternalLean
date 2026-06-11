@@ -1747,7 +1747,7 @@ def lfJudgmentTheoremObligationStatus (checked : CheckedSignature) (t : CheckedL
   if t.derivation?.isNone then
     (.omitted, false, some "no checked derivation tree")
   else if !t.hasCheckedKernelReplay then
-    (.omitted, false, some "no checked kernel replay artifact")
+    (.omitted, false, some "no checked structural kernel replay artifact")
   else if t.binders.any (fun b =>
       !lfExprRenderableInModel defValues blockingUntyped sidePredicateNames b.checkedTypeExpr) then
     (.omitted, false, some "local binder type is not renderable by the LF-model backend")
@@ -5338,7 +5338,7 @@ def lfModelDerivedTheoremSummaryString (checked : CheckedSignature) : String :=
     if renderable then n + 1 else n
   s!"LF derived theorem replay for {nameString checked.name}: " ++
     s!"{derivable}/{checked.lfJudgmentTheorems.size} checked judgment theorem(s) " ++
-    "have checked kernel replay artifacts, renderable statements, and " ++
+    "have checked structural kernel replay artifacts, renderable statements, and " ++
     "renderable side-condition certificate parameters"
 
 /-- Generated transport names used by the UX-level model workflow commands. They avoid

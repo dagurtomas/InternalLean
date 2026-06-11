@@ -68,8 +68,8 @@ end ModelWorkflowLF
 
 #check_theory ModelWorkflowLF
 
-/-- info: compact LF replay certificate for ModelWorkflowLF.relA checks: 1 rule(s), 0
-theorem/certificate context entry(ies), 0 local parameter(s) -/
+/-- info: structural LF replay certificate for ModelWorkflowLF.relA checks: 1 rule(s), 0
+  theorem/certificate context entry(ies), 0 local parameter(s) -/
 #guard_msgs (whitespace := lax) in
 #check_lf_replay_certificate ModelWorkflowLF relA
 #print_lf_replay_certificate ModelWorkflowLF relA

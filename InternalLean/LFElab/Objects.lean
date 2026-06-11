@@ -138,9 +138,6 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
       | throwError "judgment_theorem '{t.name}' in type theory '{sig.name}' has unchecked proof \
         '{diagnosticObjExprString t.proof}'; expected a local theorem assumption, checked \
           judgment theorem, or LF rule application"
-    let kernelDerivation? ←
-      tryLowerLFDerivationToKernel? sig rules globalHeads theoremKnownTypes knownLFDefValues
-        theoremLocals t.name derivation
     let ruleSummary := summarizeLFRuleApplication? derivation
     checkedTheorems := checkedTheorems.push {
       name := t.name.eraseMacroScopes
@@ -155,8 +152,7 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
       proofRuleArgs := ruleSummary.proofRuleArgs
       premiseTheorems := ruleSummary.premiseTheorems
       sideConditionCertificateNames := ruleSummary.sideConditionCertificateNames
-      derivation? := some derivation
-      kernelDerivation? := kernelDerivation? }
+      derivation? := some derivation }
     let stmt := match derivation with
       | .localAssumption _ stmt => stmt
       | .theoremRef _ stmt _ _ => stmt
@@ -671,9 +667,6 @@ def checkLFJudgmentTheoremInContext (ctx : IntraBlockLFCheckContext)
     | throwError "judgment_theorem '{t.name}' in type theory '{sig.name}' has unchecked proof \
       '{diagnosticObjExprString t.proof}'; expected a local theorem assumption, checked \
         judgment theorem, or LF rule application"
-  let kernelDerivation? ←
-    tryLowerLFDerivationToKernel? sig rules globalHeads theoremKnownTypes knownLFDefValues
-      theoremLocals t.name derivation
   let ruleSummary := summarizeLFRuleApplication? derivation
   let checkedTheorem : CheckedLFJudgmentTheorem := {
     name := t.name.eraseMacroScopes
@@ -688,8 +681,7 @@ def checkLFJudgmentTheoremInContext (ctx : IntraBlockLFCheckContext)
     proofRuleArgs := ruleSummary.proofRuleArgs
     premiseTheorems := ruleSummary.premiseTheorems
     sideConditionCertificateNames := ruleSummary.sideConditionCertificateNames
-    derivation? := some derivation
-    kernelDerivation? := kernelDerivation? }
+    derivation? := some derivation }
   let theoremName := t.name.eraseMacroScopes
   let availableStatements :=
     if t.binders.isEmpty then

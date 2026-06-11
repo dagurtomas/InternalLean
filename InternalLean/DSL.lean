@@ -1068,12 +1068,6 @@ structure CheckedLFJudgmentTheorem where
   /-- Shallow checked proof replay tree, when the proof uses checked rule/theorem-reference
   syntax rather than an opaque placeholder. -/
   derivation? : Option CheckedLFDerivation := none
-  /-- Legacy raw replay artifact with low-level judgments and scoped typed instantiations,
-  if the shallow derivation could be lowered. This compatibility payload is no longer an
-  acceptance authority; prefer `checkedStructuralKernelDerivation?` at trust boundaries. -/
-  kernelDerivation? : Option KernelLFDerivation := none
-  /-- Checked legacy raw replay comparison artifact, when the compatibility path still accepts. -/
-  checkedKernelDerivation? : Option CheckedKernelLFDerivation := none
   /-- Structural-kernel replay artifact lowered directly from the checked LF derivation. -/
   structuralKernelDerivation? : Option Kernel.KernelLFDerivation := none
   /-- Checked structural-kernel replay artifact accepted during signature registration. -/
@@ -1084,7 +1078,7 @@ namespace CheckedLFJudgmentTheorem
 
 /-- Whether this theorem has a checked replay artifact at the current kernel boundary. -/
 def hasCheckedKernelReplay (t : CheckedLFJudgmentTheorem) : Bool :=
-  t.checkedStructuralKernelDerivation?.isSome || t.checkedKernelDerivation?.isSome
+  t.checkedStructuralKernelDerivation?.isSome
 
 end CheckedLFJudgmentTheorem
 
@@ -1327,8 +1321,6 @@ structure CheckedSignature where
   lfRuleSchemas : Array CheckedLFRuleSchema := #[]
   /-- Checked logical-framework environment. -/
   lfEnvironment : CheckedLFEnvironment := default
-  /-- Low-level kernel `RuleSchema` artifacts derived from checked LF schemas. -/
-  lfKernelRuleSchemas : Array RuleSchema := #[]
   /-- Side-condition certificates produced by executable hooks. -/
   lfSideConditionCertificates : Array CheckedLFSideConditionCertificate := #[]
   /-- Checked staged sorted LF/object definitions. -/

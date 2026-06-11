@@ -629,13 +629,9 @@ structure CompiledLFCheckCache where
   availableLFTheoremStatements : NameMap ObjExpr := {}
   /-- Available LF theorem names. -/
   availableLFTheoremNames : NameSet := {}
-  /-- Kernel replay signature for the checked base theory. -/
-  kernelSig : Signature
-  /-- Kernel replay context containing prior theorem/certificate entries. -/
-  kernelReplayBase : KernelLFCheckContext := {}
-  /-- Structural replay signature built from checked artifacts for compact dual replay. -/
+  /-- Structural replay signature built from checked artifacts for compact replay. -/
   structuralKernelSig : Kernel.Signature := default
-  /-- Structural replay signature built from checked artifacts for expanded dual replay. -/
+  /-- Structural replay signature built from checked artifacts for expanded replay. -/
   structuralKernelSigExpanded : Kernel.Signature := default
   /-- Structural replay context containing prior theorem/certificate entries. -/
   structuralKernelReplayBase : Kernel.KernelLFCheckContext := {}

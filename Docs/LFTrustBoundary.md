@@ -267,10 +267,10 @@ Developer-level LF diagnostics include:
 #print_lf_replay_trust_summary T
 ```
 
-Low-level replay payload constructors such as `KernelLFDerivation.ruleApp` are raw syntax. Public
-APIs should prefer `CheckedKernelLFDerivation.ofReplay`,
-`CheckedKernelLFDerivation.ofDerivation`, or `KernelLFReplayCertificate.toChecked`; these wrappers
-rerun executable replay validation and are the supported trust-boundary tokens.
+Low-level replay payload constructors such as `Kernel.KernelLFDerivation.ruleApp` are structural
+kernel payloads. Public APIs should prefer `Kernel.CheckedKernelLFDerivation.ofReplay`,
+`Kernel.CheckedKernelLFDerivation.ofDerivation`, or `Kernel.KernelLFReplayCertificate.toChecked`;
+these wrappers rerun executable replay validation and are the supported trust-boundary tokens.
 
 The developer diagnostics are useful for implementation work. Public examples should usually prefer
 the shorter user-facing commands.

@@ -9,9 +9,10 @@ public import InternalLean.Basic
 public import InternalLean.Command
 
 /-!
-# Raw conversion capture tests
+# Legacy raw conversion capture tests
 
-The executable raw beta checker must not accept a reduct that captures a free raw local.
+The legacy executable raw beta checker must not accept a reduct that captures a free raw local.
+Structural conversion-certificate coverage lives in `KernelDualReplayTest.lean`.
 -/
 
 @[expose] public section

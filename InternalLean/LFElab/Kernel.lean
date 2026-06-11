@@ -433,33 +433,6 @@ def checkedLFSideConditionCertificatesOfSchemas (rules : Array CheckedLFRuleSche
         out := out.push cert
   return out
 
-/-- Convert a checked LF side-condition certificate to the low-level kernel form. -/
-def checkedLFSideConditionCertificateToKernel (cert : CheckedLFSideConditionCertificate) :
-    SideConditionCertificate :=
-  { name := cert.certificateName
-    condition := { name := cert.solver, args := [checkedLFExprToRaw cert.checkedInput] }
-    kind := .builtinTrivial
-    payload := cert.diagnostic }
-
-/-- Convert a checked LF binder to a low-level raw metavariable declaration. -/
-def checkedLFBindingToKernelMetaVar (v : CheckedLFBinding) : RuleMetaVar :=
-  { name := v.name
-    sort := match v.head? with | some h => .custom h.name | none => .arg
-    type? := some (checkedLFExprToRaw v.checkedTypeExpr) }
-
-/-- Convert a checked context zone to a low-level kernel replay zone schema. -/
-def checkedLFContextZoneToKernel (z : CheckedLFContextZone) : ContextZoneSchema :=
-  { name := z.name
-    sort := .custom z.sortName
-    dependsOn := z.dependsOn.toList }
-
-/-- Convert a checked binder class to a low-level kernel replay binder-class schema. -/
-def checkedLFBinderClassToKernel (b : CheckedLFBinderClass) : BinderClassSchema :=
-  { name := b.name
-    zone := b.zoneName
-    boundSort := .custom b.boundSortName
-    dependsOn := b.dependsOn.toList }
-
 /-- Explicit checked LF type of a `syntax_def` family. -/
 def checkedLFSyntaxDefTypeExpr (d : CheckedLFSyntaxDef) : CheckedLFExpr :=
   d.params.foldr (init := checkedLFTypeOfLevel d.resultLevel) fun b acc =>
@@ -469,63 +442,6 @@ def checkedLFSyntaxDefTypeExpr (d : CheckedLFSyntaxDef) : CheckedLFExpr :=
 def checkedLFSyntaxDefValue? (d : CheckedLFSyntaxDef) : Option CheckedLFExpr :=
   d.checkedValue?.map fun value =>
     if d.params.isEmpty then value else .lam (d.params.map (·.name)) value
-
-/-- Convert a typed LF opaque placeholder to a typed kernel replay constant, when possible. -/
-def checkedLFOpaqueConstToKernelConstant? (defValues : CheckedLFDefinitionValueMap)
-    (c : CheckedLFOpaqueConst) : Option LFConstantSchema := do
-  let result ← c.checkedTypeExpr?
-  let locals := c.params.foldl (init := {}) fun locals p => locals.insert p.name.eraseMacroScopes
-  let result := unfoldLFDefinitionsInCheckedExpr defValues locals result
-  return LFConstantSchema.mk c.name (c.params.toList.map checkedLFBindingToKernelMetaVar)
-    (checkedLFExprToRaw result)
-
-/-- Split a checked LF function type into a low-level constant telescope and result type.
-
-The kernel-facing replay checker only needs a finite first-order telescope for typed LF
-constant applications.  Function-valued `lf_def`s therefore expose their leading structural
-arrows as generated constant parameters; named dependent arrows keep their source name, while
-nondependent arrows receive deterministic `_argN` names. -/
-partial def checkedLFTypeToKernelConstantTelescope (e : CheckedLFExpr) (i : Nat := 1) :
-  List RuleMetaVar × Raw :=
-  match e with
-  | .arrow binder? A B =>
-      let name := (binder?.getD (Name.mkSimple s!"_arg{i}")).eraseMacroScopes
-      let param : RuleMetaVar := {
-        name := name
-        sort := .arg
-        type? := some (checkedLFExprToRaw A)
-      }
-      let (params, result) := checkedLFTypeToKernelConstantTelescope B (i + 1)
-      (param :: params, result)
-  | e => ([], checkedLFExprToRaw e)
-
-/-- Convert a checked syntax definition to a typed kernel replay constant. -/
-def checkedLFSyntaxDefToKernelConstant (defValues : CheckedLFDefinitionValueMap)
-    (d : CheckedLFSyntaxDef) : LFConstantSchema :=
-  let typeExpr := unfoldLFDefinitionsInCheckedExpr defValues {} (checkedLFSyntaxDefTypeExpr d)
-  let (params, result) := checkedLFTypeToKernelConstantTelescope typeExpr
-  LFConstantSchema.mk d.name params result
-
-/-- Convert a checked LF definition to a typed kernel replay constant. -/
-def checkedLFObjectDefToKernelConstant (defValues : CheckedLFDefinitionValueMap)
-    (d : CheckedLFObjectDef) : LFConstantSchema :=
-  let typeExpr := unfoldLFDefinitionsInCheckedExpr defValues {} d.checkedTypeExpr
-  let (params, result) := checkedLFTypeToKernelConstantTelescope typeExpr
-  LFConstantSchema.mk d.name params result
-
-/-- Convert checked LF constants/definitions to typed kernel replay constants. -/
-def checkedLFConstantsToKernel (defValues : CheckedLFDefinitionValueMap)
-    (syntaxDefs : Array CheckedLFSyntaxDef) (opaqueConsts : Array CheckedLFOpaqueConst)
-    (objectDefs : Array CheckedLFObjectDef) : Array LFConstantSchema :=
-  (syntaxDefs.map (checkedLFSyntaxDefToKernelConstant defValues)) ++
-    (opaqueConsts.filterMap (checkedLFOpaqueConstToKernelConstant? defValues)) ++
-      (objectDefs.map (checkedLFObjectDefToKernelConstant defValues))
-
-/-- Convert a checked conversion-plugin handle to the low-level kernel replay schema. -/
-def checkedLFConversionPluginToKernel (p : CheckedLFConversionPlugin) : ConversionPluginSchema :=
-  { name := p.name
-    trust := p.trust
-    supportedSteps := p.supportedSteps.toList }
 
 /-- Checked LF object-definition values keyed by definition name. -/
 def checkedLFObjectDefinitionValues (defs : Array CheckedLFObjectDef) :
@@ -544,236 +460,16 @@ def checkedLFDefinitionValues (syntaxDefs : Array CheckedLFSyntaxDef)
     values := values.insert n value
   return values
 
-/-- Convert a Phase-2/3 LF rule schema to the low-level kernel `RuleSchema` shape. -/
-def checkedLFRuleSchemaToKernel (_defValues : CheckedLFDefinitionValueMap)
-    (r : CheckedLFRuleSchema) : RuleSchema :=
-  let sideConditions := r.sideConditionSlots.toList.map fun sc =>
-    ({ name := sc.solver, args := [checkedLFExprToRaw sc.checkedInput] } : SideCondition)
-  let certificateSlots := r.sideConditionSlots.toList.map fun sc =>
-    let condition : SideCondition :=
-      { name := sc.solver, args := [checkedLFExprToRaw sc.checkedInput] }
-    ({ name := sc.name, condition := condition } : SideConditionCertificateSlot)
-  let checkedCertificates := r.sideConditionSlots.toList.filterMap fun sc =>
-    sc.certificate?.map checkedLFSideConditionCertificateToKernel
-  let ruleMetas := r.metavariables.toList.map (fun v =>
-    { name := v.name
-      sort := match v.sortHead? with | some h => .custom h.name | none => .arg
-      zone? := v.zoneName?
-      type? := some (checkedLFExprToRaw v.checkedTypeExpr)
-      evidence? := v.evidence?.map (fun ev =>
-        checkedLFJudgmentExprToKernel ev.checkedJudgmentExpr ev.head) })
-  let evidenceMetas := r.premises.toList.filterMap fun p =>
-    if p.isDirectJudgment then
-      none
-    else
-      some ({ name := p.name
-              sort := match p.head? with
-                | some h => if h.kind == .syntaxSort then .custom h.name else .arg
-                | none => .arg
-              type? := some (checkedLFExprToRaw p.checkedJudgmentExpr) } : RuleMetaVar)
-  let kernelPremises := r.premises.toList.filterMap fun p =>
-    match p.head? with
-    | some h =>
-        if h.kind == .judgment then
-          some (checkedLFJudgmentExprToKernel p.checkedJudgmentExpr h)
-        else
-          none
-    | none => none
-  RuleSchema.mk r.name
-    (ruleMetas ++ evidenceMetas)
-    kernelPremises
-    sideConditions
-    certificateSlots
-    checkedCertificates
-    (checkedLFJudgmentExprToKernel r.checkedConclusionExpr r.conclusionHead)
-
-/-- Convert a checked LF rule schema to the former fully unfolded kernel `RuleSchema` shape. -/
-def checkedLFRuleSchemaToKernelExpanded (defValues : CheckedLFDefinitionValueMap)
-    (r : CheckedLFRuleSchema) : RuleSchema :=
-  let locals := r.metavariables.foldl (init := {}) fun locals v =>
-    locals.insert v.name.eraseMacroScopes
-  let norm := unfoldLFDefinitionsInCheckedExpr defValues locals
-  let sideConditions := r.sideConditionSlots.toList.map fun sc =>
-    ({ name := sc.solver, args := [checkedLFExprToRaw sc.checkedInput] } : SideCondition)
-  let certificateSlots := r.sideConditionSlots.toList.map fun sc =>
-    let condition : SideCondition :=
-      { name := sc.solver, args := [checkedLFExprToRaw sc.checkedInput] }
-    ({ name := sc.name, condition := condition } : SideConditionCertificateSlot)
-  let checkedCertificates := r.sideConditionSlots.toList.filterMap fun sc =>
-    sc.certificate?.map checkedLFSideConditionCertificateToKernel
-  let ruleMetas := r.metavariables.toList.map (fun v =>
-    { name := v.name
-      sort := match v.sortHead? with | some h => .custom h.name | none => .arg
-      zone? := v.zoneName?
-      type? := some (checkedLFExprToRaw v.checkedTypeExpr)
-      evidence? := v.evidence?.map (fun ev =>
-        checkedLFJudgmentExprToKernel ev.checkedJudgmentExpr ev.head) })
-  let evidenceMetas := r.premises.toList.filterMap fun p =>
-    if p.isDirectJudgment then
-      none
-    else
-      some ({ name := p.name
-              sort := match p.head? with
-                | some h => if h.kind == .syntaxSort then .custom h.name else .arg
-                | none => .arg
-              type? := some (checkedLFExprToRaw (norm p.checkedJudgmentExpr)) } : RuleMetaVar)
-  let kernelPremises := r.premises.toList.filterMap fun p =>
-    match p.head? with
-    | some h =>
-        if h.kind == .judgment then
-          some (checkedLFJudgmentExprToKernel (norm p.checkedJudgmentExpr) h)
-        else
-          none
-    | none => none
-  RuleSchema.mk r.name
-    (ruleMetas ++ evidenceMetas)
-    kernelPremises
-    sideConditions
-    certificateSlots
-    checkedCertificates
-    (checkedLFJudgmentExprToKernel (norm r.checkedConclusionExpr) r.conclusionHead)
-
-/-- Convert all Phase-2 LF rule schemas to compact kernel `RuleSchema` staging artifacts. -/
-def checkedLFRuleSchemasToKernel (defValues : CheckedLFDefinitionValueMap)
-    (rules : Array CheckedLFRuleSchema) : Array RuleSchema :=
-  rules.map (checkedLFRuleSchemaToKernel defValues)
-
-/-- Convert all Phase-2 LF rule schemas to fully unfolded kernel replay artifacts. -/
-def checkedLFRuleSchemasToKernelExpanded (defValues : CheckedLFDefinitionValueMap)
-    (rules : Array CheckedLFRuleSchema) : Array RuleSchema :=
-  rules.map (checkedLFRuleSchemaToKernelExpanded defValues)
-
-/-- Extract checked local theorem-assumption entries from a locally quantified LF theorem. -/
-def kernelLFLocalAssumptionEntriesOfTheorem (t : CheckedLFJudgmentTheorem) :
-    List KernelLFTheoremEntry :=
-  t.binders.toList.filterMap fun b =>
-    match b.head? with
-    | some head =>
-        if head.kind == .judgment then
-          some { name := b.name, statement := checkedLFJudgmentExprToKernel b.checkedTypeExpr head }
-        else
-          none
-    | none => none
-
-/-- Extract checked local theorem assumptions without expanding checked LF definitions. -/
-def kernelLFLocalAssumptionEntriesOfTheoremCompact (t : CheckedLFJudgmentTheorem) :
-    List KernelLFTheoremEntry :=
-  kernelLFLocalAssumptionEntriesOfTheorem t
-
-/-- Extract checked local theorem assumptions after LF-definition normalization. -/
-def kernelLFLocalAssumptionEntriesOfTheoremExpanded (sig : HLSignature)
-    (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (defValues : LFDefinitionValueMap)
-    (t : CheckedLFJudgmentTheorem) : CoreM (List KernelLFTheoremEntry) := do
-  let theoremLocals := t.binders.foldl (init := {}) fun locals b =>
-    locals.insert b.name.eraseMacroScopes
-  let mut out := []
-  for b in t.binders do
-    match b.head? with
-    | some head =>
-        if head.kind == .judgment then
-          let expr := unfoldLFDefinitionsInExprWithLocals defValues theoremLocals b.typeExpr
-          let statement ← lfJudgmentObjExprToKernel sig globalHeads "local theorem assumption"
-            t.name expr theoremLocals
-          out := out ++ [{ name := b.name, statement := statement }]
-    | none => pure ()
-  pure out
-
-/-- Kernel rule schema used when a checked LF theorem with local binders is referenced as a premise.
--/
-def kernelLFRuleSchemaOfTheorem (_defValues : CheckedLFDefinitionValueMap)
-    (t : CheckedLFJudgmentTheorem) : RuleSchema :=
-  let metavariables := t.binders.toList.filterMap fun b =>
-    match b.head? with
-    | some head =>
-        if head.kind == .judgment then none
-        else
-          some ({ name := b.name
-                  sort := if head.kind == .syntaxSort then .custom head.name else .arg
-                  type? := some (checkedLFExprToRaw b.checkedTypeExpr) } : RuleMetaVar)
-    | none =>
-        some ({ name := b.name
-                sort := .arg
-                type? := some (checkedLFExprToRaw b.checkedTypeExpr) } : RuleMetaVar)
-  let premises := t.binders.toList.filterMap fun b =>
-    match b.head? with
-    | some head =>
-        if head.kind == .judgment then
-          some (checkedLFJudgmentExprToKernel b.checkedTypeExpr head)
-        else none
-    | none => none
-  RuleSchema.mk (lfJudgmentTheoremKernelRuleName t.name) metavariables premises [] [] []
-    (checkedLFJudgmentExprToKernel t.checkedJudgmentExpr t.judgmentHead)
-
-/-- Fully unfolded kernel rule schema used for replay fallback of checked LF theorem references. -/
-def kernelLFRuleSchemaOfTheoremExpanded (defValues : CheckedLFDefinitionValueMap)
-    (t : CheckedLFJudgmentTheorem) : RuleSchema :=
-  let locals := t.binders.foldl (init := {}) fun locals b => locals.insert b.name.eraseMacroScopes
-  let norm := unfoldLFDefinitionsInCheckedExpr defValues locals
-  let metavariables := t.binders.toList.filterMap fun b =>
-    match b.head? with
-    | some head =>
-        if head.kind == .judgment then none
-        else
-          some ({ name := b.name
-                  sort := if head.kind == .syntaxSort then .custom head.name else .arg
-                  type? := some (checkedLFExprToRaw (norm b.checkedTypeExpr)) } : RuleMetaVar)
-    | none =>
-        some ({ name := b.name
-                sort := .arg
-                type? := some (checkedLFExprToRaw (norm b.checkedTypeExpr)) } : RuleMetaVar)
-  let premises := t.binders.toList.filterMap fun b =>
-    match b.head? with
-    | some head =>
-        if head.kind == .judgment then
-          some (checkedLFJudgmentExprToKernel (norm b.checkedTypeExpr) head)
-        else none
-    | none => none
-  RuleSchema.mk (lfJudgmentTheoremKernelRuleName t.name) metavariables premises [] [] []
-    (checkedLFJudgmentExprToKernel (norm t.checkedJudgmentExpr) t.judgmentHead)
-
-/-- Compact kernel rule schemas for checked LF theorems, used by theorem references. -/
-def kernelLFRuleSchemasOfTheorems (defValues : CheckedLFDefinitionValueMap)
-    (theorems : Array CheckedLFJudgmentTheorem) : Array RuleSchema :=
-  theorems.map (kernelLFRuleSchemaOfTheorem defValues)
-
-/-- Fully unfolded kernel rule schemas for checked LF theorem replay fallback. -/
-def kernelLFRuleSchemasOfTheoremsExpanded (defValues : CheckedLFDefinitionValueMap)
-    (theorems : Array CheckedLFJudgmentTheorem) : Array RuleSchema :=
-  theorems.map (kernelLFRuleSchemaOfTheoremExpanded defValues)
-
-/-- Replace replay rules in a kernel signature by fully unfolded compatibility rules. -/
-def kernelSignatureWithExpandedReplayRules (kernelSig : Signature)
-    (defValues : CheckedLFDefinitionValueMap) (ruleSchemas : Array CheckedLFRuleSchema)
-    (theorems : Array CheckedLFJudgmentTheorem) : Signature :=
-  { kernelSig with
-    rules := (checkedLFRuleSchemasToKernelExpanded defValues ruleSchemas ++
-      kernelLFRuleSchemasOfTheoremsExpanded defValues theorems).toList }
-
-/-- Extract checked external-certificate entries exposed by theorem-like bridge artifacts. -/
-def kernelLFCertificateEntriesOfTheorems (theorems : Array CheckedLFJudgmentTheorem) :
-    List KernelLFCertificateEntry :=
-  theorems.toList.filterMap fun t =>
-    match t.kernelDerivation? with
-    | some (.certificate name stmt certificateName) =>
-        some { name := name, statement := stmt, certificateName := certificateName }
-    | _ => none
-
 /-- Structural checked external-certificate entries exposed by checked theorem artifacts. -/
 def kernelLFCertificateEntriesOfTheoremsToK (theorems : Array CheckedLFJudgmentTheorem) :
-    Except String (List Kernel.KernelLFCertificateEntry) := do
+    List Kernel.KernelLFCertificateEntry := Id.run do
   let mut out := []
   for t in theorems do
-    match t.kernelDerivation? with
-    | some (.certificate name _ certificateName) =>
-        let freeLocals :=
-          t.binders.foldl (init := {}) fun locals b => locals.insert b.name.eraseMacroScopes
-        out := out ++ [{
-          name := Kernel.KName.ofName name
-          statement := (← checkedLFJudgmentExprToKJudgment t.checkedJudgmentExpr
-            t.judgmentHead {} freeLocals)
-          certificateName := Kernel.KName.ofName certificateName }]
+    match t.structuralKernelDerivation? with
+    | some (.certificate name stmt certificateName) =>
+        out := out ++ [{ name := name, statement := stmt, certificateName := certificateName }]
     | _ => pure ()
-  pure out
+  return out
 
 /-- Free-local set for all binders of a checked LF theorem. -/
 def theoremBinderFreeLocals (t : CheckedLFJudgmentTheorem) : NameSet :=
@@ -866,7 +562,7 @@ def kernelLFRuleSchemasOfTheoremsToK (normalize? : Bool)
 def kernelLFReplayContextOfTheoremsToK (theorems : Array CheckedLFJudgmentTheorem) :
     Except String Kernel.KernelLFCheckContext := do
   let mut replayCtx : Kernel.KernelLFCheckContext := {
-    certificates := (← kernelLFCertificateEntriesOfTheoremsToK theorems) }
+    certificates := kernelLFCertificateEntriesOfTheoremsToK theorems }
   for prior in theorems do
     if prior.binders.isEmpty then
       if prior.checkedStructuralKernelDerivation?.isSome || prior.derivation?.isSome then
@@ -1048,11 +744,6 @@ def checkStructuralKernelReplay (label : String) (signature : Kernel.Signature)
   | .error err =>
       throwError "Phase-5c structural kernel replay failed for {label}: {err}"
 
-/-- Log a legacy raw-kernel replay mismatch after structural replay has accepted. -/
-def logLegacyRawReplayComparisonFailure (label compactErr expandedErr : String) : CoreM Unit := do
-  logInfo m!"legacy raw kernel replay comparison failed for {label}; structural replay accepted.\n\
-    compact replay failed: {compactErr}\nexpanded fallback also failed: {expandedErr}"
-
 /-- Run the opt-in structural replay disagreement probe for a directly lowered replay. -/
 def validateStructuralKernelDualReplay (label : String) (signature : Kernel.Signature)
     (context : Kernel.KernelLFCheckContext) (statement : Kernel.Judgment)
@@ -1061,34 +752,14 @@ def validateStructuralKernelDualReplay (label : String) (signature : Kernel.Sign
     return ()
   discard <| checkStructuralKernelReplay label signature context statement derivation
 
-/-- Add checked kernel replay validation to one incrementally checked LF theorem. -/
+/-- Add checked structural-kernel replay validation to one incrementally checked LF theorem. -/
 def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : CheckedSignature)
     (t : CheckedLFJudgmentTheorem) : CoreM CheckedLFJudgmentTheorem := do
   let some shallowDeriv := t.derivation?
     | pure t
-  let kernelDeriv? := t.kernelDerivation?
   let lfCheckedDefValues := checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs
   let lfKernelDefValues :=
     lfDefinitionValueMapFromCheckedDefs checked.lfSyntaxDefs checked.lfObjectDefs
-  let kernelSig : Signature := {
-    name := sig.name.eraseMacroScopes
-    constants := (checkedLFConstantsToKernel lfCheckedDefValues checked.lfSyntaxDefs
-      checked.lfOpaqueConsts checked.lfObjectDefs).toList
-    contextZones := checked.lfContextZones.toList.map checkedLFContextZoneToKernel
-    binderClasses := checked.lfBinderClasses.toList.map checkedLFBinderClassToKernel
-    conversionPlugins := checked.lfConversionPlugins.toList.map checkedLFConversionPluginToKernel
-    rules := (checkedLFRuleSchemasToKernel lfCheckedDefValues checked.lfRuleSchemas ++
-      kernelLFRuleSchemasOfTheorems lfCheckedDefValues checked.lfJudgmentTheorems).toList }
-  let mut replayCtx : KernelLFCheckContext := {
-    certificates := kernelLFCertificateEntriesOfTheorems checked.lfJudgmentTheorems }
-  for prior in checked.lfJudgmentTheorems do
-    if prior.binders.isEmpty then
-      if let some checkedReplay := prior.checkedKernelDerivation? then
-        replayCtx := replayCtx.addTheorem prior.name checkedReplay.statement
-  let assumptions := kernelLFLocalAssumptionEntriesOfTheoremCompact t
-  let localReplayCtx := { replayCtx with
-    localParameters := t.binders.toList.map (fun b => b.name)
-    assumptions := assumptions }
   let structuralSig ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' compact signature" <|
       checkedSignatureToKSignature sig.name checked.lfSyntaxDefs checked.lfOpaqueConsts
@@ -1132,55 +803,21 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
         s!"judgment_theorem '{t.name}' expanded replay" structuralSigExpanded
         structuralExpandedReplayCtx structuralStmtExpanded structuralDerivExpanded
       pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay)
-  let checkedReplay? ←
-    match kernelDeriv? with
-    | none => pure none
-    | some kernelDeriv =>
-        let legacyStmt := KernelLFDerivation.statement kernelDeriv
-        match CheckedKernelLFDerivation.ofReplay kernelSig localReplayCtx legacyStmt
-            kernelDeriv with
-        | .ok checkedReplay => pure (some checkedReplay)
-        | .error compactErr => do
-            let expandedKernelSig :=
-              kernelSignatureWithExpandedReplayRules kernelSig lfCheckedDefValues
-                checked.lfRuleSchemas checked.lfJudgmentTheorems
-            let expandedAssumptions ←
-              kernelLFLocalAssumptionEntriesOfTheoremExpanded sig (lfGlobalHeadInfo sig)
-                lfKernelDefValues t
-            let expandedReplayCtx := { replayCtx with
-              localParameters := t.binders.toList.map (fun b => b.name)
-              assumptions := expandedAssumptions }
-            match CheckedKernelLFDerivation.ofReplay expandedKernelSig expandedReplayCtx
-                legacyStmt kernelDeriv with
-            | .ok checkedReplay => pure (some checkedReplay)
-            | .error expandedErr => do
-                logLegacyRawReplayComparisonFailure
-                  s!"judgment_theorem '{t.name}' in type theory '{sig.name}'"
-                  compactErr expandedErr
-                pure none
   pure { t with
-    checkedKernelDerivation? := checkedReplay?
     structuralKernelDerivation? := some structuralDeriv
     checkedStructuralKernelDerivation? := some checkedStructuralReplay }
 
-/-- Add checked kernel replay validation to one incrementally checked LF theorem, reusing a
-compiled checked-theory replay cache. -/
+/-- Add checked structural-kernel replay validation to one incrementally checked LF theorem,
+    reusing a compiled checked-theory replay cache. -/
 def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCache)
     (t : CheckedLFJudgmentTheorem) : CoreM CheckedLFJudgmentTheorem := do
   let some shallowDeriv := t.derivation?
     | pure t
-  let kernelDeriv? := t.kernelDerivation?
   let lfKernelDefValues : LFDefinitionValueMap := Id.run do
     let mut values := cache.knownLFDefValues
     for (n, value) in cache.knownLFSyntaxDefValues.toList do
       values := values.insert n value
     return values
-  let assumptions := kernelLFLocalAssumptionEntriesOfTheoremCompact t
-  let localReplayCtx := { cache.kernelReplayBase with
-    localParameters := t.binders.toList.map (fun b => b.name)
-    assumptions := assumptions }
-  let primitiveNames : NameSet := cache.checkedRuleSchemas.foldl (init := {}) fun names r =>
-    names.insert r.name.eraseMacroScopes
   let structuralSig := cache.structuralKernelSig
   let structuralReplayCtx := cache.structuralKernelReplayBase
   let structuralAssumptions ← liftStructuralKernelExcept
@@ -1215,37 +852,7 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
         s!"judgment_theorem '{t.name}' expanded cached replay" structuralSigExpanded
         structuralExpandedReplayCtx structuralStmtExpanded structuralDerivExpanded
       pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay)
-  let checkedReplay? ←
-    match kernelDeriv? with
-    | none => pure none
-    | some kernelDeriv =>
-        let legacyStmt := KernelLFDerivation.statement kernelDeriv
-        match CheckedKernelLFDerivation.ofReplay cache.kernelSig localReplayCtx legacyStmt
-            kernelDeriv with
-        | .ok checkedReplay => pure (some checkedReplay)
-        | .error compactErr => do
-            let expandedPrimitiveRules :=
-              checkedLFRuleSchemasToKernelExpanded cache.checkedLFDefValues cache.checkedRuleSchemas
-            let oldTheoremRules := cache.kernelSig.rules.toArray.filter fun r =>
-              !primitiveNames.contains r.name.eraseMacroScopes
-            let expandedKernelSig := { cache.kernelSig with
-              rules := (expandedPrimitiveRules ++ oldTheoremRules).toList }
-            let expandedAssumptions ←
-              kernelLFLocalAssumptionEntriesOfTheoremExpanded cache.checkedHL cache.globalHeads
-                lfKernelDefValues t
-            let expandedReplayCtx := { cache.kernelReplayBase with
-              localParameters := t.binders.toList.map (fun b => b.name)
-              assumptions := expandedAssumptions }
-            match CheckedKernelLFDerivation.ofReplay expandedKernelSig expandedReplayCtx
-                legacyStmt kernelDeriv with
-            | .ok checkedReplay => pure (some checkedReplay)
-            | .error expandedErr => do
-                logLegacyRawReplayComparisonFailure
-                  s!"judgment_theorem '{t.name}' in type theory '{cache.checkedHL.name}'"
-                  compactErr expandedErr
-                pure none
   pure { t with
-    checkedKernelDerivation? := checkedReplay?
     structuralKernelDerivation? := some structuralDeriv
     checkedStructuralKernelDerivation? := some checkedStructuralReplay }
 
@@ -1418,25 +1025,6 @@ def checkedHLSignatureForCompiledCache (theoryName : Name) (checked : CheckedSig
 def mkCompiledLFCheckCacheFromHL (checkedHL : HLSignature) (checked : CheckedSignature) :
     CoreM CompiledLFCheckCache := do
   let checkedLFDefValues := checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs
-  let checkedLFObjectDefValues := checkedLFObjectDefinitionValues checked.lfObjectDefs
-  let kernelSig : Signature := {
-    name := checked.name.eraseMacroScopes
-    constants :=
-      (checked.lfSyntaxDefs.map (checkedLFSyntaxDefToKernelConstant checkedLFDefValues) ++
-        checked.lfOpaqueConsts.filterMap
-          (checkedLFOpaqueConstToKernelConstant? checkedLFObjectDefValues) ++
-        checked.lfObjectDefs.map (checkedLFObjectDefToKernelConstant checkedLFDefValues)).toList
-    contextZones := checked.lfContextZones.toList.map checkedLFContextZoneToKernel
-    binderClasses := checked.lfBinderClasses.toList.map checkedLFBinderClassToKernel
-    conversionPlugins := checked.lfConversionPlugins.toList.map checkedLFConversionPluginToKernel
-    rules := (checkedLFRuleSchemasToKernel checkedLFDefValues checked.lfRuleSchemas ++
-      kernelLFRuleSchemasOfTheorems checkedLFDefValues checked.lfJudgmentTheorems).toList }
-  let mut replayCtx : KernelLFCheckContext := {
-    certificates := kernelLFCertificateEntriesOfTheorems checked.lfJudgmentTheorems }
-  for prior in checked.lfJudgmentTheorems do
-    if prior.binders.isEmpty then
-      if let some checkedReplay := prior.checkedKernelDerivation? then
-        replayCtx := replayCtx.addTheorem prior.name checkedReplay.statement
   let structuralKernelSig ← liftStructuralKernelExcept
     s!"compiled cache for '{checked.name}' compact structural signature" <|
       checkedSignatureToKSignature checked.name checked.lfSyntaxDefs checked.lfOpaqueConsts
@@ -1473,8 +1061,6 @@ def mkCompiledLFCheckCacheFromHL (checkedHL : HLSignature) (checked : CheckedSig
     availableLFTheoremStatements :=
       availableLFTheoremStatementsFromChecked checked.lfJudgmentTheorems
     availableLFTheoremNames := availableLFTheoremNamesFromChecked checked.lfJudgmentTheorems
-    kernelSig := kernelSig
-    kernelReplayBase := replayCtx
     structuralKernelSig := structuralKernelSig
     structuralKernelSigExpanded := structuralKernelSigExpanded
     structuralKernelReplayBase := structuralKernelReplayBase }

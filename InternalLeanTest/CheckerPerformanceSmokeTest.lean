@@ -19,24 +19,32 @@ compilation smoke test; `scripts/benchmark_checker.py` provides wall-clock scali
 open Lean Elab Command
 open InternalLean
 
-/-- Test helper asserting that a kernel rule conclusion preserves a compact LF-definition head. -/
+/-- Test helper asserting that a structural rule conclusion preserves a compact LF-definition
+    head. -/
 elab "#guard_kernel_rule_conclusion_first_arg_head " theory:ident ruleName:ident expected:ident :
     command => do
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
-  let some schema := checked.lfKernelRuleSchemas.find? (fun r =>
-      r.name.eraseMacroScopes == ruleName.getId.eraseMacroScopes)
-    | throwError "no kernel rule schema '{ruleName.getId}' for type theory '{theory.getId}'"
+  let sig ←
+    match checkedSignatureToKSignature checked.name checked.lfSyntaxDefs checked.lfOpaqueConsts
+        checked.lfContextZones checked.lfBinderClasses checked.lfConversionPlugins
+        checked.lfRuleSchemas checked.lfObjectDefs checked.lfJudgmentTheorems with
+    | .ok sig => pure sig
+    | .error err => throwError err
+  let some schema := sig.rules.find? (fun r =>
+      r.name.raw.eraseMacroScopes == ruleName.getId.eraseMacroScopes)
+    | throwError "no structural rule schema '{ruleName.getId}' for type theory '{theory.getId}'"
   let some actualHead :=
-      match schema.conclusion with
-      | .custom _ (arg :: _) =>
+      match schema.conclusionStmt.args with
+      | arg :: _ =>
           match arg with
-          | .tmConst n | .tyConst n | .tmApp n _ | .tyApp n _ => some n.eraseMacroScopes
+          | .ident h => some h.name.raw.eraseMacroScopes
+          | .app (.ident h) _ => some h.name.raw.eraseMacroScopes
           | _ => none
       | _ => none
-    | throwError "kernel rule schema '{ruleName.getId}' has no headed first conclusion argument"
+    | throwError "structural rule schema '{ruleName.getId}' has no headed first conclusion argument"
   unless actualHead == expected.getId.eraseMacroScopes do
-    throwError "kernel rule schema '{ruleName.getId}' first conclusion argument head is \
+    throwError "structural rule schema '{ruleName.getId}' first conclusion argument head is \
       '{actualHead}', expected '{expected.getId.eraseMacroScopes}'"
 
 declare_type_theory CheckerPerfDefChain50 where

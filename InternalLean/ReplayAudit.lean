@@ -10,9 +10,8 @@ public meta import InternalLean.LFElab
 /-!
 # LF replay audit and certificate helpers
 
-This module contains checked replay-wrapper, compact certificate, and trust-dependency helpers.
-Diagnostics and model rendering should use these APIs instead of rebuilding raw replay contexts
-ad hoc.
+This module contains checked structural replay-wrapper, certificate, and trust-dependency helpers.
+Diagnostics and model rendering should use these APIs instead of rebuilding replay contexts ad hoc.
 -/
 
 @[expose] public meta section
@@ -25,96 +24,72 @@ namespace InternalLean
 def insertNameSet (names extra : NameSet) : NameSet :=
   extra.toList.foldl (fun acc n => acc.insert n.eraseMacroScopes) names
 
-/-- Global LF constant/former names mentioned by a raw kernel expression. -/
-partial def rawGlobalHeadNames : Raw → NameSet
-  | .ctxNil | .ctxMeta _ | .tyMeta _ | .tmVar _ | .tmMeta _ | .substMeta _
-  | .substEmpty | .leanParam _ => {}
-  | .tyConst n | .tmConst n => {n.eraseMacroScopes}
-  | .tyApp n args | .tmApp n args =>
-      args.foldl
-        (fun names arg => insertNameSet names (rawGlobalHeadNames arg))
-        ({n.eraseMacroScopes} : NameSet)
-  | .ctxExt Γ A | .tySubst Γ A | .tmSubst Γ A | .substComp Γ A | .substExt Γ A =>
-      insertNameSet (rawGlobalHeadNames Γ) (rawGlobalHeadNames A)
-  | .substId Γ => rawGlobalHeadNames Γ
-  | .scopedBind _ _ _ ty body => insertNameSet (rawGlobalHeadNames ty)
-      (rawGlobalHeadNames body)
+/-- Global LF names mentioned by a structural kernel term. -/
+partial def structuralKTermGlobalHeadNames : Kernel.KTerm → NameSet
+  | .ident h => {h.name.raw.eraseMacroScopes}
+  | .fvar _ | .bvar _ | .mvar _ _ | .univ _ => {}
+  | .app f a | .arrow f a | .sigma f a | .pair f a | .jeq f a =>
+      insertNameSet (structuralKTermGlobalHeadNames f) (structuralKTermGlobalHeadNames a)
+  | .lam body | .fst body | .snd body => structuralKTermGlobalHeadNames body
 
-/-- Global LF constant/former names mentioned by a kernel judgment. -/
-def judgmentGlobalHeadNames : Judgment → NameSet
-  | .wfCtx Γ => rawGlobalHeadNames Γ
-  | .wfTy Γ A => insertNameSet (rawGlobalHeadNames Γ) (rawGlobalHeadNames A)
-  | .wfTm Γ t A =>
-      insertNameSet (insertNameSet (rawGlobalHeadNames Γ) (rawGlobalHeadNames t))
-        (rawGlobalHeadNames A)
-  | .wfSubst Δ σ Γ =>
-      insertNameSet (insertNameSet (rawGlobalHeadNames Δ) (rawGlobalHeadNames σ))
-        (rawGlobalHeadNames Γ)
-  | .eqTy Γ A B =>
-      insertNameSet (insertNameSet (rawGlobalHeadNames Γ) (rawGlobalHeadNames A))
-        (rawGlobalHeadNames B)
-  | .eqTm Γ t u A =>
-      insertNameSet
-        (insertNameSet (insertNameSet (rawGlobalHeadNames Γ) (rawGlobalHeadNames t))
-          (rawGlobalHeadNames u))
-        (rawGlobalHeadNames A)
-  | .custom _ args => args.foldl (fun names arg => insertNameSet names
-      (rawGlobalHeadNames arg)) {}
+/-- Global LF names mentioned by a structural kernel judgment. -/
+def structuralJudgmentGlobalHeadNames (j : Kernel.Judgment) : NameSet :=
+  j.args.foldl (fun names arg => insertNameSet names (structuralKTermGlobalHeadNames arg))
+    {j.head.raw.eraseMacroScopes}
 
-/-- Global LF names mentioned in one kernel rule schema. -/
-def ruleSchemaGlobalHeadNames (r : RuleSchema) : NameSet := Id.run do
-  let mut names : NameSet := {}
-  for v in r.metavariables do
-    if let some ty := v.type? then
-      names := insertNameSet names (rawGlobalHeadNames ty)
-    if let some ev := v.evidence? then
-      names := insertNameSet names (judgmentGlobalHeadNames ev)
-  for p in r.premises do
-    names := insertNameSet names (judgmentGlobalHeadNames p)
-  for sc in r.sideConditions do
-    for arg in sc.args do
-      names := insertNameSet names (rawGlobalHeadNames arg)
-  for slot in r.sideConditionCertificates do
-    for arg in slot.condition.args do
-      names := insertNameSet names (rawGlobalHeadNames arg)
-  for cert in r.checkedSideConditionCertificates do
-    for arg in cert.condition.args do
-      names := insertNameSet names (rawGlobalHeadNames arg)
-  names := insertNameSet names (judgmentGlobalHeadNames r.conclusion)
-  return names
-
-/-- Global LF names mentioned in a scoped rule instantiation. -/
-def scopedInstantiationGlobalHeadNames (inst : ScopedInstantiation) : NameSet := Id.run do
+/-- Global LF names mentioned in a structural scoped rule instantiation. -/
+def structuralScopedInstantiationGlobalHeadNames (inst : Kernel.ScopedInstantiation) :
+    NameSet := Id.run do
   let mut names : NameSet := {}
   for e in inst.entries do
     if let some ty := e.type? then
-      names := insertNameSet names (rawGlobalHeadNames ty)
+      names := insertNameSet names (structuralKTermGlobalHeadNames ty)
     if let some ev := e.evidence? then
-      names := insertNameSet names (judgmentGlobalHeadNames ev)
-    names := insertNameSet names (rawGlobalHeadNames e.value)
+      names := insertNameSet names (structuralJudgmentGlobalHeadNames ev)
+    names := insertNameSet names (structuralKTermGlobalHeadNames e.value)
   return names
 
-/-- Rule names actually used by a kernel-facing replay tree. -/
-partial def kernelLFDerivationRuleAppNames : KernelLFDerivation → NameSet
+/-- Global LF names mentioned in one structural kernel rule schema. -/
+def structuralRuleSchemaGlobalHeadNames (r : Kernel.RuleSchema) : NameSet := Id.run do
+  let mut names : NameSet := {}
+  for v in r.metavariables do
+    if let some ty := v.type? then
+      names := insertNameSet names (structuralKTermGlobalHeadNames ty)
+    if let some ev := v.evidence? then
+      names := insertNameSet names (structuralJudgmentGlobalHeadNames ev)
+  for p in r.premises do
+    names := insertNameSet names (structuralJudgmentGlobalHeadNames p)
+  for sc in r.sideConditions do
+    for arg in sc.args do
+      names := insertNameSet names (structuralKTermGlobalHeadNames arg)
+  for slot in r.sideConditionCertificates do
+    for arg in slot.condition.args do
+      names := insertNameSet names (structuralKTermGlobalHeadNames arg)
+  for cert in r.checkedSideConditionCertificates do
+    for arg in cert.condition.args do
+      names := insertNameSet names (structuralKTermGlobalHeadNames arg)
+  names := insertNameSet names (structuralJudgmentGlobalHeadNames r.conclusionStmt)
+  return names
+
+/-- Rule names actually used by a structural kernel replay tree. -/
+partial def structuralKernelLFDerivationRuleAppNames : Kernel.KernelLFDerivation → NameSet
   | .assumption .. | .theoremRef .. | .certificate .. => {}
   | .ruleApp ruleName _ _ premises _ =>
-      List.foldl
-        (fun names => fun prem => insertNameSet names (kernelLFDerivationRuleAppNames prem))
-        ({ruleName.eraseMacroScopes} : NameSet) premises
+      premises.foldl
+        (fun names prem => insertNameSet names (structuralKernelLFDerivationRuleAppNames prem))
+        ({ruleName.raw.eraseMacroScopes} : NameSet)
 
-/-- Global LF names mentioned by a kernel-facing replay tree. -/
-partial def kernelLFDerivationGlobalHeadNames : KernelLFDerivation → NameSet
+/-- Global LF names mentioned by a structural kernel replay tree. -/
+partial def structuralKernelLFDerivationGlobalHeadNames : Kernel.KernelLFDerivation → NameSet
   | .assumption _ stmt | .theoremRef _ stmt | .certificate _ stmt _ =>
-      judgmentGlobalHeadNames stmt
+      structuralJudgmentGlobalHeadNames stmt
   | .ruleApp _ concl inst premises _ =>
-      let names := insertNameSet (judgmentGlobalHeadNames concl)
-        (scopedInstantiationGlobalHeadNames inst)
-      List.foldl
-        (fun names => fun prem => insertNameSet names
-          (kernelLFDerivationGlobalHeadNames prem))
-        names premises
+      let names := insertNameSet (structuralJudgmentGlobalHeadNames concl)
+        (structuralScopedInstantiationGlobalHeadNames inst)
+      premises.foldl (fun names prem => insertNameSet names
+        (structuralKernelLFDerivationGlobalHeadNames prem)) names
 
-/-- Exact replay-leaf dependencies used by a kernel-facing replay artifact. -/
+/-- Exact replay-leaf dependencies used by a structural kernel replay artifact. -/
 structure KernelLFReplayDependencySummary where
   /-- Local theorem assumptions used by replay leaves. -/
   localAssumptions : NameSet := {}
@@ -126,7 +101,7 @@ structure KernelLFReplayDependencySummary where
   externalCertificates : NameSet := {}
   /-- Primitive or theorem-rule applications used by replay nodes. -/
   ruleApplications : NameSet := {}
-  /-- Global LF constants/formers mentioned in statements and instantiations. -/
+  /-- Global LF heads mentioned in statements and instantiations. -/
   globalHeads : NameSet := {}
   deriving Inhabited
 
@@ -143,25 +118,26 @@ def merge (a b : KernelLFReplayDependencySummary) : KernelLFReplayDependencySumm
 
 end KernelLFReplayDependencySummary
 
-/-- Exact replay-leaf dependencies for a kernel-facing replay tree. -/
-partial def kernelLFReplayDependencySummary : KernelLFDerivation → KernelLFReplayDependencySummary
+/-- Exact replay-leaf dependencies for a structural kernel replay tree. -/
+partial def kernelLFReplayDependencySummary :
+    Kernel.KernelLFDerivation → KernelLFReplayDependencySummary
   | .assumption name stmt =>
-      { localAssumptions := {name.eraseMacroScopes}
-        globalHeads := judgmentGlobalHeadNames stmt }
+      { localAssumptions := {name.raw.eraseMacroScopes}
+        globalHeads := structuralJudgmentGlobalHeadNames stmt }
   | .theoremRef name stmt =>
-      { theoremReferences := {name.eraseMacroScopes}
-        globalHeads := judgmentGlobalHeadNames stmt }
+      { theoremReferences := {name.raw.eraseMacroScopes}
+        globalHeads := structuralJudgmentGlobalHeadNames stmt }
   | .certificate name stmt certificateName =>
-      { certificateObligations := {name.eraseMacroScopes}
-        externalCertificates := {certificateName.eraseMacroScopes}
-        globalHeads := judgmentGlobalHeadNames stmt }
+      { certificateObligations := {name.raw.eraseMacroScopes}
+        externalCertificates := {certificateName.raw.eraseMacroScopes}
+        globalHeads := structuralJudgmentGlobalHeadNames stmt }
   | .ruleApp ruleName concl inst premises certificateNames =>
       let own : KernelLFReplayDependencySummary :=
-        { externalCertificates := certificateNames.foldl (fun s n => s.insert n.eraseMacroScopes) {}
-          ruleApplications := {ruleName.eraseMacroScopes}
-          globalHeads :=
-            insertNameSet (judgmentGlobalHeadNames concl)
-              (scopedInstantiationGlobalHeadNames inst) }
+        { externalCertificates := certificateNames.foldl
+            (fun s n => s.insert n.raw.eraseMacroScopes) {}
+          ruleApplications := {ruleName.raw.eraseMacroScopes}
+          globalHeads := insertNameSet (structuralJudgmentGlobalHeadNames concl)
+            (structuralScopedInstantiationGlobalHeadNames inst) }
       premises.foldl (fun acc prem => acc.merge (kernelLFReplayDependencySummary prem)) own
 
 /-- Names of LF opaque constants declared by a checked signature. -/
@@ -179,26 +155,6 @@ def replayOpaqueHeadNames (checked : CheckedSignature)
 def nameSetSummary (names : NameSet) : String :=
   let xs := names.toList.map (fun n => toString n.eraseMacroScopes)
   if xs.isEmpty then "none" else String.intercalate ", " xs
-
-/-- Compact source-ish replay-tree rendering with a depth and size budget. -/
-partial def kernelLFDerivationSourceStringWithDepth : Nat → KernelLFDerivation → String
-  | 0, _ => "..."
-  | depth + 1, .assumption name stmt =>
-      s!"assumption {lfReplayNameString name} : {judgmentSourceStringWithDepth depth stmt}"
-  | depth + 1, .theoremRef name stmt =>
-      s!"theorem {lfReplayNameString name} : {judgmentSourceStringWithDepth depth stmt}"
-  | depth + 1, .certificate name stmt cert =>
-      s!"certificate {lfReplayNameString name} via {lfReplayNameString cert} : " ++
-        s!"{judgmentSourceStringWithDepth depth stmt}"
-  | depth + 1, .ruleApp ruleName concl inst premises certs =>
-      let entryNames := inst.entries.map (fun e => lfReplayNameString e.name)
-      let premiseText := premises.take 3 |>.map (kernelLFDerivationSourceStringWithDepth depth)
-      let morePremises := if premises.length > 3 then [s!"... +{premises.length - 3} more"] else []
-      let certText := certs.map lfReplayNameString
-      s!"rule {lfReplayNameString ruleName} : {judgmentSourceStringWithDepth depth concl}; " ++
-        s!"inst [{String.intercalate ", " entryNames}]; " ++
-        s!"premises [{String.intercalate "; " (premiseText ++ morePremises)}]; " ++
-        s!"certificates [{String.intercalate ", " certText}]"
 
 /-- Source-ish rendering for structural kernel terms. -/
 partial def structuralKTermSourceStringWithDepth : Nat → Kernel.KTerm → String
@@ -315,10 +271,6 @@ partial def checkedLFDerivationSourceStringWithDepth : Nat → CheckedLFDerivati
         s!"[{String.intercalate "; " (premiseText ++ morePremises)}]; certificates " ++
         s!"[{String.intercalate ", " certText}]"
 
-/-- Default source-ish target rendering for replay-audit summaries. -/
-def replayAuditTargetString (stmt : Judgment) : String :=
-  truncateDiagnosticString 600 (judgmentSourceStringWithDepth 6 stmt)
-
 /-- Default source-ish checked LF expression rendering for diagnostics. -/
 def replayAuditCheckedLFExprString (expr : CheckedLFExpr) : String :=
   truncateDiagnosticString 600 (checkedLFExprSourceStringWithDepth 6 expr)
@@ -326,10 +278,6 @@ def replayAuditCheckedLFExprString (expr : CheckedLFExpr) : String :=
 /-- Default source-ish shallow derivation rendering for diagnostics. -/
 def replayAuditCheckedLFDerivationString (derivation : CheckedLFDerivation) : String :=
   truncateDiagnosticString 1200 (checkedLFDerivationSourceStringWithDepth 5 derivation)
-
-/-- Default source-ish derivation rendering for replay-audit summaries. -/
-def replayAuditDerivationString (derivation : KernelLFDerivation) : String :=
-  truncateDiagnosticString 1200 (kernelLFDerivationSourceStringWithDepth 5 derivation)
 
 /-- Default source-ish structural target rendering for replay-audit summaries. -/
 def replayAuditStructuralTargetString (stmt : Kernel.Judgment) : String :=
@@ -339,118 +287,84 @@ def replayAuditStructuralTargetString (stmt : Kernel.Judgment) : String :=
 def replayAuditStructuralDerivationString (derivation : Kernel.KernelLFDerivation) : String :=
   truncateDiagnosticString 1200 (structuralKernelLFDerivationSourceStringWithDepth 5 derivation)
 
-/-- Kernel-facing signature fragment for a compact replay certificate. -/
-def kernelLFReplayCertificateSignature (checked : CheckedSignature)
-    (derivation : KernelLFDerivation) : Signature :=
-  let usedRules := kernelLFDerivationRuleAppNames derivation
-  let checkedLFDefValues := checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs
-  let allRules :=
-    (checked.lfKernelRuleSchemas ++
-      kernelLFRuleSchemasOfTheorems checkedLFDefValues checked.lfJudgmentTheorems).toList
-  let rules := allRules.filter (fun r => usedRules.contains r.name.eraseMacroScopes)
-  let usedGlobals := rules.foldl
-    (fun names r => insertNameSet names (ruleSchemaGlobalHeadNames r))
-    (kernelLFDerivationGlobalHeadNames derivation)
-  { name := checked.name
-    constants := (checkedLFConstantsToKernel checkedLFDefValues checked.lfSyntaxDefs
-      checked.lfOpaqueConsts checked.lfObjectDefs |>.toList).filter (fun c =>
-        usedGlobals.contains c.name.eraseMacroScopes)
-    contextZones := checked.lfContextZones.toList.map checkedLFContextZoneToKernel
-    binderClasses := checked.lfBinderClasses.toList.map checkedLFBinderClassToKernel
-    conversionPlugins := checked.lfConversionPlugins.toList.map checkedLFConversionPluginToKernel
-    rules := rules }
-
-/-- Kernel-facing replay statement for a theorem, preferring checked cached replay wrappers. -/
-def kernelLFReplayStatementOfTheorem? (t : CheckedLFJudgmentTheorem) : Option Judgment :=
-  match t.checkedKernelDerivation? with
+/-- Structural replay statement for a theorem, preferring checked cached replay wrappers. -/
+def structuralKernelLFReplayStatementOfTheorem? (t : CheckedLFJudgmentTheorem) :
+    Option Kernel.Judgment :=
+  match t.checkedStructuralKernelDerivation? with
   | some checkedReplay => some checkedReplay.statement
-  | none => KernelLFDerivation.statement <$> t.kernelDerivation?
+  | none => checkedLFJudgmentTheoremStatementToK t |>.toOption
 
-/-- Kernel-facing replay payload for a theorem, preferring checked cached replay wrappers. -/
-def kernelLFReplayPayloadOfTheorem? (t : CheckedLFJudgmentTheorem) :
-    Option (Judgment × KernelLFDerivation) :=
-  match t.checkedKernelDerivation? with
+/-- Structural replay payload for a theorem, preferring checked cached replay wrappers. -/
+def structuralKernelLFReplayPayloadOfTheorem? (t : CheckedLFJudgmentTheorem) :
+    Option (Kernel.Judgment × Kernel.KernelLFDerivation) :=
+  match t.checkedStructuralKernelDerivation? with
   | some checkedReplay => some (checkedReplay.statement, checkedReplay.derivation)
   | none =>
-      match t.kernelDerivation? with
-      | some derivation => some (KernelLFDerivation.statement derivation, derivation)
+      match t.structuralKernelDerivation? with
+      | some derivation => some (Kernel.KernelLFDerivation.statement derivation, derivation)
       | none => none
 
 /-- Previously checked closed LF theorems that precede a theorem in source order. -/
-def precedingClosedLFTheoremEntries (theorems : Array CheckedLFJudgmentTheorem)
-    (theoremName : Name) : List KernelLFTheoremEntry := Id.run do
-  let mut out : List KernelLFTheoremEntry := []
+def precedingClosedLFTheoremEntriesToK (theorems : Array CheckedLFJudgmentTheorem)
+    (theoremName : Name) : Except String (List Kernel.KernelLFTheoremEntry) := do
+  let mut out : List Kernel.KernelLFTheoremEntry := []
   for t in theorems do
     if t.name.eraseMacroScopes == theoremName.eraseMacroScopes then
       return out.reverse
     if t.binders.isEmpty then
-      let statement :=
-        (kernelLFReplayStatementOfTheorem? t).getD
-          (checkedLFJudgmentExprToKernel t.checkedJudgmentExpr t.judgmentHead)
-      out := { name := t.name, statement := statement } :: out
+      let some statement := structuralKernelLFReplayStatementOfTheorem? t
+        | throw s!"checked LF judgment theorem '{t.name}' has no structural replay statement"
+      out := { name := Kernel.KName.ofName t.name, statement := statement } :: out
   return out.reverse
 
-/-- Local theorem-assumption statements carried by a kernel replay tree. -/
-partial def kernelLFDerivationLocalAssumptionStatementMap
-    (derivation : KernelLFDerivation) (acc : NameMap Judgment := {}) : NameMap Judgment :=
-  match derivation with
-  | .assumption name statement => acc.insert name.eraseMacroScopes statement
-  | .theoremRef .. | .certificate .. => acc
-  | .ruleApp _ _ _ premises _ =>
-      premises.foldl (fun acc d =>
-        kernelLFDerivationLocalAssumptionStatementMap d acc) acc
-
-/-- Extract local theorem assumptions, preferring the normalized statements in a replay tree. -/
-def kernelLFLocalAssumptionEntriesForReplay (t : CheckedLFJudgmentTheorem)
-    (derivation : KernelLFDerivation) : List KernelLFTheoremEntry :=
-  let replayStatements := kernelLFDerivationLocalAssumptionStatementMap derivation
-  t.binders.toList.filterMap fun b =>
-    match b.head? with
-    | some head =>
-        if head.kind == .judgment then
-          let statement :=
-            match replayStatements.find? b.name.eraseMacroScopes with
-            | some statement => statement
-            | none => checkedLFJudgmentExprToKernel b.checkedTypeExpr head
-          some { name := b.name, statement := statement }
-        else
-          none
-    | none => none
-
-/-- Build the compact replay context needed for one checked LF theorem. -/
+/-- Build the structural replay context needed for one checked LF theorem. -/
 def kernelLFReplayCertificateContextForTheorem (checked : CheckedSignature)
-    (t : CheckedLFJudgmentTheorem) (derivation? : Option KernelLFDerivation := none) :
-    KernelLFCheckContext :=
-  { localParameters := t.binders.toList.map (fun b => b.name)
-    assumptions :=
-      match derivation? with
-      | some derivation => kernelLFLocalAssumptionEntriesForReplay t derivation
-      | none => kernelLFLocalAssumptionEntriesOfTheorem t
-    theorems := precedingClosedLFTheoremEntries checked.lfJudgmentTheorems t.name
-    certificates := kernelLFCertificateEntriesOfTheorems checked.lfJudgmentTheorems }
+    (t : CheckedLFJudgmentTheorem) : Except String Kernel.KernelLFCheckContext := do
+  let checkedLFDefValues := checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs
+  let assumptions ← kernelLFLocalAssumptionEntriesOfTheoremToK false checkedLFDefValues t
+  let theorems ← precedingClosedLFTheoremEntriesToK checked.lfJudgmentTheorems t.name
+  pure {
+    localParameters := t.binders.toList.map (fun b => Kernel.KLocalName.ofName b.name)
+    assumptions := assumptions
+    theorems := theorems
+    certificates := kernelLFCertificateEntriesOfTheoremsToK checked.lfJudgmentTheorems }
 
-/-- Build a compact independently checkable replay certificate from a checked LF theorem. -/
+/-- Build a structural independently checkable replay certificate from a checked LF theorem. -/
 def kernelLFReplayCertificateForCheckedTheorem (checked : CheckedSignature)
-    (t : CheckedLFJudgmentTheorem) : Except String KernelLFReplayCertificate := do
-  let some (statement, derivation) := kernelLFReplayPayloadOfTheorem? t
-    | throw s!"checked LF judgment theorem '{t.name}' has no kernel-facing replay derivation"
-  pure { signature := kernelLFReplayCertificateSignature checked derivation
-         context := kernelLFReplayCertificateContextForTheorem checked t (some derivation)
-         statement := statement
-         derivation := derivation }
+    (t : CheckedLFJudgmentTheorem) : Except String Kernel.KernelLFReplayCertificate := do
+  let some (statement, derivation) := structuralKernelLFReplayPayloadOfTheorem? t
+    | throw s!"checked LF judgment theorem '{t.name}' has no structural replay derivation"
+  let signature ← checkedSignatureToKSignature checked.name checked.lfSyntaxDefs
+    checked.lfOpaqueConsts checked.lfContextZones checked.lfBinderClasses
+    checked.lfConversionPlugins checked.lfRuleSchemas checked.lfObjectDefs
+    checked.lfJudgmentTheorems
+  let usedRules := structuralKernelLFDerivationRuleAppNames derivation
+  let rules := signature.rules.filter (fun r => usedRules.contains r.name.raw.eraseMacroScopes)
+  let usedGlobals := rules.foldl
+    (fun names r => insertNameSet names (structuralRuleSchemaGlobalHeadNames r))
+    (structuralKernelLFDerivationGlobalHeadNames derivation)
+  let constants := signature.constants.filter (fun c =>
+    usedGlobals.contains c.name.raw.eraseMacroScopes)
+  let signature := { signature with constants := constants, rules := rules }
+  let context ← kernelLFReplayCertificateContextForTheorem checked t
+  pure {
+    signature := signature
+    context := context
+    statement := statement
+    derivation := derivation }
 
-/-- Build a checked replay wrapper for the kernel-facing artifact of a checked LF theorem. -/
+/-- Build a checked replay wrapper for the structural artifact of a checked LF theorem. -/
 def checkedKernelLFReplayForTheorem (checked : CheckedSignature)
-    (t : CheckedLFJudgmentTheorem) : Except String CheckedKernelLFDerivation :=
-  match t.checkedKernelDerivation? with
+    (t : CheckedLFJudgmentTheorem) : Except String Kernel.CheckedKernelLFDerivation :=
+  match t.checkedStructuralKernelDerivation? with
   | some checkedReplay => .ok checkedReplay
   | none => do
       let cert ← kernelLFReplayCertificateForCheckedTheorem checked t
       cert.toChecked
 
-/-- Build a compact independently checkable replay certificate for a named checked LF theorem. -/
+/-- Build a structural independently checkable replay certificate for a named checked LF theorem. -/
 def kernelLFReplayCertificateForTheorem (checked : CheckedSignature) (theoremName : Name) :
-    CommandElabM KernelLFReplayCertificate := do
+    CommandElabM Kernel.KernelLFReplayCertificate := do
   let some t := checked.lfJudgmentTheorems.find? (fun t =>
       t.name.eraseMacroScopes == theoremName.eraseMacroScopes)
     | throwError "unknown checked LF judgment theorem '{theoremName}' in type theory \
@@ -459,25 +373,39 @@ def kernelLFReplayCertificateForTheorem (checked : CheckedSignature) (theoremNam
   | .ok cert => pure cert
   | .error err => throwError err
 
-/-- Human-readable audit summary for a compact replay certificate. -/
+/-- Rule names used by a structural replay certificate. -/
+def structuralReplayCertificateRuleNames (cert : Kernel.KernelLFReplayCertificate) : List Name :=
+  structuralKernelLFDerivationRuleAppNames cert.derivation |>.toList
+
+/-- Context names available to a structural replay certificate. -/
+def structuralReplayCertificateContextNames (cert : Kernel.KernelLFReplayCertificate) : List Name :=
+  cert.context.assumptions.map (fun e => e.name.raw) ++
+    cert.context.theorems.map (fun e => e.name.raw) ++
+      cert.context.certificates.map (fun e => e.name.raw)
+
+/-- Human-readable audit summary for a structural replay certificate. -/
 def kernelLFReplayCertificateAuditString (theoryName theoremName : Name)
-    (cert : KernelLFReplayCertificate) (checked? : Option CheckedSignature := none) : String :=
+    (cert : Kernel.KernelLFReplayCertificate) (checked? : Option CheckedSignature := none) :
+    String :=
   let status := match cert.toChecked with | .ok _ => "ok" | .error err => s!"failed: {err}"
   let contextCount := cert.context.assumptions.length + cert.context.theorems.length +
     cert.context.certificates.length
+  let certRuleNames := structuralReplayCertificateRuleNames cert
+  let certContextNames := structuralReplayCertificateContextNames cert
   let ruleNames :=
-    if cert.ruleNames.isEmpty then "none" else String.intercalate ", " (cert.ruleNames.map toString)
+    if certRuleNames.isEmpty then "none" else String.intercalate ", "
+      (certRuleNames.map toString)
   let contextNames :=
-    if cert.contextNames.isEmpty then "none" else
-      String.intercalate ", " (cert.contextNames.map toString)
+    if certContextNames.isEmpty then "none" else String.intercalate ", "
+      (certContextNames.map toString)
   let deps := kernelLFReplayDependencySummary cert.derivation
   let opaqueLine := checked?.map fun checked =>
     s!"opaque LF heads used: {nameSetSummary (replayOpaqueHeadNames checked deps)}"
   let lines := [
-    s!"compact LF replay certificate for {theoryName.eraseMacroScopes}.\
+    s!"structural LF replay certificate for {theoryName.eraseMacroScopes}.\
       {theoremName.eraseMacroScopes}",
     s!"check: {status}",
-    s!"signature fragment: {cert.signature.constants.length} constant(s), " ++
+    s!"signature: {cert.signature.constants.length} constant(s), " ++
       s!"{cert.signature.contextZones.length} context zone(s), " ++
       s!"{cert.signature.binderClasses.length} binder class(es), " ++
       s!"{cert.signature.conversionPlugins.length} conversion plugin(s), " ++
@@ -491,12 +419,10 @@ def kernelLFReplayCertificateAuditString (theoryName theoremName : Name)
     s!"certificate obligations used: {nameSetSummary deps.certificateObligations}",
     s!"external certificates used: {nameSetSummary deps.externalCertificates}",
     s!"global LF heads used: {nameSetSummary deps.globalHeads}",
-    s!"target: {replayAuditTargetString cert.statement}",
-    s!"derivation: {replayAuditDerivationString cert.derivation}",
-    "raw repr payload omitted; use #print_lf_replay_certificate_raw for debug output" ]
+    s!"target: {replayAuditStructuralTargetString cert.statement}",
+    s!"derivation: {replayAuditStructuralDerivationString cert.derivation}" ]
   String.intercalate "\n" <| match opaqueLine with
     | some line => lines.take 11 ++ [line] ++ lines.drop 11
     | none => lines
-
 
 end InternalLean

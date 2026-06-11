@@ -251,8 +251,9 @@ In particular, checked LF artifacts track:
 - generated model obligations and transports derived from checked LF artifacts.
 
 Remaining trusted leaves are explicit: opaque LF constants, opaque side-condition solvers or
-certificates unless backed by checked hooks, and low-level raw replay payload constructors. Public
-APIs should prefer checked replay wrappers such as `CheckedKernelLFDerivation.ofReplay`.
+certificates unless backed by checked hooks, and declared external conversion certificates. LF
+replay APIs use structural-kernel checked wrappers such as
+`Kernel.CheckedKernelLFDerivation.ofReplay`.
 
 Model interpretation should consume checked LF artifacts, not parser traces alone.
 

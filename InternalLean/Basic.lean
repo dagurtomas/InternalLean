@@ -8,12 +8,14 @@ module
 public import Lean
 
 /-!
-# Core LF syntax and replay checks
+# Shared LF vocabulary and legacy raw compatibility
 
-This file defines the low-level raw syntax, judgments, rule schemas, signatures, and replay
-checks used by InternalLean's logical-framework layer.
+This file keeps shared universe, metavariable-sort, conversion-step, and trust-boundary vocabulary
+used by InternalLean's logical-framework layer. It also contains the legacy raw replay syntax and
+checker retained for low-level compatibility tests; registered LF theorem replay and executable
+conversion-plugin checking now use the structural kernel in `InternalLean.Kernel`.
 
-Design notes:
+Design notes for the legacy raw layer:
 
 * Object syntax is raw syntax. Object typing/equality is represented by explicit judgments and
   derivations.
@@ -23,8 +25,8 @@ Design notes:
   constructors carry only syntactic shape: replay checks their child constructor families and
   capture hazards, while source/target well-formedness must be supplied by LF rules, premises, or
   explicit evidence.
-* Rule schemas carry a metavariable context and side-condition slots. Recognized LF proof metadata
-  is lowered to kernel-facing replay trees with scoped instantiations and checked certificate
+* Legacy raw rule schemas carry a metavariable context and side-condition slots. Current LF proof
+  metadata is lowered to structural replay trees with scoped instantiations and checked certificate
   references.
 -/
 
@@ -680,11 +682,10 @@ partial def substLeanParam (x : Name) (value : Raw) : Raw → Raw
   | .leanParam y =>
       if y.eraseMacroScopes == x.eraseMacroScopes then value else .leanParam y.eraseMacroScopes
 
-/-- One-step β reduction for the raw convention emitted by `checkedLFExprToRaw`.
+/-- One-step β reduction for the legacy raw `_app`/`lam` convention.
 
-The checked LF layer encodes non-head applications as `_app` and lambdas as `lam`.  This helper
-implements the smallest useful generic executable conversion step: applying a one-argument raw
-lambda to one argument. -/
+Structural-kernel conversion uses first-class binders. This helper remains for low-level legacy raw
+API tests and compatibility smoke checks. -/
 def betaReduce? : Raw → Option Raw
   | .tmApp `_app [.tmApp `lam [.leanParam x, body], arg] =>
       some (Raw.substLeanParam x arg body)

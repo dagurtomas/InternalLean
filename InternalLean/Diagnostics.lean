@@ -655,7 +655,7 @@ end
 def renderRuleInductionTheoremWitness (checked : CheckedSignature) (targets : Array Name)
     (t : CheckedLFJudgmentTheorem) : Except String String := do
   unless t.hasCheckedKernelReplay do
-    throw s!"judgment_theorem '{t.name}' does not have a checked kernel replay artifact"
+    throw s!"judgment_theorem '{t.name}' does not have a checked structural kernel replay artifact"
   let some derivation := t.derivation?
     | throw s!"judgment_theorem '{t.name}' does not have a shallow checked derivation"
   unless ruleInductionTargetContains targets t.judgmentHead.name do
@@ -1568,8 +1568,7 @@ elab "#print_checked_logical_framework_environment " nm:ident : command => do
           {env.sideConditionSolvers.size} side-condition solver(s), {env.conversionPlugins.size} \
             conversion plugin(s), {env.rules.size} checked rule(s), {env.ruleSchemas.size} \
               rule schema(s), {env.sideConditionCertificates.size} side-condition \
-                certificate(s), {checked.lfKernelRuleSchemas.size} kernel rule-schema staging \
-                  artifact(s)"
+                certificate(s)"
   for z in env.contextZones do
     let deps := if z.dependsOn.isEmpty then "" else " depends_on "
       ++ String.intercalate ", " (z.dependsOn.toList.map toString)
@@ -1698,25 +1697,7 @@ partial def lfDerivationSummary : CheckedLFDerivation → MessageData
       m!"rule_app {ruleName} : {stmt} args [{argText}] premises [{premiseText}] certificates \
         [{certText}]"
 
-/-- Compact diagnostic rendering for kernel-facing LF derivation replay artifacts. -/
-partial def kernelLFDerivationSummary : KernelLFDerivation → MessageData
-  | .assumption name stmt => m!"local_assumption {name} : {reprStr stmt}"
-  | .theoremRef name stmt => m!"theorem_ref {name} : {reprStr stmt}"
-  | .certificate name stmt cert => m!"certificate {name} : {reprStr stmt} certificate {cert}"
-  | .ruleApp ruleName concl inst premises certs =>
-      let instText := String.intercalate ", " <| inst.entries.map (fun e =>
-        let zone := match e.zone? with | some z => s!" in {z}" | none => ""
-        let evidenceText :=
-          match e.evidence? with
-          | some ev => s!" evidence {reprStr ev}"
-          | none => ""
-        s!"{e.name}{zone} := {reprStr e.value} : {reprStr e.type?}{evidenceText}")
-      let certText := String.intercalate ", " (certs.map toString)
-      let premiseText := MessageData.joinSep (premises.map kernelLFDerivationSummary) m!"; "
-      m!"rule_app {ruleName} : {reprStr concl} inst [{instText}] premises [{premiseText}] \
-        certificates [{certText}]"
-
-/-- Check the compact LF replay certificate generated for a checked LF judgment theorem. -/
+/-- Check the structural LF replay certificate generated for a checked LF judgment theorem. -/
 elab "#check_lf_replay_certificate " theory:ident theoremName:ident : command => do
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
@@ -1725,29 +1706,21 @@ elab "#check_lf_replay_certificate " theory:ident theoremName:ident : command =>
   | .ok _checkedReplay =>
       let contextCount := cert.context.assumptions.length + cert.context.theorems.length +
         cert.context.certificates.length
-      logInfo m!"compact LF replay certificate for {theory.getId}.{theoremName.getId} \
+      logInfo m!"structural LF replay certificate for {theory.getId}.{theoremName.getId} \
         checks: {cert.signature.rules.length} rule(s), {contextCount} \
         theorem/certificate context entry(ies), {cert.context.localParameters.length} \
         local parameter(s)"
   | .error err =>
-      throwError "compact LF replay certificate for {theory.getId}.{theoremName.getId} failed \
+      throwError "structural LF replay certificate for {theory.getId}.{theoremName.getId} failed \
         validation: {err}"
 
-/-- Print the compact LF replay certificate generated for a checked LF judgment theorem. -/
+/-- Print the structural LF replay certificate generated for a checked LF judgment theorem. -/
 elab "#print_lf_replay_certificate " theory:ident theoremName:ident : command => do
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
     | throwError "no checked artifact stored for type theory '{theory.getId}'"
   let cert ← kernelLFReplayCertificateForTheorem checked theoremName.getId
   let audit := kernelLFReplayCertificateAuditString theory.getId theoremName.getId cert checked
   logInfo m!"{audit}"
-
-/-- Print the raw `repr` compact LF replay certificate payload for debugging. -/
-elab "#print_lf_replay_certificate_raw " theory:ident theoremName:ident : command => do
-  let some checked ← liftCoreM <| getCheckedTheory? theory.getId
-    | throwError "no checked artifact stored for type theory '{theory.getId}'"
-  let cert ← kernelLFReplayCertificateForTheorem checked theoremName.getId
-  logInfo m!"raw compact LF replay certificate for {theory.getId}.{theoremName.getId}:\n\
-    {reprStr cert}"
 
 /-- Print trust dependencies used by one checked LF judgment theorem replay artifact. -/
 elab "#print_lf_replay_trust_dependencies " theory:ident theoremName:ident : command => do
@@ -1846,23 +1819,15 @@ elab "#print_logical_framework_definitions " nm:ident : command => do
       logInfo m!"  derivation: {replayAuditCheckedLFDerivationString derivation}"
     if let some derivation := t.structuralKernelDerivation? then
       logInfo m!"  structural kernel replay: {replayAuditStructuralDerivationString derivation}"
-    if let some derivation := t.kernelDerivation? then
-      logInfo m!"  legacy raw kernel replay: {replayAuditDerivationString derivation}"
-    match t.checkedStructuralKernelDerivation?, t.checkedKernelDerivation? with
-    | some checkedReplay, _ =>
+    match t.checkedStructuralKernelDerivation? with
+    | some checkedReplay =>
         match checkedReplay.check with
         | .ok () =>
             logInfo m!"  checked structural kernel replay wrapper: eligible"
         | .error err =>
             logInfo m!"  checked structural kernel replay wrapper: ineligible: {err}"
-    | none, some checkedReplay =>
-        match checkedReplay.check with
-        | .ok () =>
-            logInfo m!"  checked legacy raw kernel replay wrapper: eligible"
-        | .error err =>
-            logInfo m!"  checked legacy raw kernel replay wrapper: ineligible: {err}"
-    | none, none =>
-        logInfo m!"  checked kernel replay wrapper: unavailable"
+    | none =>
+        logInfo m!"  checked structural kernel replay wrapper: unavailable"
 
 /-- Print Phase-3 LF side-condition hook registry and produced certificates. -/
 elab "#print_logical_framework_side_condition_hooks " nm:ident : command => do
@@ -1881,19 +1846,6 @@ elab "#print_logical_framework_side_condition_hooks " nm:ident : command => do
     logInfo m!"  input: {c.input}"
     logInfo m!"  resolved input: {c.checkedInput.summary}"
     logInfo m!"  diagnostic: {c.diagnostic}"
-
-/-- Print low-level kernel rule-schema staging artifacts derived from LF rule schemas. -/
-elab "#print_logical_framework_kernel_rule_schemas " nm:ident : command => do
-  let some checked ← liftCoreM <| getCheckedTheory? nm.getId
-    | throwError "no checked artifact stored for type theory '{nm.getId}'"
-  logInfo m!"kernel LF rule-schema staging artifacts for {checked.name} \
-    ({checked.lfKernelRuleSchemas.size} rule(s))"
-  for r in checked.lfKernelRuleSchemas do
-    let zoned := r.metavariables.countP (fun v => v.zone?.isSome)
-    logInfo m!"kernel rule-schema {r.name}: {r.metavariables.length} metavariable(s), {zoned} \
-      zoned metavariable(s), {r.premises.length} premise(s), {r.sideConditions.length} \
-        side-condition(s), {r.sideConditionCertificates.length} certificate slot(s), \
-          {r.checkedSideConditionCertificates.length} checked certificate(s)"
 
 /-- Print aggregate resolved-head usage in checked LF rule artifacts. -/
 elab "#print_checked_logical_framework_head_usage " nm:ident : command => do

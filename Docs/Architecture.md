@@ -35,10 +35,10 @@ Main files:
 - `InternalLean/Kernel.lean`
 
 This layer contains the low-level representation of LF syntax, judgments, signatures, derivations,
-and certificate checking. The checked replay boundary now uses first-class structural kernel terms
-for binders, products, functions, universes, and equality-shaped expressions, so former raw-kernel
-constructor names are ordinary LF heads. It is responsible for generic trust-boundary concerns such
-as:
+and certificate checking. The checked replay boundary uses first-class structural kernel terms for
+binders, products, functions, universes, and equality-shaped expressions, so former raw-kernel
+constructor names are ordinary LF heads. Replay audit and certificate diagnostics render these
+structural payloads directly. It is responsible for generic trust-boundary concerns such as:
 
 - structural LF terms and checked judgments;
 - rule schemas and derivations;
@@ -188,7 +188,7 @@ For detailed implementation checklists, see `.agents/docs/InternalLeanDevelopmen
 Useful entry points for reading the code:
 
 - `InternalLean/Command.lean` — public command aggregator.
-- `InternalLean/Basic.lean` — shared low-level LF vocabulary and compatibility utilities.
+- `InternalLean/Basic.lean` — shared universe, metavariable-sort, and trust-boundary vocabulary.
 - `InternalLean/Kernel.lean` — structural LF terms, signatures, derivations, and checking.
 - `InternalLean/DSL.lean` — high-level declaration data and metadata structures.
 - `InternalLean/LFElab.lean` — LF declaration elaboration and metadata validation.

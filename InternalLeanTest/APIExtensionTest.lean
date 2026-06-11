@@ -1138,7 +1138,6 @@ declare_type_theory LogicalFrameworkSmoke where
 #print_lf_rewrite_metadata LogicalFrameworkSmoke
 #print_checked_logical_framework_environment LogicalFrameworkSmoke
 #print_logical_framework_rule_schemas LogicalFrameworkSmoke
-#print_logical_framework_kernel_rule_schemas LogicalFrameworkSmoke
 #print_logical_framework_context_zones LogicalFrameworkSmoke
 
 /-- error: transport_position 'tr' in type theory 'BadLFTransportPositionSameArgument'

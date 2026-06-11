@@ -250,7 +250,7 @@ certificate obligations: none
 external certificates: none
 rule applications: intro
 opaque LF heads: none
-all global LF heads: none -/
+all global LF heads: J -/
 #guard_msgs (whitespace := lax) in
 #print_lf_replay_trust_summary ReplaySummarySmoke
 
