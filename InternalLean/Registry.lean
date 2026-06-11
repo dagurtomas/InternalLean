@@ -123,6 +123,17 @@ public inductive LFQuoteOf : LFQuoteTerm → Type where
   /-- Dummy inhabitant used by generated quote-stub definitions. -/
   | mk {type : LFQuoteTerm} : LFQuoteOf type
 
+/-- Demote a precise quoted LF inhabitant to the unindexed quote marker type.
+
+Generated quote stubs use `LFQuoteTerm` for arguments whose indices would exceed the conservative
+fragment Lean can check during staging. This coercion lets precisely indexed quoted terms flow into
+those marker slots; reflection still reads the coercion argument, and final LF checking remains the
+sole acceptance gate. -/
+public opaque lfQuoteOfToTerm {type : LFQuoteTerm} : LFQuoteOf type → LFQuoteTerm
+
+public instance {type : LFQuoteTerm} : CoeTC (LFQuoteOf type) LFQuoteTerm where
+  coe := lfQuoteOfToTerm
+
 /- Built-in quoted LF syntax constructors available to the Lean-elaborated frontend. -/
 namespace LFQuote
 
@@ -177,6 +188,24 @@ selects the marker result type, and trusted checking happens after reflection. -
 public def projSnd {sndTy valueTy : LFQuoteTerm} (_value : LFQuoteOf valueTy) :
     LFQuoteOf sndTy :=
   LFQuoteOf.mk
+
+namespace Sigma
+
+/-- Quoted structural Sigma first projection, written `Sigma.fst p` in InternalLean terms.
+
+This is frontend syntax for projecting the first component of an LF structural Sigma/package
+value. The reflected projection is checked by the LF checker. -/
+public def fst {fstTy valueTy : LFQuoteTerm} (value : LFQuoteOf valueTy) : LFQuoteOf fstTy :=
+  projFst value
+
+/-- Quoted structural Sigma second projection, written `Sigma.snd p` in InternalLean terms.
+
+This is frontend syntax for projecting the second component of an LF structural Sigma/package
+value. The reflected projection is checked by the LF checker. -/
+public def snd {sndTy valueTy : LFQuoteTerm} (value : LFQuoteOf valueTy) : LFQuoteOf sndTy :=
+  projSnd value
+
+end Sigma
 
 end LFQuote
 
@@ -242,6 +271,7 @@ syntax "rule" : internalHoverKind
 syntax "theorem" : internalHoverKind
 syntax "syntax_sort" : internalHoverKind
 syntax "judgment" : internalHoverKind
+syntax "structural_projection" : internalHoverKind
 syntax ident : internalHoverKind
 
 syntax (name := internalHoverViewPretty)
@@ -296,6 +326,7 @@ def internalHoverKindIdentName : String → Name
   | "internal definition" => `internal_definition
   | "LF constant" => `lf_constant
   | "syntax sort" => `syntax_sort
+  | "structural projection" => `structural_projection
   | other => other.toName
 
 /-- Syntax token used for a hover declaration kind in compact hover display. -/
@@ -309,6 +340,7 @@ def internalHoverKindSyntax (kind : String) :
   | "theorem" => `(internalHoverKind| theorem)
   | "syntax sort" => `(internalHoverKind| syntax_sort)
   | "judgment" => `(internalHoverKind| judgment)
+  | "structural projection" => `(internalHoverKind| structural_projection)
   | other => pure ⟨mkIdent (internalHoverKindIdentName other)⟩
 
 /-- Delaborate an internal hover marker into compact source-like text. -/

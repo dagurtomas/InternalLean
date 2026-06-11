@@ -88,6 +88,13 @@ info: reflected LF term in type theory 'LeanQuotedFrontendSmoke':
 
 /--
 info: reflected LF term in type theory 'LeanQuotedFrontendSmoke':
+  Sigma.fst (⟨o, o⟩)
+-/
+#guard_msgs (whitespace := lax) in
+#reflect_lf_quote LeanQuotedFrontendSmoke : Sigma.fst (pair o o)
+
+/--
+info: reflected LF term in type theory 'LeanQuotedFrontendSmoke':
   Obj → Obj
 -/
 #guard_msgs (whitespace := lax) in
@@ -133,6 +140,32 @@ internal_lean def id_a : El A := id a
 internal_lean theorem has_id_a : Has A (id a) := has_id a
 
 end LeanQuotedImplicitSmoke
+
+declare_type_theory LeanQuoteDemotionSmoke where
+  syntax_sort Ctx
+  syntax_sort Ty (Γ : Ctx)
+  lf_opaque base : Ctx
+  lf_opaque baseTy : Ty base
+  lf_def motiveCtx : (Γ : Ctx) ⇒ (A : Ty Γ) ⇒ Ctx :=
+    fun Γ _ => Γ
+  lf_opaque elim (Γ : Ctx) (A : Ty Γ) (C : Ty (motiveCtx Γ A)) : Ty Γ
+
+namespace LeanQuoteDemotionSmoke
+
+internal def motive : (Γ : Ctx) ⇒ (A : Ty Γ) ⇒ Ty (motiveCtx Γ A) :=
+  fun _ A => A
+
+internal def use : (Γ : Ctx) ⇒ (A : Ty Γ) ⇒ Ty Γ :=
+  fun Γ A => elim Γ A (motive Γ A)
+
+/--
+info: reflected LF term in type theory 'LeanQuoteDemotionSmoke':
+  elim base baseTy (motive base baseTy)
+-/
+#guard_msgs (whitespace := lax) in
+#reflect_lf_quote LeanQuoteDemotionSmoke : elim base baseTy (motive base baseTy)
+
+end LeanQuoteDemotionSmoke
 
 declare_type_theory LeanQuoteUntypedLocalFallbackSmoke where
   syntax_sort U
@@ -198,8 +231,8 @@ internal_lean def idObj : Obj → Obj := fun x => x
 internal_lean def idObjUnqualified : Obj → Obj := fun x => id x
 internal_lean def byExactObj : Obj := by exact o
 internal_lean def pairOO : Obj × Obj := pair o o
-internal_lean def pairOOFst : Obj := projFst pairOO
-internal_lean def pairOOSnd : Obj := projSnd pairOO
+internal_lean def pairOOFst : Obj := Sigma.fst pairOO
+internal_lean def pairOOSnd : Obj := Sigma.snd pairOO
 internal_lean def dependentPairOO : Σ x : Obj, Obj := pair o o
 internal_lean def applyLocal (g : Obj → Obj) (x : Obj) : Obj := g x
 internal_lean def o_ok : IsObj o := LFQuote.mkObj o

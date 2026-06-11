@@ -11,17 +11,13 @@ public import InternalLean.LFElab.Kernel
 /-!
 # Structural kernel replay smoke tests
 
-These tests keep the legacy `dualReplay` disagreement option default off, exercise checked-LF
-expression lowering to `KTerm`, and run small checked theories through structural replay.
+These tests exercise checked-LF expression lowering to `KTerm`, structural conversion
+certificates, direct structural replay rejection, and small checked theories.
 -/
 
 @[expose] public section
 
 open Lean InternalLean
-
-run_cmd do
-  if ← getBoolOption `internalLean.kernel.dualReplay then
-    throwError "internalLean.kernel.dualReplay must default to false"
 
 run_cmd do
   let xHead : CheckedLFHead := { name := `x, kind := .local }
@@ -256,8 +252,6 @@ run_cmd do
       unless err.contains "beta step reduces lhs" do
         throwError "expected structural beta mismatch diagnostic, got: {err}"
 
-set_option internalLean.kernel.dualReplay true
-
 run_cmd do
   let kn (n : Name) := Kernel.KName.ofName n
   let stmt : Kernel.Judgment := { head := kn `J }
@@ -269,11 +263,11 @@ run_cmd do
   let mut rejected := false
   try
     Lean.Elab.Command.liftCoreM <|
-      validateStructuralKernelDualReplay "deliberate divergence" sig {} stmt badDeriv
+      discard <| checkStructuralKernelReplay "deliberate divergence" sig {} stmt badDeriv
   catch _ =>
     rejected := true
   unless rejected do
-    throwError "structural dual-replay divergence branch did not fire"
+    throwError "structural replay divergence branch did not fire"
 
 declare_type_theory KernelDualReplaySmoke where
   syntax_sort Obj

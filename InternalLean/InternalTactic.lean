@@ -2090,6 +2090,12 @@ structure InternalObjectHover where
 def internalObjectHover? (target : InternalDefTarget) (sig : HLSignature) (goal :
     InternalObjectGoal) (rawName : Name) : Option InternalObjectHover := Id.run do
   let n := internalTacticObjectName target rawName
+  if let some proj := structuralSigmaProjectionName? rawName then
+    let name := match proj with | .fst => structuralSigmaFstName | .snd => structuralSigmaSndName
+    return some {
+      kind := "structural projection"
+      name := name
+      typeOrStatement := "structural Sigma/package projection; checked by the LF checker" }
   if let some h := goal.ctx.find? (fun h => sameObjectName h.name n) then
     return some {
       kind := "local assumption"

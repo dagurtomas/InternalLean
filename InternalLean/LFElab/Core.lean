@@ -2049,8 +2049,8 @@ partial def objExprSourceStringWithDepth : Nat → ObjExpr → String
         s!"{objExprSourceStringWithDepth depth B})"
   | depth + 1, .pair a b =>
       s!"⟨{objExprSourceStringWithDepth depth a}, {objExprSourceStringWithDepth depth b}⟩"
-  | depth + 1, .fst e => s!"(fst {objExprSourceStringWithDepth depth e})"
-  | depth + 1, .snd e => s!"(snd {objExprSourceStringWithDepth depth e})"
+  | depth + 1, .fst e => s!"(Sigma.fst {objExprSourceStringWithDepth depth e})"
+  | depth + 1, .snd e => s!"(Sigma.snd {objExprSourceStringWithDepth depth e})"
   | depth + 1, .lam xs body =>
       let binders := String.intercalate " " (xs.toList.map (fun x => toString x.eraseMacroScopes))
       s!"(fun {binders} => {objExprSourceStringWithDepth depth body})"

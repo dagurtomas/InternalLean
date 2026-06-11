@@ -232,8 +232,8 @@ declaration goes through the same checked registration path as a term-style `int
 The previous raw body grammar and object-tactic compiler are still available as `internal_raw def`
 and `internal_raw theorem` for framework regression tests and debugging. Prefer canonical
 `internal def`/`internal theorem` in new code. When migrating old raw bodies, replace `{x := t}`
-with Lean named arguments `(x := t)` and replace old projection tokens `fst p`/`snd p` with
-`π₁ p`/`π₂ p`.
+with Lean named arguments `(x := t)` and use `Sigma.fst p`/`Sigma.snd p` for structural
+projections.
 
 Common tactics include:
 

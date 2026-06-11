@@ -40,6 +40,24 @@ namespace InternalLeanTest.IntroUXTest
         hover.typeOrStatement.contains "src" && hover.typeOrStatement.contains "edge"
   | none => false
 
+#guard
+  let sig : InternalLean.HLSignature := { name := `HoverSmoke }
+  let target : InternalLean.InternalDefTarget := {
+    theoryName := `HoverSmoke, localName := `demo, anchorName := `demo }
+  match InternalLean.internalObjectHover? target sig { target := .ident `Goal } `Sigma.fst with
+  | some hover =>
+      hover.kind == "structural projection" && hover.name == `Sigma.fst &&
+        hover.typeOrStatement.contains "Sigma/package projection"
+  | none => false
+
+/-- info: InternalLean.InternalHoverView.marker : internal structural_projection
+  HoverSmoke.Sigma.fst :
+  "structural Sigma/package projection; checked by the LF checker" -/
+#guard_msgs (whitespace := lax) in
+#check (InternalLean.InternalHoverView.marker :
+  InternalLean.InternalHoverView "HoverSmoke" "structural projection" "Sigma.fst"
+    "structural Sigma/package projection; checked by the LF checker")
+
 /-- info: InternalLean.InternalHoverView.marker : internal rule IntroUXSmoke.reach_refl :
   (x : Node) ⇒ Reach x x -/
 #guard_msgs (whitespace := lax) in

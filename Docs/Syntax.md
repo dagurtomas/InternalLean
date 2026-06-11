@@ -71,8 +71,8 @@ A ⇒ B
 A × B
 Σ x : A, B
 ⟨a, b⟩
-π₁ p
-π₂ p
+Sigma.fst p
+Sigma.snd p
 fun x => body
 fun x y => body
 lhs ≡ rhs
@@ -90,10 +90,10 @@ Notes:
   parameters. Use it when you want to avoid suggesting an internal function former.
 - `fun x => body` builds an internal lambda.
 - `A × B` and `Σ x : A, B` are structural product/record type expressions.
-- `⟨a, b⟩`, `π₁ p`, and `π₂ p` build and project structural record values. Former raw-kernel
-  names such as `lam`, `_app`, `pair`, `fst`, `snd`, `arrow`, `sigma`, and `jeq` are ordinary LF
-  head names after the structural-kernel and frontend cutovers. Only `Type` remains reserved by
-  the shared LF declaration validator.
+- `⟨a, b⟩`, `Sigma.fst p`, and `Sigma.snd p` build and project structural record values.
+  Former raw-kernel names such as `lam`, `_app`, `pair`, `fst`, `snd`, `arrow`, `sigma`, and
+  `jeq` are ordinary LF head names after the structural-kernel and frontend cutovers. Only
+  `Type` remains reserved by the shared LF declaration validator.
 - `lhs ≡ rhs` is internal syntax for judgmental-equality-shaped expressions.
 - `{x := value}` is the legacy raw grammar's explicit implicit-argument marker. Canonical
   `internal def`/`internal theorem` term bodies are Lean terms, so write Lean named arguments as
@@ -533,8 +533,9 @@ internal_raw theorem th : J := rawProof
 Use `internal_raw` only when a test needs legacy `ttExpr` body parsing or the compatibility
 object-tactic compiler, for example the old `{x := value}` named-implicit marker. New code should
 use canonical `internal def` and `internal theorem`, with Lean named arguments such as
-`(x := value)`. The old prefix projection tokens `fst p` and `snd p` were removed from the raw
-grammar; use `π₁ p` and `π₂ p`.
+`(x := value)`. The old prefix projection tokens `fst p`/`snd p` were removed. The temporary
+`π₁ p`/`π₂ p` spellings parse only as deprecated identifier aliases; use `Sigma.fst p` and
+`Sigma.snd p`.
 
 ## Internal tactic syntax
 

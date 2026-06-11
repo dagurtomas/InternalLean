@@ -26,19 +26,19 @@ declare_type_theory ProjectionFromPackageTest where
   syntax_abbrev Pack := Σ a : A, Fam a
   syntax_abbrev NestedPack := Σ a : A, Σ x : Fam a, Fam a
   lf_def package : Pack := ⟨base, fiber base⟩
-  lf_def packageBase : A := π₁ package
-  lf_def packageFiber : Fam packageBase := π₂ package
+  lf_def packageBase : A := Sigma.fst package
+  lf_def packageFiber : Fam packageBase := Sigma.snd package
   lf_def nested : NestedPack := ⟨base, ⟨fiber base, fiber base⟩⟩
-  lf_def nestedFirst : A := π₁ nested
-  lf_def nestedSecond : Fam nestedFirst := π₁ (π₂ nested)
+  lf_def nestedFirst : A := Sigma.fst nested
+  lf_def nestedSecond : Fam nestedFirst := Sigma.fst (Sigma.snd nested)
   lf_def mkPack : (x : A) ⇒ Pack := fun x => ⟨x, fiber x⟩
-  lf_def projected : Fam base := π₂ (mkPack base)
-  lf_def projectedLocalLambda : Fam base := π₂ ((fun x => ⟨x, fiber x⟩) base)
+  lf_def projected : Fam base := Sigma.snd (mkPack base)
+  lf_def projectedLocalLambda : Fam base := Sigma.snd ((fun x => ⟨x, fiber x⟩) base)
   lf_opaque usesProjection : Fam packageBase
   lf_opaque usesNestedSecond : Marker nestedFirst nestedSecond
   lf_opaque usesProjected : Marker base projected
   lf_opaque usesLocalLambda : Marker base projectedLocalLambda
-  lf_opaque shadow : (package : Pack) → Fam (π₁ package)
+  lf_opaque shadow : (package : Pack) → Fam (Sigma.fst package)
 
 generate_model_interface ProjectionFromPackageTest as ProjectionFromPackageModel
 generate_model_transports ProjectionFromPackageTest for ProjectionFromPackageModel

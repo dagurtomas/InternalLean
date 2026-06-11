@@ -165,9 +165,11 @@ generate_syntactic_model_instance T as I for M
 
 The command generates `T.I : T.M`. Sort and judgment fields are filled by `T.LFMirror` type
 families, typed constants by mirror constants, and rule fields by wrappers around mirror rule
-axioms. If a model-facing obligation depends on a `sorry`-admitted internal declaration, the
-syntactic instance fills the temporary field with the corresponding opaque mirror constant, keeping
-that admission visible as an opaque mirror leaf.
+axioms. Side-condition predicate fields use the generated `PUnit` witnesses from the syntactic
+backend, so their trivialization is scoped to this mirror-backed instance. If a model-facing
+obligation depends on a `sorry`-admitted internal declaration, the syntactic instance fills the
+temporary field with the corresponding opaque mirror constant, keeping that admission visible as an
+opaque mirror leaf.
 
 The instance witnesses that the generated obligation set is coherent modulo the mirror translation
 and its axioms; it is not a conservativity or adequacy proof. It is useful as a regression test for

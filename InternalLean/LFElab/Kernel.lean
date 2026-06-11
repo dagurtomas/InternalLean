@@ -751,14 +751,6 @@ def checkStructuralKernelReplay (label : String) (signature : Kernel.Signature)
   | .error err =>
       throwError "Phase-5c structural kernel replay failed for {label}: {err}"
 
-/-- Run the opt-in structural replay disagreement probe for a directly lowered replay. -/
-def validateStructuralKernelDualReplay (label : String) (signature : Kernel.Signature)
-    (context : Kernel.KernelLFCheckContext) (statement : Kernel.Judgment)
-    (derivation : Kernel.KernelLFDerivation) : CoreM Unit := do
-  if !(← getBoolOption `internalLean.kernel.dualReplay) then
-    return ()
-  discard <| checkStructuralKernelReplay label signature context statement derivation
-
 /-- Add checked structural-kernel replay validation to one incrementally checked LF theorem. -/
 def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : CheckedSignature)
     (t : CheckedLFJudgmentTheorem) : CoreM CheckedLFJudgmentTheorem := do

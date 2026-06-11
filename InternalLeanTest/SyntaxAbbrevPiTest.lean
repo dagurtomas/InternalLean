@@ -19,6 +19,30 @@ and checked projection patterns that should not become user model fields.
 open Lean Elab Command
 open InternalLean
 
+namespace InternalLean
+
+run_cmd do
+  let expr : ObjExpr := .fst (.ident `package)
+  let text := toString expr
+  unless text == "Sigma.fst package" do
+    throwError "unexpected structural projection rendering: {text}"
+  match Lean.Parser.runParserCategory (← Lean.getEnv) `ttExpr text with
+  | .error err => throwError err
+  | .ok stx =>
+      let parsed ← elabObjExpr (⟨stx⟩ : TSyntax `ttExpr)
+      unless parsed == expr do
+        throwError "structural projection rendering reparsed as {parsed}, expected {expr}"
+  match Lean.Parser.runParserCategory (← Lean.getEnv) `ttExpr "π₁ package" with
+  | .error err => throwError err
+  | .ok stx =>
+      let parsed ← elabObjExpr (⟨stx⟩ : TSyntax `ttExpr)
+      unless parsed == expr do
+        throwError "legacy projection alias reparsed as {parsed}, expected {expr}"
+
+end InternalLean
+
+#check Sigma.fst
+
 /-- Assert that a checked declaration is not requested as a user-provided model field. -/
 elab "#guard_no_model_field_for " theory:ident decl:ident : command => do
   let some checked ← liftCoreM <| getCheckedTheory? theory.getId
@@ -84,10 +108,10 @@ declare_type_theory SigmaAbbrevTest where
   lf_opaque mkFam (x : Obj) : Fam x
   lf_opaque takeWitness (w : Witness) : Obj
   lf_def witness : Witness := ⟨base, mkFam base⟩
-  lf_def projectObj : Witness ⇒ Obj := fun w => π₁ w
-  lf_def projectFam : (w : Witness) ⇒ Fam (π₁ w) := fun w => π₂ w
+  lf_def projectObj : Witness ⇒ Obj := fun w => Sigma.fst w
+  lf_def projectFam : (w : Witness) ⇒ Fam (Sigma.fst w) := fun w => Sigma.snd w
   lf_def basePair : ObjPair := ⟨base, base⟩
-  lf_def firstBasePair : ObjPair ⇒ Obj := fun p => π₁ p
+  lf_def firstBasePair : ObjPair ⇒ Obj := fun p => Sigma.fst p
 
 #check_model_obligations SigmaAbbrevTest
 #guard_model_field_count SigmaAbbrevTest 5
@@ -150,8 +174,8 @@ declare_type_theory OpaqueStructuralResultTest where
   lf_opaque mkFam (x : Obj) : Fam x
   lf_opaque opaquePi : PiWitness
   lf_opaque opaqueSigma : SigmaWitness
-  lf_def sigmaBase : Obj := π₁ opaqueSigma
-  lf_def sigmaFiber : Fam (π₁ opaqueSigma) := π₂ opaqueSigma
+  lf_def sigmaBase : Obj := Sigma.fst opaqueSigma
+  lf_def sigmaFiber : Fam (Sigma.fst opaqueSigma) := Sigma.snd opaqueSigma
 
 #check_model_obligations OpaqueStructuralResultTest
 #guard_model_field_count OpaqueStructuralResultTest 6

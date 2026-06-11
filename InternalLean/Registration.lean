@@ -592,10 +592,10 @@ partial def lfQuoteLeanTermOfObjExpr (env : Environment) (theoryName : Name)
         (lfQuoteLeanTermOfObjExpr env theoryName locals a)
         (lfQuoteLeanTermOfObjExpr env theoryName locals b)
   | .fst e =>
-      mkApp (mkConst ``InternalLean.LFQuote.projFst)
+      mkApp (mkConst ``InternalLean.LFQuote.Sigma.fst)
         (lfQuoteLeanTermOfObjExpr env theoryName locals e)
   | .snd e =>
-      mkApp (mkConst ``InternalLean.LFQuote.projSnd)
+      mkApp (mkConst ``InternalLean.LFQuote.Sigma.snd)
         (lfQuoteLeanTermOfObjExpr env theoryName locals e)
   | .lam names body =>
       names.foldr (init := lfQuoteLeanTermOfObjExpr env theoryName locals body) fun name body =>
@@ -2191,6 +2191,29 @@ def addInternalSourceReferenceInfo? (theoryName : Name) (sourceName : Name) (stx
     CommandElabM Unit :=
   addInternalSourceDeclTermInfo? theoryName sourceName stx false
 
+/-- Lean declaration providing hover docs for a structural Sigma projection name. -/
+def structuralSigmaProjectionHoverDeclName? (n : Name) : Option Name :=
+  match structuralSigmaProjectionName? n with
+  | some .fst => some ``InternalLean.LFQuote.Sigma.fst
+  | some .snd => some ``InternalLean.LFQuote.Sigma.snd
+  | none => none
+
+/-- Add hover/navigation term info for a structural Sigma projection identifier. -/
+def addStructuralSigmaProjectionTermInfo? (stx : Syntax) : CommandElabM Bool := do
+  let some n := match stx with | .ident _ _ val _ => some val | _ => none
+    | return false
+  let some declName := structuralSigmaProjectionHoverDeclName? n
+    | return false
+  pushInfoLeaf <| .ofTermInfo {
+    elaborator := `InternalLean.structuralSigmaProjectionInfo
+    stx := stx
+    lctx := .empty
+    expectedType? := none
+    expr := mkConst declName
+    isBinder := false
+    isDisplayableTerm := false }
+  return true
+
 mutual
   /-- Add navigation info to identifiers occurring in an object expression. -/
   partial def addObjExprNavigationInfo (theoryName : Name) (locals : NameSet)
@@ -2210,8 +2233,9 @@ mutual
           let _ := u.raw; pure ()
       | `(ttExpr| $x:ident) =>
           let n := x.getId.eraseMacroScopes
-          unless n == `_ || locals.contains n do
-            addInternalSourceReferenceInfo? theoryName n x.raw
+          unless ← addStructuralSigmaProjectionTermInfo? x.raw do
+            unless n == `_ || locals.contains n do
+              addInternalSourceReferenceInfo? theoryName n x.raw
       | `(ttExpr| _) => pure ()
       | `(ttExpr| ($e:ttExpr)) => addObjExprNavigationInfo theoryName locals e
       | `(ttExpr| {$x:ident := $value:ttExpr}) =>
@@ -2241,8 +2265,6 @@ mutual
       | `(ttExpr| ⟨$a:ttExpr, $b:ttExpr⟩) => do
           addObjExprNavigationInfo theoryName locals a
           addObjExprNavigationInfo theoryName locals b
-      | `(ttExpr| π₁ $e:ttExpr) => addObjExprNavigationInfo theoryName locals e
-      | `(ttExpr| π₂ $e:ttExpr) => addObjExprNavigationInfo theoryName locals e
       | `(ttExpr| fun $xs:ttLamBinder* => $body:ttExpr) => do
           let mut locals := locals
           for x in xs do

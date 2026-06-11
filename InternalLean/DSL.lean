@@ -92,8 +92,8 @@ partial def toString : ObjExpr → String
   | .sigma none a b => s!"{atomString a} × {toString b}"
   | .sigma (some x) a b => s!"Σ {userNameString x} : {toString a}, {toString b}"
   | .pair a b => s!"⟨{toString a}, {toString b}⟩"
-  | .fst e => s!"fst {atomString e}"
-  | .snd e => s!"snd {atomString e}"
+  | .fst e => s!"Sigma.fst {atomString e}"
+  | .snd e => s!"Sigma.snd {atomString e}"
   | .lam xs body =>
       s!"fun {String.intercalate " " (xs.toList.map userNameString)} => {toString body}"
   | .jeq lhs rhs => s!"{toString lhs} ≡ {toString rhs}"
@@ -120,6 +120,33 @@ partial def levelParams : ObjExpr → Array Name
   | .jeq lhs rhs => levelParams lhs ++ levelParams rhs
 
 end ObjExpr
+
+/-- Structural Sigma projection names recognized by the object-expression frontend. -/
+inductive StructuralSigmaProjection where
+  /-- First projection from a structural Sigma/package value. -/
+  | fst
+  /-- Second projection from a structural Sigma/package value. -/
+  | snd
+  deriving Inhabited, Repr, BEq
+
+/-- Qualified name for the first structural Sigma projection in object syntax. -/
+meta def structuralSigmaFstName : Name := `Sigma.fst
+
+/-- Qualified name for the second structural Sigma projection in object syntax. -/
+meta def structuralSigmaSndName : Name := `Sigma.snd
+
+/-- Legacy identifier spelling for the first structural Sigma projection. -/
+meta def legacyStructuralSigmaFstName : Name := `π₁
+
+/-- Legacy identifier spelling for the second structural Sigma projection. -/
+meta def legacyStructuralSigmaSndName : Name := `π₂
+
+/-- Recognize structural Sigma projection identifiers. -/
+meta def structuralSigmaProjectionName? (n : Name) : Option StructuralSigmaProjection :=
+  let n := n.eraseMacroScopes
+  if n == structuralSigmaFstName || n == legacyStructuralSigmaFstName then some .fst
+  else if n == structuralSigmaSndName || n == legacyStructuralSigmaSndName then some .snd
+  else none
 
 /-- Object-expression universe/type expression for a normalized level. -/
 def objExprTypeOfLevel (u : LevelExpr) : ObjExpr :=
@@ -1938,8 +1965,6 @@ syntax:50 "(" ident " : " ttExpr ")" " ⇒ " ttExpr:50 : ttExpr
 syntax:50 ttExpr:51 " × " ttExpr:50 : ttExpr
 syntax:50 "Σ " ident " : " ttExpr ", " ttExpr:50 : ttExpr
 syntax "⟨" ttExpr ", " ttExpr "⟩" : ttExpr
-syntax "π₁ " ttExpr:90 : ttExpr
-syntax "π₂ " ttExpr:90 : ttExpr
 syntax ident : ttLamBinder
 syntax "_" : ttLamBinder
 syntax:60 "fun " ttLamBinder+ " => " ttExpr:50 : ttExpr
@@ -2157,8 +2182,6 @@ meta partial def elabObjExpr (stx : TSyntax `ttExpr) : CommandElabM ObjExpr := d
       | `(ttExpr| Σ $x:ident : $a:ttExpr, $b:ttExpr) =>
           return .sigma (some x.getId) (← elabObjExpr a) (← elabObjExpr b)
       | `(ttExpr| ⟨$a:ttExpr, $b:ttExpr⟩) => return .pair (← elabObjExpr a) (← elabObjExpr b)
-      | `(ttExpr| π₁ $e:ttExpr) => return .fst (← elabObjExpr e)
-      | `(ttExpr| π₂ $e:ttExpr) => return .snd (← elabObjExpr e)
       | `(ttExpr| fun $xs:ttLamBinder* => $body:ttExpr) => do
           let xs ← xs.mapM elabLamBinder
           return .lam xs (← elabObjExpr body)
@@ -2168,6 +2191,11 @@ meta partial def elabObjExpr (stx : TSyntax `ttExpr) : CommandElabM ObjExpr := d
           -- The surface form `Type max u v` is parsed by the generic application grammar as
           -- `((Type max) u) v`; recognize that shape and reinterpret it as a universe level.
           match f, a with
+          | .ident n, a =>
+              match structuralSigmaProjectionName? n with
+              | some .fst => pure (.fst a)
+              | some .snd => pure (.snd a)
+              | none => pure (.app f a)
           | .app (.univ (.param maxName)) (.ident u), .ident v =>
               if maxName.eraseMacroScopes == `max then
                 if u.eraseMacroScopes == v.eraseMacroScopes then

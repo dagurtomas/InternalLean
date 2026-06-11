@@ -22,11 +22,6 @@ open Lean
 
 namespace InternalLean
 
-register_option internalLean.kernel.dualReplay : Bool := {
-  defValue := false
-  descr := "run the structural-kernel replay disagreement probe during checked LF replay"
-}
-
 namespace Kernel
 
 /-- Erased global kernel name. -/

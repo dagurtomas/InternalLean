@@ -176,8 +176,8 @@ partial def structuralKTermSourceStringWithDepth : Nat → Kernel.KTerm → Stri
   | depth + 1, .pair a b =>
       s!"⟨{structuralKTermSourceStringWithDepth depth a}, " ++
         s!"{structuralKTermSourceStringWithDepth depth b}⟩"
-  | depth + 1, .fst e => s!"(fst {structuralKTermSourceStringWithDepth depth e})"
-  | depth + 1, .snd e => s!"(snd {structuralKTermSourceStringWithDepth depth e})"
+  | depth + 1, .fst e => s!"(Sigma.fst {structuralKTermSourceStringWithDepth depth e})"
+  | depth + 1, .snd e => s!"(Sigma.snd {structuralKTermSourceStringWithDepth depth e})"
   | _ + 1, .univ u => s!"Type {u}"
   | depth + 1, .jeq lhs rhs =>
       s!"({structuralKTermSourceStringWithDepth depth lhs} ≡ " ++
@@ -240,8 +240,8 @@ partial def checkedLFExprSourceStringWithDepth : Nat → CheckedLFExpr → Strin
   | depth + 1, .pair a b =>
       s!"⟨{checkedLFExprSourceStringWithDepth depth a}, " ++
         s!"{checkedLFExprSourceStringWithDepth depth b}⟩"
-  | depth + 1, .fst e => s!"(fst {checkedLFExprSourceStringWithDepth depth e})"
-  | depth + 1, .snd e => s!"(snd {checkedLFExprSourceStringWithDepth depth e})"
+  | depth + 1, .fst e => s!"(Sigma.fst {checkedLFExprSourceStringWithDepth depth e})"
+  | depth + 1, .snd e => s!"(Sigma.snd {checkedLFExprSourceStringWithDepth depth e})"
   | depth + 1, .lam xs body =>
       let binders := String.intercalate " " (xs.toList.map lfReplayNameString)
       s!"(fun {binders} => {checkedLFExprSourceStringWithDepth depth body})"

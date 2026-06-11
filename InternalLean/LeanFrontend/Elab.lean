@@ -278,12 +278,21 @@ partial def collectLFQuoteBinderNames (stx : Syntax) (acc : NameSet := {}) : Nam
   | .node _ _ args => args.foldl (fun acc arg => collectLFQuoteBinderNames arg acc) acc
   | _ => acc
 
+/-- Lean declaration for a quoted structural Sigma projection identifier. -/
+def lfQuoteStructuralProjectionDeclName? (n : Name) : Option Name :=
+  match structuralSigmaProjectionName? n with
+  | some .fst => some ``InternalLean.LFQuote.Sigma.fst
+  | some .snd => some ``InternalLean.LFQuote.Sigma.snd
+  | none => none
+
 /-- Qualify simple LF head identifiers so Lean resolution prefers the current theory. -/
 partial def qualifyLFQuoteSourceIdents (theoryName : Name) (sig : HLSignature)
     (protectedNames : NameSet) : Syntax → Syntax
   | stx@(.ident ..) =>
       let n := stx.getId.eraseMacroScopes
-      if isSimpleLFQuoteSourceName n && !protectedNames.contains n && sig.containsName n then
+      if let some declName := lfQuoteStructuralProjectionDeclName? n then
+        mkIdentFrom stx declName
+      else if isSimpleLFQuoteSourceName n && !protectedNames.contains n && sig.containsName n then
         mkIdentFrom stx (lfQuoteDeclName theoryName n)
       else
         stx
@@ -354,6 +363,12 @@ partial def reflectLFQuoteBuiltinApp? (theoryName : Name) (ctx? : Option LFQuote
     unary (fun e => .fst e)
   else if constName == ``InternalLean.LFQuote.projSnd then
     unary (fun e => .snd e)
+  else if constName == ``InternalLean.LFQuote.Sigma.fst then
+    unary (fun e => .fst e)
+  else if constName == ``InternalLean.LFQuote.Sigma.snd then
+    unary (fun e => .snd e)
+  else if constName == ``InternalLean.lfQuoteOfToTerm then
+    unary id
   else
     pure none
 

@@ -268,7 +268,7 @@ Model interpretation should consume checked LF artifacts, not parser traces alon
 `internal_raw def` and `internal_raw theorem` keep the previous raw body grammar and the legacy
 object-tactic compiler for framework regression tests and debugging. New code should use canonical
 `internal def` and `internal theorem`. When migrating old raw bodies, replace `{x := t}` with Lean
-named arguments `(x := t)` and replace old projection tokens `fst p`/`snd p` with `π₁ p`/`π₂ p`.
+named arguments `(x := t)` and use `Sigma.fst p`/`Sigma.snd p` for structural projections.
 
 ## License
 
