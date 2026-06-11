@@ -230,7 +230,11 @@ def checkedLFConversionPluginToK (p : CheckedLFConversionPlugin) :
     Kernel.ConversionPluginSchema :=
   { name := Kernel.KName.ofName p.name
     trust := p.trust
-    supportedSteps := p.supportedSteps.toList }
+    supportedSteps := p.supportedSteps.toList
+    levelNormalizer? := p.levelNormalizer?.map fun profile =>
+      { zeroName := Kernel.KName.ofName profile.zeroName
+        succName := Kernel.KName.ofName profile.succName
+        maxName := Kernel.KName.ofName profile.maxName } }
 
 /-- Build the structural metavariable map for one checked LF rule schema. -/
 def checkedLFRuleSchemaMetaMap (r : CheckedLFRuleSchema) : NameMap RawMetaSort := Id.run do
@@ -255,7 +259,9 @@ def checkedLFSideConditionCertificateToK (metas : NameMap RawMetaSort)
     condition := {
       name := Kernel.KName.ofName cert.solver
       args := [← checkedLFExprToKTerm cert.checkedInput metas] }
-    kind := .builtinTrivial
+    kind := match cert.kind with
+      | .builtinTrivial => .builtinTrivial
+      | .levelNormalizer => .levelNormalizer
     payload := cert.diagnostic }
 
 /-- Lower a checked LF rule schema to the structural replay shape. -/
@@ -371,57 +377,180 @@ def checkedLFMultiContextOfLocals (locals : Array CheckedLFTypedLocal) : Checked
           checkedTypeExpr := v.checkedTypeExpr }
       | none => none }
 
-/-- Run the current built-in executable side-condition hooks for one checked side condition.
+/-- Normal form for the first-order object-level universe fragment. -/
+structure LevelNormalizerObjNF where
+  floor : Nat := 0
+  atoms : Array (Name × Nat) := #[]
+  deriving Inhabited, Repr, BEq
 
-The Phase-3 hook API is deliberately tiny: the built-in trivial hook accepts any side
-condition that already passed LF metadata validation and records a provenance certificate.
-Opaque solver names return no certificate. -/
-def checkLFSideCondition? (ruleName : Name) (sc : CheckedLFRuleSideCondition) :
-    Option CheckedLFSideConditionCertificate :=
-  match classifySideConditionHook sc.solver with
-  | .opaque => none
+namespace LevelNormalizerObjNF
+
+/-- Look up an atom offset. -/
+def atomOffset? (nf : LevelNormalizerObjNF) (atom : Name) : Option Nat :=
+  (nf.atoms.find? (fun entry => entry.1 == atom.eraseMacroScopes)).map Prod.snd
+
+/-- Set one atom to the maximum of the old and new offsets. -/
+def setAtomMax (nf : LevelNormalizerObjNF) (atom : Name) (offset : Nat) :
+    LevelNormalizerObjNF := Id.run do
+  let atom := atom.eraseMacroScopes
+  let mut out := #[]
+  let mut found := false
+  for entry in nf.atoms do
+    if entry.1 == atom then
+      out := out.push (entry.1, Nat.max entry.2 offset)
+      found := true
+    else
+      out := out.push entry
+  return if found then { nf with atoms := out } else { nf with atoms := out.push (atom, offset) }
+
+/-- Successor of an object-level universe normal form. -/
+def succ (nf : LevelNormalizerObjNF) : LevelNormalizerObjNF :=
+  { floor := nf.floor + 1
+    atoms := nf.atoms.map (fun entry => (entry.1, entry.2 + 1)) }
+
+/-- Maximum of two object-level universe normal forms. -/
+def maxNF (lhs rhs : LevelNormalizerObjNF) : LevelNormalizerObjNF := Id.run do
+  let mut out := { lhs with floor := Nat.max lhs.floor rhs.floor }
+  for entry in rhs.atoms do
+    out := out.setAtomMax entry.1 entry.2
+  return out
+
+/-- Equality of object-level universe normal forms, ignoring insertion order. -/
+def equal (lhs rhs : LevelNormalizerObjNF) : Bool :=
+  lhs.floor == rhs.floor && lhs.atoms.size == rhs.atoms.size &&
+    lhs.atoms.all (fun entry => rhs.atomOffset? entry.1 == some entry.2)
+
+/-- Order check for object-level universe normal forms. -/
+def leq (lhs rhs : LevelNormalizerObjNF) : Bool :=
+  lhs.floor <= rhs.floor && lhs.atoms.all (fun entry =>
+    match rhs.atomOffset? entry.1 with
+    | some rhsOffset => entry.2 <= rhsOffset
+    | none => false)
+
+/-- Render a compact normal-form summary. -/
+def format (nf : LevelNormalizerObjNF) : String :=
+  let floorPart := if nf.floor == 0 then [] else [toString nf.floor]
+  let atomPart := nf.atoms.toList.map fun (atom, offset) =>
+    if offset == 0 then toString atom else s!"{atom}+{offset}"
+  match floorPart ++ atomPart with
+  | [] => "0"
+  | [part] => part
+  | parts => s!"max({String.intercalate ", " parts})"
+
+end LevelNormalizerObjNF
+
+/-- Normalize one object-level universe expression in the profiled first-order fragment. -/
+partial def normalizeObjLevel (profile : CheckedLFLevelNormalizerProfile) (expr : ObjExpr) :
+    Except String LevelNormalizerObjNF := do
+  let expr := eraseObjExprScopes expr
+  let (head, args) := splitObjApp expr
+  match head, args.toList with
+  | .ident n, [] =>
+      let n := n.eraseMacroScopes
+      if n == profile.zeroName then pure {} else pure { atoms := #[(n, 0)] }
+  | .ident n, [arg] =>
+      let n := n.eraseMacroScopes
+      if n == profile.succName then
+        return (← normalizeObjLevel profile arg).succ
+      else
+        throw s!"unsupported level-normalizer head '{n}' in '{expr}'"
+  | .ident n, [lhs, rhs] =>
+      let n := n.eraseMacroScopes
+      if n == profile.maxName then
+        return LevelNormalizerObjNF.maxNF (← normalizeObjLevel profile lhs)
+          (← normalizeObjLevel profile rhs)
+      else
+        throw s!"unsupported level-normalizer head '{n}' in '{expr}'"
+  | .ident n, _ =>
+      throw s!"unsupported level-normalizer head '{n.eraseMacroScopes}' in '{expr}'"
+  | _, _ =>
+      throw s!"unsupported level-normalizer expression '{expr}'"
+
+/-- Run the executable level-normalizer side-condition hook. -/
+def checkLFLevelNormalizerSideCondition (profile : CheckedLFLevelNormalizerProfile)
+    (ruleName : Name) (sc : CheckedLFRuleSideCondition) :
+    Except String CheckedLFSideConditionCertificate := do
+  let (head, args) := splitObjApp (eraseObjExprScopes sc.input)
+  let (lhs, rhs) ←
+    match head, args.toList with
+    | .ident n, [lhs, rhs] =>
+        if n.eraseMacroScopes == profile.leName then pure (lhs, rhs) else
+          throw s!"level-normalizer side-condition '{sc.name}' in rule '{ruleName}' must be \
+            headed by profiled order judgment '{profile.leName}', got '{n.eraseMacroScopes}'"
+    | _, _ =>
+        throw s!"level-normalizer side-condition '{sc.name}' in rule '{ruleName}' must have \
+          shape '{profile.leName} lhs rhs', got '{sc.input}'"
+  let lhsNF ← normalizeObjLevel profile lhs
+  let rhsNF ← normalizeObjLevel profile rhs
+  unless lhsNF.leq rhsNF do
+    throw s!"level-normalizer side-condition '{sc.name}' in rule '{ruleName}' failed: \
+      lhs normal form {lhsNF.format}, rhs normal form {rhsNF.format}"
+  pure {
+    name := sc.name
+    solver := sc.solver.eraseMacroScopes
+    input := sc.input
+    checkedInput := sc.checkedInput
+    inputHead? := sc.head?
+    kind := .levelNormalizer
+    certificateName := lfSideConditionCertificateName ruleName sc.name
+    diagnostic := s!"level_normalizer profile solver={profile.solverName}, le={profile.leName}; \
+      lhs_nf={lhsNF.format}; rhs_nf={rhsNF.format}" }
+
+/-- Run the current executable side-condition hooks for one checked side condition. -/
+def checkLFSideCondition? (profiles : Array CheckedLFLevelNormalizerProfile)
+    (ruleName : Name) (sc : CheckedLFRuleSideCondition) :
+    Except String (Option CheckedLFSideConditionCertificate) :=
+  match classifyCheckedSideConditionHook profiles sc.solver with
+  | .opaque => pure none
   | .builtinTrivial =>
-      some {
+      pure <| some {
         name := sc.name
         solver := sc.solver.eraseMacroScopes
         input := sc.input
         checkedInput := sc.checkedInput
         inputHead? := sc.head?
         kind := .builtinTrivial
-        certificateName := .str (.str ruleName.eraseMacroScopes "side_condition") (
-          toString sc.name.eraseMacroScopes)
+        certificateName := lfSideConditionCertificateName ruleName sc.name
         diagnostic := "accepted unconditionally by built-in trivial side-condition hook" }
+  | .levelNormalizer => do
+      let some profile := profiles.find? (fun p =>
+        p.solverName.eraseMacroScopes == sc.solver.eraseMacroScopes)
+        | throw s!"missing level-normalizer profile for solver '{sc.solver.eraseMacroScopes}'"
+      return some (← checkLFLevelNormalizerSideCondition profile ruleName sc)
 
 /-- Derive a Phase-2/3/4 LF rule schema from a checked LF rule artifact. -/
 def checkedLFRuleSchemaOfRule (zones : Array CheckedLFContextZone) (classes :
-  Array CheckedLFBinderClass)
-    (r : CheckedLFRule) : CheckedLFRuleSchema :=
+  Array CheckedLFBinderClass) (profiles : Array CheckedLFLevelNormalizerProfile)
+    (r : CheckedLFRule) : Except String CheckedLFRuleSchema := do
   let evidenceFor (paramName : Name) : Option CheckedLFRuleParamEvidence :=
     r.paramEvidences.find? (fun ev => ev.paramName == paramName.eraseMacroScopes)
   let metavariables := r.params.map (fun p =>
     checkedLFTypedLocalOfBinding zones classes (evidenceFor p.name) p)
-  { name := r.name
+  let sideConditionSlots ← r.sideConditions.mapM fun sc => do
+    let cert? ← checkLFSideCondition? profiles r.name sc
+    pure {
+      name := sc.name
+      solver := sc.solver
+      checkedInput := sc.checkedInput
+      inputHead? := sc.head?
+      certificate? := cert? }
+  return {
+    name := r.name
     metavariables := metavariables
     multiContext := checkedLFMultiContextOfLocals metavariables
     premises := r.premises.map fun p =>
       { name := p.name
         head? := p.head?
         checkedJudgmentExpr := p.checkedJudgmentExpr }
-    sideConditionSlots := r.sideConditions.map fun sc =>
-      let cert? := checkLFSideCondition? r.name sc
-      { name := sc.name
-        solver := sc.solver
-        checkedInput := sc.checkedInput
-        inputHead? := sc.head?
-        certificate? := cert? }
+    sideConditionSlots := sideConditionSlots
     checkedConclusionExpr := r.checkedConclusionExpr
     conclusionHead := r.conclusionHead }
 
 /-- Derive all Phase-2/3/4 LF rule schemas from checked LF rule metadata. -/
 def checkedLFRuleSchemasOfRules (zones : Array CheckedLFContextZone) (classes :
-  Array CheckedLFBinderClass)
-    (rules : Array CheckedLFRule) : Array CheckedLFRuleSchema :=
-  rules.map (checkedLFRuleSchemaOfRule zones classes)
+  Array CheckedLFBinderClass) (profiles : Array CheckedLFLevelNormalizerProfile)
+    (rules : Array CheckedLFRule) : Except String (Array CheckedLFRuleSchema) :=
+  rules.mapM (checkedLFRuleSchemaOfRule zones classes profiles)
 
 /-- Collect checked side-condition certificates from derived rule schemas. -/
 def checkedLFSideConditionCertificatesOfSchemas (rules : Array CheckedLFRuleSchema) :
@@ -917,6 +1046,18 @@ def checkedLFSideConditionSolverToHLDecl (s : CheckedLFSideConditionSolver) :
 def checkedLFConversionPluginToHLDecl (p : CheckedLFConversionPlugin) : ConversionPluginDecl :=
   { name := p.name, trust := p.trust, supportedSteps := p.supportedSteps }
 
+/-- Convert a checked level-normalizer profile to a high-level declaration. -/
+def checkedLFLevelNormalizerProfileToHLDecl (p : CheckedLFLevelNormalizerProfile) :
+    LFLevelNormalizerProfileDecl :=
+  { levelSortName := p.levelSortName
+    zeroName := p.zeroName
+    succName := p.succName
+    maxName := p.maxName
+    leName := p.leName
+    solverName := p.solverName
+    pluginName := p.pluginName
+    trust := p.trust }
+
 /-- Convert a checked LF rule artifact to a high-level declaration. -/
 def checkedLFRuleToHLDecl (r : CheckedLFRule) : RuleDecl :=
   { name := r.name
@@ -968,6 +1109,8 @@ def checkedSignatureToHLSignature (sourceBase : HLSignature) (checked : CheckedS
     sideConditionSolvers :=
       checked.lfSideConditionSolvers.map checkedLFSideConditionSolverToHLDecl
     conversionPlugins := checked.lfConversionPlugins.map checkedLFConversionPluginToHLDecl
+    levelNormalizerProfiles :=
+      checked.lfLevelNormalizerProfiles.map checkedLFLevelNormalizerProfileToHLDecl
     lfOpaqueConsts := checked.lfOpaqueConsts.map checkedLFOpaqueConstToHLDecl
     modelVisibilities := checked.modelVisibilities
     modelSections := checked.modelSections
@@ -1000,6 +1143,7 @@ def checkedHLSignatureMatchesChecked (checkedHL : HLSignature)
     checkedHL.binderClasses.size == checked.lfBinderClasses.size &&
     checkedHL.judgments.size == checked.lfJudgments.size &&
     checkedHL.rules.size == checked.lfRules.size &&
+    checkedHL.levelNormalizerProfiles.size == checked.lfLevelNormalizerProfiles.size &&
     checkedHL.lfOpaqueConsts.size == checked.lfOpaqueConsts.size &&
     checkedHL.lfObjectDefs.size == checked.lfObjectDefs.size &&
     checkedHL.lfJudgmentTheorems.size == checked.lfJudgmentTheorems.size

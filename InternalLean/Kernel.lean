@@ -348,11 +348,19 @@ structure SideConditionCertificate where
   payload : String := ""
   deriving Inhabited, Repr, BEq
 
+/-- Structural conversion profile for an object-language level normalizer. -/
+structure LevelNormalizerKProfile where
+  zeroName : KName
+  succName : KName
+  maxName : KName
+  deriving Inhabited, Repr, BEq
+
 /-- Conversion-plugin schema for structural conversion checking. -/
 structure ConversionPluginSchema where
   name : KName
   trust : ConversionPluginTrustKind := .opaqueAssumption
   supportedSteps : List ConversionStepKind := []
+  levelNormalizer? : Option LevelNormalizerKProfile := none
   deriving Inhabited, Repr, BEq
 
 /-- Conversion statement over structural KTerms. -/
@@ -767,33 +775,137 @@ def throwFailure (kind : ConversionCheckFailureKind) (message : String) :
     Except ConversionCheckFailure α :=
   throw { kind, message }
 
+/-- Split a structural application into head and spine. -/
+partial def splitKApp : KTerm → KTerm × List KTerm
+  | .app f a =>
+      let (h, args) := splitKApp f
+      (h, args ++ [a])
+  | e => (e, [])
+
+/-- Normal form for the first-order level fragment over structural terms. -/
+structure LevelNormalizerKNF where
+  floor : Nat := 0
+  atoms : List (KTerm × Nat) := []
+  deriving Inhabited, Repr
+
+namespace LevelNormalizerKNF
+
+/-- Look up an atom offset. -/
+def atomOffset? (nf : LevelNormalizerKNF) (atom : KTerm) : Option Nat :=
+  (nf.atoms.find? (fun entry => entry.1.alphaEq atom)).map Prod.snd
+
+/-- Set one atom to the maximum of the old and new offsets. -/
+def setAtomMax (nf : LevelNormalizerKNF) (atom : KTerm) (offset : Nat) : LevelNormalizerKNF :=
+  let rec go (changed : Bool) : List (KTerm × Nat) → List (KTerm × Nat)
+    | [] => if changed then [] else [(atom, offset)]
+    | (oldAtom, oldOffset) :: rest =>
+        if oldAtom.alphaEq atom then
+          (oldAtom, Nat.max oldOffset offset) :: rest
+        else
+          (oldAtom, oldOffset) :: go changed rest
+  { nf with atoms := go false nf.atoms }
+
+/-- Successor of a structural level normal form. -/
+def succ (nf : LevelNormalizerKNF) : LevelNormalizerKNF :=
+  { floor := nf.floor + 1
+    atoms := nf.atoms.map (fun entry => (entry.1, entry.2 + 1)) }
+
+/-- Maximum of two structural level normal forms. -/
+def max (lhs rhs : LevelNormalizerKNF) : LevelNormalizerKNF := Id.run do
+  let mut out := { lhs with floor := Nat.max lhs.floor rhs.floor }
+  for (atom, offset) in rhs.atoms do
+    out := out.setAtomMax atom offset
+  return out
+
+/-- Equality of structural level normal forms, ignoring atom insertion order. -/
+def equal (lhs rhs : LevelNormalizerKNF) : Bool :=
+  lhs.floor == rhs.floor && lhs.atoms.length == rhs.atoms.length &&
+    lhs.atoms.all (fun entry => rhs.atomOffset? entry.1 == some entry.2)
+
+/-- Render a compact normal-form summary. -/
+def format (nf : LevelNormalizerKNF) : String :=
+  let floorPart := if nf.floor == 0 then [] else [toString nf.floor]
+  let atomPart := nf.atoms.map fun (atom, offset) =>
+    let atomText := reprStr atom
+    if offset == 0 then atomText else s!"{atomText}+{offset}"
+  match floorPart ++ atomPart with
+  | [] => "0"
+  | [part] => part
+  | parts => s!"max({String.intercalate ", " parts})"
+
+end LevelNormalizerKNF
+
+/-- Normalize one structural level term for an executable conversion plugin. -/
+partial def normalizeKLevel (profile : LevelNormalizerKProfile) (term : KTerm) :
+    Except ConversionCheckFailure LevelNormalizerKNF := do
+  let (head, args) := splitKApp term
+  match head, args with
+  | .ident h, [] =>
+      if h.name == profile.zeroName then
+        pure {}
+      else
+        pure { atoms := [(term, 0)] }
+  | .ident h, [arg] =>
+      if h.name == profile.succName then
+        return (← normalizeKLevel profile arg).succ
+      else
+        throwFailure .unsupportedConversion <|
+          s!"level normalizer does not support application headed by '{h.name}'"
+  | .ident h, [lhs, rhs] =>
+      if h.name == profile.maxName then
+        return LevelNormalizerKNF.max (← normalizeKLevel profile lhs)
+          (← normalizeKLevel profile rhs)
+      else
+        throwFailure .unsupportedConversion <|
+          s!"level normalizer does not support application headed by '{h.name}'"
+  | .fvar _, [] | .mvar .., [] =>
+      pure { atoms := [(term, 0)] }
+  | .ident h, _ =>
+      throwFailure .unsupportedConversion <|
+        s!"level normalizer does not support application headed by '{h.name}'"
+  | _, _ =>
+      throwFailure .unsupportedConversion <|
+        s!"level normalizer does not support structural term '{reprStr term}'"
+
+/-- Validate a structural level-normalization conversion leaf. -/
+def validateKLevelNormalization (profile : LevelNormalizerKProfile) (stmt : ConversionStatement) :
+    Except ConversionCheckFailure Unit := do
+  let lhs ← normalizeKLevel profile stmt.lhs
+  let rhs ← normalizeKLevel profile stmt.rhs
+  unless lhs.equal rhs do
+    throwFailure .malformedCertificate <|
+      s!"level-normalizer conversion failed: lhs normal form {lhs.format}, rhs normal form \
+        {rhs.format}"
+
 /-- Validate the currently implemented structural executable conversion steps. -/
-def validateExecutableStep (pluginName : KName) (stmt : ConversionStatement)
+def validateExecutableStep (plugin : ConversionPluginSchema) (stmt : ConversionStatement)
     (kind : ConversionStepKind) : Except ConversionCheckFailure Unit := do
-  match kind with
-  | .beta =>
+  match plugin.levelNormalizer?, kind with
+  | some profile, .reindexing =>
+      validateKLevelNormalization profile stmt
+  | _, .beta =>
       match stmt.lhs.betaReduce? with
       | some rhs =>
           unless rhs.alphaEq stmt.rhs do
             throwFailure .malformedCertificate <|
-              s!"checked conversion plugin '{pluginName}' beta step reduces lhs to a \
+              s!"checked conversion plugin '{plugin.name}' beta step reduces lhs to a \
                 different rhs"
       | none =>
           throwFailure .malformedCertificate <|
-            s!"checked conversion plugin '{pluginName}' beta step expected a structural redex"
-  | .eta =>
+            s!"checked conversion plugin '{plugin.name}' beta step expected a structural redex"
+  | _, .eta =>
       match stmt.lhs.etaReduce? with
       | some rhs =>
           unless rhs.alphaEq stmt.rhs do
             throwFailure .malformedCertificate <|
-              s!"checked conversion plugin '{pluginName}' eta step contracts lhs to a \
+              s!"checked conversion plugin '{plugin.name}' eta step contracts lhs to a \
                 different rhs"
       | none =>
           throwFailure .malformedCertificate <|
-            s!"checked conversion plugin '{pluginName}' eta step expected a structural eta-redex"
-  | _ =>
+            s!"checked conversion plugin '{plugin.name}' eta step expected a structural eta-redex"
+  | _, _ =>
       throwFailure .unsupportedConversion <|
-        s!"checked conversion plugin '{pluginName}' has no structural executable engine for \
+        s!"checked conversion plugin '{plugin.name}' has no structural executable engine for \
           step '{kind.label}'"
 
 /-- Validate one structural conversion plugin step. -/
@@ -823,7 +935,7 @@ def validatePluginStepWithContextDetailed (ctx : ValidatedReplayContext)
       if externalCertificateName?.isSome then
         throwFailure .malformedCertificate <|
           s!"checked conversion plugin '{plugin.name}' must not use an external certificate token"
-      validateExecutableStep plugin.name stmt kind
+      validateExecutableStep plugin stmt kind
   | .externalCertificate =>
       let certName ←
         match externalCertificateName? with

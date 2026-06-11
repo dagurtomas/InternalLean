@@ -429,6 +429,25 @@ This declares a theory-local side-condition solver handle. Side-condition certif
 of the checked LF trust boundary; an opaque solver is a trusted leaf unless backed by a checked
 hook.
 
+### Level normalizer profiles
+
+```lean
+level_normalizer Level zero succ lmax Le
+```
+
+This is an explicit per-theory opt-in for the first-order object-level universe normalizer. The
+profile validates that `Level`, `zero`, `succ`, `lmax`, and `Le` have the expected ordinary LF
+shapes, then generates an executable side-condition solver `level_norm_solver` and executable
+conversion plugin `level_norm` supporting `reindexing` leaves. Rules request computed order facts
+with ordinary side-condition slots, for example:
+
+```lean
+side_condition le_left by level_norm_solver : Le i (lmax i j)
+```
+
+Successful uses produce checked level-normalizer certificates; failed or unsupported level terms
+are errors. The profile never changes ordinary LF definitional equality globally.
+
 ### Conversion plugins
 
 ```lean
@@ -459,9 +478,10 @@ pluginAxiom
 ```
 
 Currently, internal `simp` can use registered executable `beta` steps. Executable `beta` and
-`eta` steps check first-class structural function and Sigma redexes in the structural kernel; LF
-constants named `lam`, `_app`, or `pair` remain ordinary LF heads. Other step classes are metadata
-for the checked conversion-certificate boundary and future automation.
+`eta` steps check first-class structural function and Sigma redexes in the structural kernel; the
+generated `level_norm` plugin checks profiled level-normalization `reindexing` leaves. LF constants
+named `lam`, `_app`, or `pair` remain ordinary LF heads. Other step classes are metadata for the
+checked conversion-certificate boundary and future automation.
 
 ### Model visibility and sections
 

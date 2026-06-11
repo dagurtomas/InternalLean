@@ -46,6 +46,8 @@ end UniverseHierarchyNotationTokenSmoke
 #check UniverseHierarchy.zero_le_succ_zero
 #check UniverseHierarchy.liftedZeroUniv
 #check UniverseHierarchy.liftedZeroUniv_wf
+#check UniverseHierarchy.liftedZeroUnivLmax
+#check UniverseHierarchy.liftedZeroUnivLmax_wf
 #check UniverseHierarchy.unitToUnitPi
 #check UniverseHierarchy.LFQuote.Pi
 #check UniverseHierarchy.LFQuote.Sigma
@@ -58,6 +60,127 @@ example : UniverseHierarchy.natModel.Le UniverseHierarchy.natModel.zero
 example : UniverseHierarchy.natModel.IsTy
     (UniverseHierarchy.natModel.Univ UniverseHierarchy.natModel.zero) :=
   UniverseHierarchy.natModel.univ_wf UniverseHierarchy.natModel.zero
+
+run_cmd do
+  let some checked ← liftCoreM <| getCheckedTheory? `UniverseHierarchy
+    | throwError "missing checked UniverseHierarchy artifact"
+  unless checked.lfLevelNormalizerProfiles.size == 1 do
+    throwError "expected one level-normalizer profile"
+  let some profile := checked.lfLevelNormalizerProfiles[0]?
+    | throwError "missing level-normalizer profile"
+  unless profile.solverName == `level_norm_solver && profile.pluginName == `level_norm do
+    throwError "unexpected level-normalizer generated names"
+  let levelCerts := checked.lfSideConditionCertificates.filter fun cert =>
+    cert.kind == .levelNormalizer
+  unless levelCerts.size == 1 do
+    throwError "expected one level-normalizer side-condition certificate"
+  let some cert := levelCerts[0]?
+    | throwError "missing level-normalizer certificate"
+  unless cert.certificateName == `lift_lmax_left_wf.side_condition.le_left do
+    throwError "unexpected level-normalizer certificate name '{cert.certificateName}'"
+  unless cert.diagnostic.contains "lhs_nf=i" && cert.diagnostic.contains "rhs_nf=max(i, j)" do
+    throwError "missing level-normalizer normal-form diagnostic: {cert.diagnostic}"
+  let replay ← kernelLFReplayCertificateForTheorem checked `liftedZeroUnivLmax_wf
+  let audit := kernelLFReplayCertificateAuditString `UniverseHierarchy `liftedZeroUnivLmax_wf
+    replay checked
+  unless audit.contains "external certificates used: lift_lmax_left_wf.side_condition.le_left" do
+    throwError "replay audit did not mention the level certificate"
+
+#guard
+  let lhs := Raw.tmApp `lmax [.tmMeta `i, .tmApp `lmax [.tmMeta `j, .tmMeta `i]]
+  let rhs := Raw.tmApp `lmax [.tmMeta `j, .tmMeta `i]
+  let stmt : ConversionStatement := { plugin := `level_norm, lhs := lhs, rhs := rhs }
+  let profile : LevelNormalizerRawProfile := {
+    zeroName := `zero
+    succName := `succ
+    maxName := `lmax }
+  let sig : Signature := {
+    name := `T
+    conversionPlugins := [{
+      name := `level_norm
+      trust := .executableChecked
+      supportedSteps := [.reindexing]
+      levelNormalizer? := some profile }] }
+  match KernelLFConversionCertificate.check sig (.pluginStep stmt .reindexing none [] "") stmt with
+  | .ok () => true
+  | .error _ => false
+
+#guard
+  let stmt : ConversionStatement := {
+    plugin := `level_norm
+    lhs := .tmApp `succ [.tmMeta `i]
+    rhs := .tmMeta `i }
+  let profile : LevelNormalizerRawProfile := {
+    zeroName := `zero
+    succName := `succ
+    maxName := `lmax }
+  let sig : Signature := {
+    name := `T
+    conversionPlugins := [{
+      name := `level_norm
+      trust := .executableChecked
+      supportedSteps := [.reindexing]
+      levelNormalizer? := some profile }] }
+  match KernelLFConversionCertificate.checkDetailed sig (.pluginStep stmt .reindexing none [] "")
+      stmt with
+  | .ok _ => false
+  | .error err =>
+      err.kind == .malformedCertificate &&
+        err.message.contains "level-normalizer conversion failed"
+
+#guard
+  let head (n : Name) : Kernel.KTerm := .ident { name := Kernel.KName.ofName n }
+  let app2 (n : Name) (lhs rhs : Kernel.KTerm) : Kernel.KTerm :=
+    .app (.app (head n) lhs) rhs
+  let i : Kernel.KTerm := .mvar (Kernel.KName.ofName `i) .arg
+  let j : Kernel.KTerm := .mvar (Kernel.KName.ofName `j) .arg
+  let lhs := app2 `lmax i (app2 `lmax j i)
+  let rhs := app2 `lmax j i
+  let stmt : Kernel.ConversionStatement := {
+    plugin := Kernel.KName.ofName `level_norm
+    lhs := lhs
+    rhs := rhs }
+  let profile : Kernel.LevelNormalizerKProfile := {
+    zeroName := Kernel.KName.ofName `zero
+    succName := Kernel.KName.ofName `succ
+    maxName := Kernel.KName.ofName `lmax }
+  let sig : Kernel.Signature := {
+    name := Kernel.KName.ofName `T
+    conversionPlugins := [{
+      name := Kernel.KName.ofName `level_norm
+      trust := .executableChecked
+      supportedSteps := [.reindexing]
+      levelNormalizer? := some profile }] }
+  match Kernel.CheckedKernelLFConversionCertificate.check sig {}
+      stmt (.pluginStep stmt .reindexing none [] "") with
+  | .ok _ => true
+  | .error _ => false
+
+#guard
+  let head (n : Name) : Kernel.KTerm := .ident { name := Kernel.KName.ofName n }
+  let app1 (n : Name) (arg : Kernel.KTerm) : Kernel.KTerm := .app (head n) arg
+  let i : Kernel.KTerm := .mvar (Kernel.KName.ofName `i) .arg
+  let stmt : Kernel.ConversionStatement := {
+    plugin := Kernel.KName.ofName `level_norm
+    lhs := app1 `succ i
+    rhs := i }
+  let profile : Kernel.LevelNormalizerKProfile := {
+    zeroName := Kernel.KName.ofName `zero
+    succName := Kernel.KName.ofName `succ
+    maxName := Kernel.KName.ofName `lmax }
+  let sig : Kernel.Signature := {
+    name := Kernel.KName.ofName `T
+    conversionPlugins := [{
+      name := Kernel.KName.ofName `level_norm
+      trust := .executableChecked
+      supportedSteps := [.reindexing]
+      levelNormalizer? := some profile }] }
+  match Kernel.CheckedKernelLFConversionCertificate.checkDetailed sig {}
+      stmt (.pluginStep stmt .reindexing none [] "") with
+  | .ok _ => false
+  | .error err =>
+      err.kind == .malformedCertificate &&
+        err.message.contains "level-normalizer conversion failed"
 
 -- Native-tactic goals for the hierarchy render through the mirror display backend.
 run_cmd do
@@ -377,3 +500,66 @@ declare_type_theory BadUniverseHierarchyMacroLabel{u} where
     wf IsTy
     lift lift
     universe Univ
+
+declare_type_theory LevelNormalizerMaxTreeSmoke where
+  syntax_sort Level
+  lf_opaque zero : Level
+  lf_opaque succ (i : Level) : Level
+  lf_opaque lmax (i : Level) (j : Level) : Level
+  judgment Le (i : Level) (j : Level)
+  level_normalizer Level zero succ lmax Le
+  rule max_tree (a : Level) (b : Level) (c : Level) (d : Level) where
+    side_condition le by level_norm_solver :
+      Le (lmax (lmax a b) (lmax c d)) (lmax (lmax d c) (lmax b a))
+    conclusion : Le (lmax (lmax a b) (lmax c d)) (lmax (lmax d c) (lmax b a))
+
+#check_theory LevelNormalizerMaxTreeSmoke
+
+/--
+error: level-normalizer side-condition 'nope' in rule 'bad' failed: lhs normal form i,
+  rhs normal form j
+-/
+#guard_msgs (whitespace := lax) in
+declare_type_theory BadLevelNormalizerOrder where
+  syntax_sort Level
+  lf_opaque zero : Level
+  lf_opaque succ (i : Level) : Level
+  lf_opaque lmax (i : Level) (j : Level) : Level
+  judgment Le (i : Level) (j : Level)
+  level_normalizer Level zero succ lmax Le
+  rule bad (i : Level) (j : Level) where
+    side_condition nope by level_norm_solver : Le i j
+    conclusion : Le i j
+
+/--
+error: unsupported level-normalizer head 'weird' in 'weird i'
+-/
+#guard_msgs in
+declare_type_theory BadLevelNormalizerHead where
+  syntax_sort Level
+  lf_opaque zero : Level
+  lf_opaque succ (i : Level) : Level
+  lf_opaque lmax (i : Level) (j : Level) : Level
+  lf_opaque weird (i : Level) : Level
+  judgment Le (i : Level) (j : Level)
+  level_normalizer Level zero succ lmax Le
+  rule bad (i : Level) where
+    side_condition nope by level_norm_solver : Le i (weird i)
+    conclusion : Le i i
+
+/--
+error: judgment_theorem 'use' in type theory 'MissingLevelNormalizerProfile' applies rule 'ok'
+  but side-condition 'le' uses opaque solver 'level_norm_solver' with no checked certificate
+-/
+#guard_msgs (whitespace := lax) in
+declare_type_theory MissingLevelNormalizerProfile where
+  side_condition_solver level_norm_solver
+  syntax_sort Level
+  lf_opaque zero : Level
+  lf_opaque succ (i : Level) : Level
+  lf_opaque lmax (i : Level) (j : Level) : Level
+  judgment Le (i : Level) (j : Level)
+  rule ok (i : Level) (j : Level) where
+    side_condition le by level_norm_solver : Le i (lmax i j)
+    conclusion : Le i (lmax i j)
+  judgment_theorem use : Le zero (lmax zero zero) := ok zero zero

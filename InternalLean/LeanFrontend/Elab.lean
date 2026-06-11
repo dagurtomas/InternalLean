@@ -1383,8 +1383,8 @@ def mkInternalNativeApplyPlan (target : InternalDefTarget) (sig : HLSignature)
     newGoals := newGoals.push { ctx := goal.ctx, target := premiseTarget }
   for sc in cand.sideConditions do
     let scInput := substObjectVars subst sc.input
-    match classifySideConditionHook sc.solver with
-    | .builtinTrivial => pure ()
+    match classifySideConditionHook sc.solver sig.levelNormalizerProfiles with
+    | .builtinTrivial | .levelNormalizer => pure ()
     | .opaque =>
         throwErrorAt ref
           (internalOpaqueSideConditionMessage "apply" rawName cand.name sc.name sc.solver scInput)
@@ -1590,8 +1590,8 @@ mutual
           diagArgs := diagArgs.push diag
     for sc in cand.sideConditions do
       let scInput := substObjectVars subst sc.input
-      match classifySideConditionHook sc.solver with
-      | .builtinTrivial => pure ()
+      match classifySideConditionHook sc.solver sig.levelNormalizerProfiles with
+      | .builtinTrivial | .levelNormalizer => pure ()
       | .opaque =>
           throwErrorAt ref (internalOpaqueSideConditionMessage tacticName rawName cand.name
             sc.name sc.solver scInput)

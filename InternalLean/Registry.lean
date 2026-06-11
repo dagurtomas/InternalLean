@@ -585,6 +585,8 @@ structure CompiledLFCheckCacheStamp where
   sideConditionSolverCount : Nat := 0
   /-- Number of checked conversion plugins. -/
   conversionPluginCount : Nat := 0
+  /-- Number of checked level-normalizer profiles. -/
+  levelNormalizerProfileCount : Nat := 0
   /-- Number of checked rules. -/
   ruleCount : Nat := 0
   /-- Number of checked rule schemas. -/
@@ -613,6 +615,7 @@ def ofCheckedSignature (checked : CheckedSignature) : CompiledLFCheckCacheStamp 
     opaqueConstCount := checked.lfOpaqueConsts.size
     sideConditionSolverCount := checked.lfSideConditionSolvers.size
     conversionPluginCount := checked.lfConversionPlugins.size
+    levelNormalizerProfileCount := checked.lfLevelNormalizerProfiles.size
     ruleCount := checked.lfRules.size
     ruleSchemaCount := checked.lfRuleSchemas.size
     objectDefCount := checked.lfObjectDefs.size

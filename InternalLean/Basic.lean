@@ -1102,7 +1102,18 @@ structure SideConditionCertificateSlot where
 inductive SideConditionCertificateKind where
   /-- Certificate produced by the built-in trivial side-condition hook. -/
   | builtinTrivial
+  /-- Certificate produced by the executable object-level universe normalizer. -/
+  | levelNormalizer
   deriving Inhabited, Repr, BEq
+
+namespace SideConditionCertificateKind
+
+/-- User-facing label for a side-condition certificate kind. -/
+def label : SideConditionCertificateKind → String
+  | .builtinTrivial => "builtin_trivial"
+  | .levelNormalizer => "level_normalizer"
+
+end SideConditionCertificateKind
 
 /-- Checked evidence record for a side condition.
 
@@ -1199,6 +1210,16 @@ def label : ConversionStepKind → String
 
 end ConversionStepKind
 
+/-- Raw conversion profile for an object-language level normalizer. -/
+structure LevelNormalizerRawProfile where
+  /-- Object-level zero constructor. -/
+  zeroName : Name
+  /-- Object-level successor constructor. -/
+  succName : Name
+  /-- Object-level maximum constructor. -/
+  maxName : Name
+  deriving Inhabited, Repr, BEq
+
 /-- Kernel-facing conversion-plugin schema.
 
 `supportedSteps` is deliberately explicit.  An empty list means the plugin is only a named
@@ -1210,6 +1231,8 @@ structure ConversionPluginSchema where
   trust : ConversionPluginTrustKind := .opaqueAssumption
   /-- Step classes this plugin is allowed to justify. -/
   supportedSteps : List ConversionStepKind := []
+  /-- Optional executable level-normalizer profile for reindexing leaves. -/
+  levelNormalizer? : Option LevelNormalizerRawProfile := none
   deriving Inhabited, Repr, BEq
 
 /-- A generic conversion statement carried by conversion certificates.
@@ -2019,35 +2042,131 @@ def throwFailure (kind : ConversionCheckFailureKind) (message : String) :
     Except ConversionCheckFailure α :=
   throw (ConversionCheckFailure.mk kind message)
 
+/-- Normal form for the first-order level fragment over raw syntax. -/
+structure LevelNormalizerRawNF where
+  floor : Nat := 0
+  atoms : List (Name × Nat) := []
+  deriving Inhabited, Repr, BEq
+
+namespace LevelNormalizerRawNF
+
+/-- Look up an atom offset. -/
+def atomOffset? (nf : LevelNormalizerRawNF) (atom : Name) : Option Nat :=
+  (nf.atoms.find? (fun entry => entry.1 == atom.eraseMacroScopes)).map Prod.snd
+
+/-- Set one atom to the maximum of the old and new offsets. -/
+def setAtomMax (nf : LevelNormalizerRawNF) (atom : Name) (offset : Nat) :
+    LevelNormalizerRawNF :=
+  let atom := atom.eraseMacroScopes
+  let rec go (changed : Bool) : List (Name × Nat) → List (Name × Nat)
+    | [] => if changed then [] else [(atom, offset)]
+    | (name, old) :: rest =>
+        if name == atom then
+          (name, Nat.max old offset) :: rest
+        else
+          (name, old) :: go changed rest
+  { nf with atoms := go false nf.atoms }
+
+/-- Successor of a raw level normal form. -/
+def succ (nf : LevelNormalizerRawNF) : LevelNormalizerRawNF :=
+  { floor := nf.floor + 1
+    atoms := nf.atoms.map (fun entry => (entry.1, entry.2 + 1)) }
+
+/-- Maximum of two raw level normal forms. -/
+def max (lhs rhs : LevelNormalizerRawNF) : LevelNormalizerRawNF := Id.run do
+  let mut out := { lhs with floor := Nat.max lhs.floor rhs.floor }
+  for (atom, offset) in rhs.atoms do
+    out := out.setAtomMax atom offset
+  return out
+
+/-- Equality of raw level normal forms, ignoring atom insertion order. -/
+def equal (lhs rhs : LevelNormalizerRawNF) : Bool :=
+  lhs.floor == rhs.floor && lhs.atoms.length == rhs.atoms.length &&
+    lhs.atoms.all (fun entry => rhs.atomOffset? entry.1 == some entry.2)
+
+/-- Render a compact normal-form summary. -/
+def format (nf : LevelNormalizerRawNF) : String :=
+  let floorPart := if nf.floor == 0 then [] else [toString nf.floor]
+  let atomPart := nf.atoms.map fun (atom, offset) =>
+    if offset == 0 then toString atom else s!"{atom}+{offset}"
+  match floorPart ++ atomPart with
+  | [] => "0"
+  | [part] => part
+  | parts => s!"max({String.intercalate ", " parts})"
+
+end LevelNormalizerRawNF
+
+/-- Normalize one raw level term for an executable conversion plugin. -/
+partial def normalizeRawLevel (profile : LevelNormalizerRawProfile) : Raw →
+    Except ConversionCheckFailure LevelNormalizerRawNF
+  | .tmConst n =>
+      if n.eraseMacroScopes == profile.zeroName.eraseMacroScopes then
+        pure {}
+      else
+        pure { atoms := [(n.eraseMacroScopes, 0)] }
+  | .tmMeta n | .tyMeta n | .ctxMeta n | .substMeta n | .leanParam n =>
+      pure { atoms := [(n.eraseMacroScopes, 0)] }
+  | .tmApp f [arg] =>
+      if f.eraseMacroScopes == profile.succName.eraseMacroScopes then
+        return (← normalizeRawLevel profile arg).succ
+      else
+        throwFailure .unsupportedConversion <|
+          s!"level normalizer does not support raw application headed by '{f.eraseMacroScopes}'"
+  | .tmApp f [lhs, rhs] =>
+      if f.eraseMacroScopes == profile.maxName.eraseMacroScopes then
+        return LevelNormalizerRawNF.max (← normalizeRawLevel profile lhs)
+          (← normalizeRawLevel profile rhs)
+      else
+        throwFailure .unsupportedConversion <|
+          s!"level normalizer does not support raw application headed by '{f.eraseMacroScopes}'"
+  | .tmApp f _ =>
+      throwFailure .unsupportedConversion <|
+        s!"level normalizer does not support raw application headed by '{f.eraseMacroScopes}'"
+  | other =>
+      throwFailure .unsupportedConversion <|
+        s!"level normalizer does not support raw term '{rawSourceString other}'"
+
+/-- Validate a raw level-normalization conversion leaf. -/
+def validateRawLevelNormalization (profile : LevelNormalizerRawProfile)
+    (stmt : ConversionStatement) : Except ConversionCheckFailure Unit := do
+  let lhs ← normalizeRawLevel profile stmt.lhs
+  let rhs ← normalizeRawLevel profile stmt.rhs
+  unless lhs.equal rhs do
+    throwFailure .malformedCertificate <|
+      s!"level-normalizer conversion failed: lhs normal form {lhs.format}, rhs normal form \
+        {rhs.format}"
+
 /-- Validate the currently implemented generic executable conversion step. -/
-def validateExecutableStep (pluginName : Name) (stmt : ConversionStatement)
+def validateExecutableStep (plugin : ConversionPluginSchema) (stmt : ConversionStatement)
     (kind : ConversionStepKind) : Except ConversionCheckFailure Unit := do
-  match kind with
-  | .beta =>
+  match plugin.levelNormalizer?, kind with
+  | some profile, .reindexing =>
+      validateRawLevelNormalization profile stmt
+  | _, .beta =>
       match stmt.lhs.betaReduce? with
       | some rhs =>
           unless rhs.alphaEq stmt.rhs do
             throwFailure .malformedCertificate <|
-              s!"checked conversion plugin '{pluginName}' beta step reduces lhs to " ++
+              s!"checked conversion plugin '{plugin.name}' beta step reduces lhs to " ++
               s!"'{rawSourceString rhs}', expected rhs '{rawSourceString stmt.rhs}'"
       | none =>
           throwFailure .malformedCertificate <|
-            s!"checked conversion plugin '{pluginName}' beta step expected a raw `_app` " ++
+            s!"checked conversion plugin '{plugin.name}' beta step expected a raw `_app` " ++
             "redex whose function is a one-argument `lam`"
-  | .eta =>
+  | _, .eta =>
       match stmt.lhs.etaReduce? with
       | some rhs =>
           unless rhs.alphaEq stmt.rhs do
             throwFailure .malformedCertificate <|
-              s!"checked conversion plugin '{pluginName}' eta step contracts lhs to " ++
+              s!"checked conversion plugin '{plugin.name}' eta step contracts lhs to " ++
               s!"'{rawSourceString rhs}', expected rhs '{rawSourceString stmt.rhs}'"
       | none =>
           throwFailure .malformedCertificate <|
-            s!"checked conversion plugin '{pluginName}' eta step expected a raw structural " ++
+            s!"checked conversion plugin '{plugin.name}' eta step expected a raw structural " ++
             "function or Sigma eta-redex"
-  | _ =>
+  | _, _ =>
       throwFailure .unsupportedConversion <|
-        s!"checked conversion plugin '{pluginName}' has no generic executable engine for " ++
+        s!"checked conversion plugin '{plugin.name}' has no generic executable engine for " ++
         s!"step '{kind.label}'"
 
 /-- Validate a plugin-step leaf against the declared plugin trust boundary and context. -/
@@ -2096,7 +2215,7 @@ def validatePluginStepWithContextDetailed (ctx : KernelLFCheckContext) (sig : Si
         throwFailure .malformedCertificate <|
           s!"checked conversion plugin '{plugin.name}' must not use an external " ++
           "certificate token"
-      validateExecutableStep plugin.name stmt kind
+      validateExecutableStep plugin stmt kind
   | .externalCertificate =>
       let certName ←
         match externalCertificateName? with

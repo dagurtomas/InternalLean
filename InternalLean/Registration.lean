@@ -33,7 +33,8 @@ def checkedLFMetadataDeclCount (checked : CheckedSignature) : Nat :=
     checked.lfContextZones.size +
     checked.lfBinderClasses.size + checked.lfJudgments.size + checked.lfJudgmentRoles.size +
     checked.lfOpaqueConsts.size + checked.lfSideConditionSolvers.size +
-    checked.lfConversionPlugins.size + checked.lfRules.size + checked.lfRuleRoles.size +
+    checked.lfConversionPlugins.size + checked.lfLevelNormalizerProfiles.size +
+    checked.lfRules.size + checked.lfRuleRoles.size +
     checked.lfRewriteRelations.size + checked.lfRewriteSymmetries.size +
     checked.lfRewriteCongruences.size + checked.lfTransportRules.size +
     checked.lfTransportPositions.size
@@ -1160,6 +1161,7 @@ def signatureOwnBlock (sig : HLSignature) : HLTheoryBlock := {
   transportPositions := sig.transportPositions
   sideConditionSolvers := sig.sideConditionSolvers
   conversionPlugins := sig.conversionPlugins
+  levelNormalizerProfiles := sig.levelNormalizerProfiles
   lfOpaqueConsts := sig.lfOpaqueConsts
   modelVisibilities := sig.modelVisibilities
   modelSections := sig.modelSections
@@ -1187,6 +1189,7 @@ def checkedSignatureAsDelta (checked : CheckedSignature) : CheckedTheoryDelta :=
   opaqueConsts := checked.lfOpaqueConsts
   sideConditionSolvers := checked.lfSideConditionSolvers
   conversionPlugins := checked.lfConversionPlugins
+  levelNormalizerProfiles := checked.lfLevelNormalizerProfiles
   rules := checked.lfRules
   ruleRoles := checked.lfRuleRoles
   rewriteRelations := checked.lfRewriteRelations
@@ -1959,6 +1962,7 @@ def signatureWithBlock (sig : HLSignature) (block : HLTheoryBlock) : HLSignature
     transportPositions := block.transportPositions
     sideConditionSolvers := block.sideConditionSolvers
     conversionPlugins := block.conversionPlugins
+    levelNormalizerProfiles := block.levelNormalizerProfiles
     lfOpaqueConsts := block.lfOpaqueConsts
     modelVisibilities := block.modelVisibilities
     modelSections := block.modelSections

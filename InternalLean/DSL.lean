@@ -648,6 +648,26 @@ structure ConversionPluginDecl where
   supportedSteps : Array ConversionStepKind := #[]
   deriving Inhabited, Repr, BEq
 
+/-- Explicit opt-in profile for the object-level universe-level normalizer. -/
+structure LFLevelNormalizerProfileDecl where
+  /-- Object-level syntax sort of levels. -/
+  levelSortName : Name
+  /-- Object-level zero constructor. -/
+  zeroName : Name
+  /-- Object-level successor constructor. -/
+  succName : Name
+  /-- Object-level maximum constructor. -/
+  maxName : Name
+  /-- Object-level order judgment. -/
+  leName : Name
+  /-- Generated executable side-condition solver name. -/
+  solverName : Name := `level_norm_solver
+  /-- Generated executable conversion plugin name. -/
+  pluginName : Name := `level_norm
+  /-- Trust/provenance kind for generated conversion leaves. -/
+  trust : ConversionPluginTrustKind := .executableChecked
+  deriving Inhabited, Repr, BEq
+
 /-- Metadata naming an opaque logical-framework placeholder symbol.
 
 These symbols are not interpreted by the current checker. They let metadata-only rules
@@ -943,6 +963,8 @@ inductive CheckedLFSideConditionHookKind where
   | opaque
   /-- Built-in hook that accepts a syntactically well-formed LF side-condition input. -/
   | builtinTrivial
+  /-- Executable hook for profiled object-level universe-order side conditions. -/
+  | levelNormalizer
   deriving Inhabited, Repr, BEq
 
 namespace CheckedLFSideConditionHookKind
@@ -951,6 +973,7 @@ namespace CheckedLFSideConditionHookKind
 def label : CheckedLFSideConditionHookKind → String
   | .opaque => "opaque"
   | .builtinTrivial => "builtin_trivial"
+  | .levelNormalizer => "level_normalizer"
 
 end CheckedLFSideConditionHookKind
 
@@ -969,6 +992,8 @@ structure CheckedLFSideConditionSolver where
 inductive CheckedLFSideConditionCertificateKind where
   /-- Certificate produced by the Phase-3 built-in trivial hook. -/
   | builtinTrivial
+  /-- Certificate produced by the executable object-level universe normalizer. -/
+  | levelNormalizer
   deriving Inhabited, Repr, BEq
 
 namespace CheckedLFSideConditionCertificateKind
@@ -976,6 +1001,7 @@ namespace CheckedLFSideConditionCertificateKind
 /-- User-facing label for a side-condition certificate kind. -/
 def label : CheckedLFSideConditionCertificateKind → String
   | .builtinTrivial => "builtin_trivial"
+  | .levelNormalizer => "level_normalizer"
 
 end CheckedLFSideConditionCertificateKind
 
@@ -1002,6 +1028,26 @@ structure CheckedLFSideConditionCertificate where
   diagnostic : String := ""
   deriving Inhabited, Repr, BEq
 
+/-- Checked opt-in profile for executable object-level universe normalization. -/
+structure CheckedLFLevelNormalizerProfile where
+  /-- Object-level syntax sort of levels. -/
+  levelSortName : Name
+  /-- Object-level zero constructor. -/
+  zeroName : Name
+  /-- Object-level successor constructor. -/
+  succName : Name
+  /-- Object-level maximum constructor. -/
+  maxName : Name
+  /-- Object-level order judgment. -/
+  leName : Name
+  /-- Executable side-condition solver name. -/
+  solverName : Name := `level_norm_solver
+  /-- Executable conversion plugin name. -/
+  pluginName : Name := `level_norm
+  /-- Trust/provenance kind for generated conversion leaves. -/
+  trust : ConversionPluginTrustKind := .executableChecked
+  deriving Inhabited, Repr, BEq
+
 /-- A checked conversion-plugin declaration artifact.
 
 Checked plugin handles classify the trust boundary used by future conversion-certificate
@@ -1014,6 +1060,8 @@ structure CheckedLFConversionPlugin where
   trust : ConversionPluginTrustKind := .opaqueAssumption
   /-- Supported generic certificate step classes. Empty means this is metadata only. -/
   supportedSteps : Array ConversionStepKind := #[]
+  /-- Optional level-normalizer profile implemented by this executable plugin. -/
+  levelNormalizer? : Option CheckedLFLevelNormalizerProfile := none
   deriving Inhabited, Repr, BEq
 
 /-- Checked Phase-5 tope/cofibration formula artifact. -/
@@ -1270,6 +1318,8 @@ structure CheckedLFEnvironment where
   sideConditionSolvers : Array CheckedLFSideConditionSolver := #[]
   /-- Checked conversion-plugin handles. -/
   conversionPlugins : Array CheckedLFConversionPlugin := #[]
+  /-- Checked executable level-normalizer profiles. -/
+  levelNormalizerProfiles : Array CheckedLFLevelNormalizerProfile := #[]
   /-- Source-level checked rule metadata. -/
   rules : Array CheckedLFRule := #[]
   /-- Checked rule role metadata, with names scope-normalized. -/
@@ -1330,6 +1380,8 @@ structure CheckedSignature where
   lfSideConditionSolvers : Array CheckedLFSideConditionSolver := #[]
   /-- Checked conversion-plugin declarations. -/
   lfConversionPlugins : Array CheckedLFConversionPlugin := #[]
+  /-- Checked executable level-normalizer profiles. -/
+  lfLevelNormalizerProfiles : Array CheckedLFLevelNormalizerProfile := #[]
   /-- Checked logical-framework rule metadata. -/
   lfRules : Array CheckedLFRule := #[]
   /-- Checked rule role metadata, with names scope-normalized. -/
@@ -1924,6 +1976,8 @@ inductive HLTheoryItem where
   | sideConditionSolver : SideConditionSolverDecl → HLTheoryItem
   /-- Future conversion plugin declaration. -/
   | conversionPlugin : ConversionPluginDecl → HLTheoryItem
+  /-- Explicit opt-in profile for executable object-level universe normalization. -/
+  | levelNormalizerProfile : LFLevelNormalizerProfileDecl → HLTheoryItem
   /-- Opaque placeholder symbol available to LF metadata expressions. -/
   | lfOpaqueConst : LFOpaqueConstDecl → HLTheoryItem
   /-- Staged sorted LF/object definition. -/
@@ -1981,6 +2035,8 @@ structure HLSignature where
   sideConditionSolvers : Array SideConditionSolverDecl := #[]
   /-- User-declared conversion plugin metadata. -/
   conversionPlugins : Array ConversionPluginDecl := #[]
+  /-- Explicit executable level-normalizer profiles. -/
+  levelNormalizerProfiles : Array LFLevelNormalizerProfileDecl := #[]
   /-- User-declared opaque LF placeholder symbols. -/
   lfOpaqueConsts : Array LFOpaqueConstDecl := #[]
   /-- Model-interface visibility annotations. -/
@@ -2140,6 +2196,8 @@ syntax (name := ttTransportPositionDocDeclStx) atomic(docComment "transport_posi
 syntax (name := ttSideConditionSolverDeclStx) "side_condition_solver" ident : ttDecl
 syntax (name := ttSideConditionSolverDocDeclStx)
   atomic(docComment "side_condition_solver") ident : ttDecl
+syntax (name := ttLevelNormalizerDeclStx)
+  "level_normalizer" ident ident ident ident ident : ttDecl
 syntax (name := ttConversionPluginDeclStx) "conversion_plugin" ident : ttDecl
 syntax (name := ttConversionPluginOpaqueDeclStx) "conversion_plugin" ident " opaque" : ttDecl
 syntax (name := ttConversionPluginExternalDeclStx)
@@ -2411,6 +2469,18 @@ meta def elabConversionStepKinds (steps : TSyntaxArray `ident) :
     CommandElabM (Array ConversionStepKind) :=
   steps.mapM elabConversionStepKind
 
+/-- Parse a conversion-plugin trust kind. -/
+meta def elabConversionPluginTrustKind (stx : TSyntax `ident) :
+    CommandElabM ConversionPluginTrustKind :=
+  match stx.getId.eraseMacroScopes with
+  | `executable_checked => pure .executableChecked
+  | `executableChecked => pure .executableChecked
+  | `external_certificate => pure .externalCertificate
+  | `externalCertificate => pure .externalCertificate
+  | `opaque_assumption => pure .opaqueAssumption
+  | `opaqueAssumption => pure .opaqueAssumption
+  | other => throwError "unknown conversion-plugin trust kind '{other}'"
+
 /-- Check one field label in a `universe_hierarchy` declaration. -/
 meta def checkUniverseHierarchyLabel (label : Ident) (expected : Name) : CommandElabM Unit := do
   unless label.getId.eraseMacroScopes == expected do
@@ -2420,7 +2490,7 @@ meta def checkUniverseHierarchyLabel (label : Ident) (expected : Name) : Command
 meta def expandUniverseHierarchyDecl? (decl : TSyntax `ttDecl) :
     CommandElabM (Option (Array (TSyntax `ttDecl))) := do
   match decl with
-  | `(ttDecl| universe_hierarchy $level:ident $ty:ident $tm:ident where
+  | `(ttDecl| universe_hierarchy $levelName:ident $ty:ident $tm:ident where
         $levelsLabel:ident $zero:ident $succ:ident $lmax:ident
         $leLabel:ident $leName:ident
         $wfLabel:ident $wfName:ident
@@ -2430,9 +2500,9 @@ meta def expandUniverseHierarchyDecl? (decl : TSyntax `ttDecl) :
       checkUniverseHierarchyLabel leLabel `le
       checkUniverseHierarchyLabel wfLabel `wf
       checkUniverseHierarchyLabel liftLabel `lift
-      let u := mkIdentFrom level.raw `u
-      let i := mkIdentFrom level.raw `i
-      let j := mkIdentFrom level.raw `j
+      let u := mkIdentFrom levelName.raw `u
+      let i := mkIdentFrom levelName.raw `i
+      let j := mkIdentFrom levelName.raw `j
       let A := mkIdentFrom ty.raw `A
       let lePremise := mkIdentFrom leName.raw `le
       let wfPremise := mkIdentFrom wfName.raw `wf
@@ -2440,13 +2510,13 @@ meta def expandUniverseHierarchyDecl? (decl : TSyntax `ttDecl) :
       let leSucc := mkIdentFrom leName.raw `le_succ
       let liftWf := mkIdentFrom liftName.raw `lift_wf
       let univWf := mkIdentFrom univName.raw `univ_wf
-      let universeLevelRole := mkIdentFrom level.raw `universe_level
+      let universeLevelRole := mkIdentFrom levelName.raw `universe_level
       let universeCodeRole := mkIdentFrom ty.raw `universe_code
       let universeElementRole := mkIdentFrom tm.raw `universe_element
       let universeLeqRole := mkIdentFrom leName.raw `universe_leq
       let uLevel ← `(ttLevel| $u:ident)
       let uSucc ← `(ttLevel| $uLevel:ttLevel+1)
-      let levelExpr ← `(ttExpr| $level:ident)
+      let levelExpr ← `(ttExpr| $levelName:ident)
       let tyExpr ← `(ttExpr| $ty:ident)
       let iExpr ← `(ttExpr| $i:ident)
       let jExpr ← `(ttExpr| $j:ident)
@@ -2471,12 +2541,12 @@ meta def expandUniverseHierarchyDecl? (decl : TSyntax `ttDecl) :
       let univI ← `(ttExpr| $univExpr:ttExpr $iExpr:ttExpr)
       let isTySuccUniv ← `(ttExpr| $wfExpr:ttExpr ($i:ident := $succLevel:ttExpr) $univI:ttExpr)
       pure <| some #[
-        ← `(ttDecl| syntax_sort $level:ident : Type $uLevel:ttLevel),
+        ← `(ttDecl| syntax_sort $levelName:ident : Type $uLevel:ttLevel),
         ← `(ttDecl| syntax_sort $ty:ident ($i:ident : $levelExpr:ttExpr) :
           Type $uSucc:ttLevel),
         ← `(ttDecl| syntax_sort $tm:ident {$i:ident : $levelExpr:ttExpr}
           ($A:ident : $tyI:ttExpr) : Type $uLevel:ttLevel),
-        ← `(ttDecl| syntax_sort_role $level:ident : $universeLevelRole:ident),
+        ← `(ttDecl| syntax_sort_role $levelName:ident : $universeLevelRole:ident),
         ← `(ttDecl| syntax_sort_role $ty:ident : $universeCodeRole:ident),
         ← `(ttDecl| syntax_sort_role $tm:ident : $universeElementRole:ident),
         ← `(ttDecl| lf_opaque $zero:ident : $levelExpr:ttExpr),
@@ -2670,6 +2740,14 @@ meta def elabHLTheoryItem : TSyntax `ttDecl → CommandElabM HLTheoryItem
   | `(ttDecl| $doc:docComment side_condition_solver $n:ident) =>
       let _ := doc.raw
       pure <| .sideConditionSolver { name := n.getId }
+  | `(ttDecl| level_normalizer $levelName:ident $zeroName:ident $succName:ident
+      $maxName:ident $leName:ident) =>
+      pure <| .levelNormalizerProfile {
+        levelSortName := levelName.getId
+        zeroName := zeroName.getId
+        succName := succName.getId
+        maxName := maxName.getId
+        leName := leName.getId }
   | `(ttDecl| conversion_plugin $n:ident) =>
       pure <| .conversionPlugin { name := n.getId }
   | `(ttDecl| conversion_plugin $n:ident opaque) =>
@@ -2795,6 +2873,7 @@ structure HLTheoryBlock where
   transportPositions : Array LFTransportPositionDecl := #[]
   sideConditionSolvers : Array SideConditionSolverDecl := #[]
   conversionPlugins : Array ConversionPluginDecl := #[]
+  levelNormalizerProfiles : Array LFLevelNormalizerProfileDecl := #[]
   lfOpaqueConsts : Array LFOpaqueConstDecl := #[]
   modelVisibilities : Array ModelVisibilityDecl := #[]
   modelSections : Array ModelSectionDecl := #[]
@@ -2854,6 +2933,15 @@ meta def HLTheoryBlock.ofItems (items : Array HLTheoryItem) : HLTheoryBlock := I
         block := { block with sideConditionSolvers := block.sideConditionSolvers.push d }
     | .conversionPlugin d =>
         block := { block with conversionPlugins := block.conversionPlugins.push d }
+    | .levelNormalizerProfile d =>
+        block := {
+          block with
+          levelNormalizerProfiles := block.levelNormalizerProfiles.push d
+          sideConditionSolvers := block.sideConditionSolvers.push { name := d.solverName }
+          conversionPlugins := block.conversionPlugins.push {
+            name := d.pluginName
+            trust := d.trust
+            supportedSteps := #[.reindexing] } }
     | .lfOpaqueConst d =>
         block := assignCurrentSection currentSection?
           { block with lfOpaqueConsts := block.lfOpaqueConsts.push d } d.name
@@ -3083,6 +3171,16 @@ def summary (d : ConversionPluginDecl) : MessageData :=
   m!"conversion_plugin {d.name} [{d.trust.label}; {supported}]"
 
 end ConversionPluginDecl
+
+namespace LFLevelNormalizerProfileDecl
+
+/-- Render a level-normalizer profile declaration. -/
+def summary (d : LFLevelNormalizerProfileDecl) : MessageData :=
+  m!"level_normalizer level {d.levelSortName}, zero {d.zeroName}, succ {d.succName}, " ++
+    m!"max {d.maxName}, le {d.leName}, solver {d.solverName}, plugin {d.pluginName} " ++
+    m!"[{d.trust.label}]"
+
+end LFLevelNormalizerProfileDecl
 
 namespace LFOpaqueConstDecl
 

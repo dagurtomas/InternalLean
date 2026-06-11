@@ -210,10 +210,13 @@ def internalLeanSideConditionSummaryString (sig : HLSignature) : String := Id.ru
           {ev.paramName.eraseMacroScopes}: {ev.judgmentExpr} (object tactic subgoal/premise)"
     for sc in r.sideConditions do
       count := count + 1
-      let status := match classifySideConditionHook sc.solver with
+      let status := match classifySideConditionHook sc.solver sig.levelNormalizerProfiles with
         | .builtinTrivial =>
           s!"unconditional built-in hook: any validated input is accepted and a certificate is \
             generated automatically as {lfSideConditionCertificateName r.name sc.name}"
+        | .levelNormalizer =>
+          s!"executable level-normalizer hook: validated Le input is normalized and recorded as \
+            {lfSideConditionCertificateName r.name sc.name}"
         | .opaque =>
           "opaque solver: core object tactics cannot synthesize this certificate; model backends \
             may expose a theorem-local certificate parameter when renderable"
@@ -1364,6 +1367,7 @@ def CheckedSignature.summary (checked : CheckedSignature) : MessageData :=
     {checked.lfJudgments.size} checked LF judgments, \
     {checked.lfSideConditionSolvers.size} checked LF side-condition solvers, \
     {checked.lfConversionPlugins.size} checked LF conversion plugins, \
+    {checked.lfLevelNormalizerProfiles.size} checked level-normalizer profile(s), \
     {checked.lfRules.size} checked LF rules, {checked.lfRuleSchemas.size} LF rule schema(s), \
     {checked.lfSideConditionCertificates.size} LF side-condition certificate(s), \
     {checked.lfObjectDefs.size} LF object definition(s), \
@@ -1416,6 +1420,10 @@ elab "#print_checked_type_theory " nm:ident : command => do
     let supported := if p.supportedSteps.isEmpty then "metadata_only" else
       String.intercalate ", " (p.supportedSteps.toList.map ConversionStepKind.label)
     logInfo m!"LF conversion_plugin {p.name} [{p.trust.label}; {supported}]"
+  for profile in checked.lfLevelNormalizerProfiles do
+    logInfo m!"LF level_normalizer level {profile.levelSortName}, zero {profile.zeroName}, \
+      succ {profile.succName}, max {profile.maxName}, le {profile.leName}, solver \
+      {profile.solverName}, plugin {profile.pluginName} [{profile.trust.label}]"
   for r in checked.lfRules do
     logInfo m!"LF rule {r.name}: {r.premises.size} premise(s), \
       {r.sideConditions.size} side-condition(s)"
@@ -1578,7 +1586,8 @@ elab "#print_checked_logical_framework_environment " nm:ident : command => do
         zone(s), {env.binderClasses.size} binder class(es), \
         {env.judgments.size} judgment(s), {env.opaqueConsts.size} opaque placeholder(s), \
           {env.sideConditionSolvers.size} side-condition solver(s), {env.conversionPlugins.size} \
-            conversion plugin(s), {env.rules.size} checked rule(s), {env.ruleSchemas.size} \
+            conversion plugin(s), {env.levelNormalizerProfiles.size} level-normalizer profile(s), \
+            {env.rules.size} checked rule(s), {env.ruleSchemas.size} \
               rule schema(s), {env.sideConditionCertificates.size} side-condition \
                 certificate(s)"
   for z in env.contextZones do
@@ -1903,8 +1912,8 @@ elab "#print_logical_framework_metadata " nm:ident : command => do
     sig.binderClasses.size + sig.judgments.size + sig.judgmentRoles.size + sig.rules.size +
     sig.ruleRoles.size + sig.rewriteRelations.size + sig.rewriteSymmetries.size +
     sig.rewriteCongruences.size + sig.transportRules.size + sig.transportPositions.size +
-    sig.sideConditionSolvers.size +
-    sig.conversionPlugins.size + sig.lfOpaqueConsts.size + sig.modelVisibilities.size +
+    sig.sideConditionSolvers.size + sig.conversionPlugins.size +
+    sig.levelNormalizerProfiles.size + sig.lfOpaqueConsts.size + sig.modelVisibilities.size +
     sig.modelSections.size + sig.modelSectionMemberships.size + sig.lfObjectDefs.size +
     sig.lfJudgmentTheorems.size
   logInfo m!"logical-framework metadata for {nm.getId} ({lfCount} declarations, parents flattened)"
@@ -1944,6 +1953,8 @@ elab "#print_logical_framework_metadata " nm:ident : command => do
     logInfo solver.summary
   for plugin in sig.conversionPlugins do
     logInfo plugin.summary
+  for profile in sig.levelNormalizerProfiles do
+    logInfo profile.summary
   for opaqueDecl in sig.lfOpaqueConsts do
     logInfo opaqueDecl.summary
   for v in sig.modelVisibilities do
@@ -2127,8 +2138,8 @@ elab "#print_type_theory " nm:ident : command => do
     sig.binderClasses.size + sig.judgments.size + sig.judgmentRoles.size + sig.rules.size +
     sig.ruleRoles.size + sig.rewriteRelations.size + sig.rewriteSymmetries.size +
     sig.rewriteCongruences.size + sig.transportRules.size + sig.transportPositions.size +
-    sig.sideConditionSolvers.size +
-    sig.conversionPlugins.size + sig.lfOpaqueConsts.size + sig.modelVisibilities.size +
+    sig.sideConditionSolvers.size + sig.conversionPlugins.size +
+    sig.levelNormalizerProfiles.size + sig.lfOpaqueConsts.size + sig.modelVisibilities.size +
     sig.modelSections.size + sig.modelSectionMemberships.size + sig.lfObjectDefs.size +
     sig.lfJudgmentTheorems.size
   logInfo m!"type theory {sig.name}{levelText}{parentText} with {lfCount} \
@@ -2172,6 +2183,8 @@ elab "#print_type_theory " nm:ident : command => do
     logInfo solver.summary
   for plugin in sig.conversionPlugins do
     logInfo plugin.summary
+  for profile in sig.levelNormalizerProfiles do
+    logInfo profile.summary
   for opaqueDecl in sig.lfOpaqueConsts do
     logInfo opaqueDecl.summary
   for v in sig.modelVisibilities do

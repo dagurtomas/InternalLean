@@ -196,6 +196,7 @@ partial def flattenSignature (sig : HLSignature) (seen : NameSet := {}) : CoreM 
   let mut transportPositions := #[]
   let mut sideConditionSolvers := #[]
   let mut conversionPlugins := #[]
+  let mut levelNormalizerProfiles := #[]
   let mut lfOpaqueConsts := #[]
   let mut modelVisibilities := #[]
   let mut modelSections := #[]
@@ -227,6 +228,7 @@ partial def flattenSignature (sig : HLSignature) (seen : NameSet := {}) : CoreM 
     transportPositions := transportPositions ++ parentFlat.transportPositions
     sideConditionSolvers := sideConditionSolvers ++ parentFlat.sideConditionSolvers
     conversionPlugins := conversionPlugins ++ parentFlat.conversionPlugins
+    levelNormalizerProfiles := levelNormalizerProfiles ++ parentFlat.levelNormalizerProfiles
     lfOpaqueConsts := lfOpaqueConsts ++ parentFlat.lfOpaqueConsts
     modelVisibilities := modelVisibilities ++ parentFlat.modelVisibilities
     modelSections := modelSections ++ parentFlat.modelSections
@@ -258,6 +260,7 @@ partial def flattenSignature (sig : HLSignature) (seen : NameSet := {}) : CoreM 
     transportPositions := transportPositions ++ sig.transportPositions
     sideConditionSolvers := sideConditionSolvers ++ sig.sideConditionSolvers
     conversionPlugins := conversionPlugins ++ sig.conversionPlugins
+    levelNormalizerProfiles := levelNormalizerProfiles ++ sig.levelNormalizerProfiles
     lfOpaqueConsts := lfOpaqueConsts ++ sig.lfOpaqueConsts
     modelVisibilities := modelVisibilities ++ sig.modelVisibilities
     modelSections := modelSections ++ sig.modelSections
@@ -476,6 +479,83 @@ def checkLFLocalBinderHygieneMetadata (sig : HLSignature) : CoreM Unit := do
     checkNoLFLocalBinderShadowingInExpr sig "judgment_theorem" t.name "statement"
       t.judgmentExpr
     checkNoLFLocalBinderShadowingInExpr sig "judgment_theorem" t.name "proof" t.proof
+
+/-- Whether an object expression is a scope-erased reference to one identifier. -/
+def objExprIsIdentErased (expr : ObjExpr) (name : Name) : Bool :=
+  match expr with
+  | .ident n => n.eraseMacroScopes == name.eraseMacroScopes
+  | _ => false
+
+/-- Check one binder has explicit visibility and the profiled level sort. -/
+def checkLevelNormalizerLevelBinding (sig : HLSignature) (profile : LFLevelNormalizerProfileDecl)
+    (ownerKind : String) (ownerName : Name) (b : HLBinding) : CoreM Unit := do
+  unless b.visibility == .explicit do
+    throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' must use explicit \
+      profiled level parameters for level_normalizer"
+  unless objExprIsIdentErased b.typeExpr profile.levelSortName do
+    throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has parameter \
+      '{b.name}' of type '{b.typeExpr}', expected profiled level sort \
+      '{profile.levelSortName}'"
+
+/-- Check executable level-normalizer profiles against the flattened signature. -/
+def checkLFLevelNormalizerProfilesInSignature (sig : HLSignature) : CoreM Unit := do
+  if sig.levelNormalizerProfiles.size > 1 then
+    throwError "type theory '{sig.name}' has multiple level_normalizer profiles after parent \
+      flattening; keep the executable normalizer opt-in unambiguous"
+  for profile in sig.levelNormalizerProfiles do
+    unless profile.trust == .executableChecked do
+      throwError "level_normalizer in type theory '{sig.name}' currently supports only trust \
+        executable_checked, got '{profile.trust.label}'"
+    let levelName := profile.levelSortName.eraseMacroScopes
+    unless sig.syntaxSorts.any (fun s => s.name.eraseMacroScopes == levelName) do
+      throwError "level_normalizer in type theory '{sig.name}' refers to unknown level sort \
+        '{profile.levelSortName}'"
+    let checkResultLevel (ownerKind : String) (ownerName : Name) (typeExpr? : Option ObjExpr) := do
+      let some typeExpr := typeExpr?
+        | throwError "level_normalizer in type theory '{sig.name}' requires typed {ownerKind} \
+          '{ownerName}'"
+      unless objExprIsIdentErased typeExpr levelName do
+        throwError "level_normalizer in type theory '{sig.name}' expected {ownerKind} \
+          '{ownerName}' to return '{levelName}', got '{typeExpr}'"
+    let some zeroDecl := sig.lfOpaqueConsts.find? (fun o =>
+        o.name.eraseMacroScopes == profile.zeroName.eraseMacroScopes)
+      | throwError "level_normalizer in type theory '{sig.name}' refers to unknown zero \
+        constructor '{profile.zeroName}'"
+    unless zeroDecl.params.isEmpty do
+      throwError "level_normalizer zero constructor '{profile.zeroName}' in type theory \
+        '{sig.name}' must have no parameters"
+    checkResultLevel "zero constructor" profile.zeroName zeroDecl.typeExpr?
+    let some succDecl := sig.lfOpaqueConsts.find? (fun o =>
+        o.name.eraseMacroScopes == profile.succName.eraseMacroScopes)
+      | throwError "level_normalizer in type theory '{sig.name}' refers to unknown succ \
+        constructor '{profile.succName}'"
+    unless succDecl.params.size == 1 do
+      throwError "level_normalizer succ constructor '{profile.succName}' in type theory \
+        '{sig.name}' must have one parameter"
+    checkLevelNormalizerLevelBinding sig profile "level_normalizer succ constructor"
+      profile.succName succDecl.params[0]!
+    checkResultLevel "succ constructor" profile.succName succDecl.typeExpr?
+    let some maxDecl := sig.lfOpaqueConsts.find? (fun o =>
+        o.name.eraseMacroScopes == profile.maxName.eraseMacroScopes)
+      | throwError "level_normalizer in type theory '{sig.name}' refers to unknown max \
+        constructor '{profile.maxName}'"
+    unless maxDecl.params.size == 2 do
+      throwError "level_normalizer max constructor '{profile.maxName}' in type theory \
+        '{sig.name}' must have two parameters"
+    for b in maxDecl.params do
+      checkLevelNormalizerLevelBinding sig profile "level_normalizer max constructor"
+        profile.maxName b
+    checkResultLevel "max constructor" profile.maxName maxDecl.typeExpr?
+    let some leDecl := sig.judgments.find? (fun j =>
+        j.name.eraseMacroScopes == profile.leName.eraseMacroScopes)
+      | throwError "level_normalizer in type theory '{sig.name}' refers to unknown order \
+        judgment '{profile.leName}'"
+    unless leDecl.params.size == 2 do
+      throwError "level_normalizer order judgment '{profile.leName}' in type theory \
+        '{sig.name}' must have two parameters"
+    for b in leDecl.params do
+      checkLevelNormalizerLevelBinding sig profile "level_normalizer order judgment"
+        profile.leName b
 
 /-- Check LF metadata for opt-in universe-level discipline. -/
 def checkLFUniverseLevelMetadata (sig : HLSignature) : CoreM Unit := do

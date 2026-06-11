@@ -917,8 +917,12 @@ def matchObjectSynthesisCandidate? (sig : HLSignature) (ctx : Array HLBinding)
       matchObjectPattern paramVars candidateConclusion expected {}
 
 /-- Whether all side conditions of a synthesized helper are discharged by the built-in hook. -/
-def objectSideConditionsAreBuiltinTrivial (sideConditions : Array RuleSideConditionDecl) : Bool :=
-  sideConditions.all fun sc => classifySideConditionHook sc.solver == .builtinTrivial
+def objectSideConditionsAreBuiltinTrivial (sig : HLSignature)
+    (sideConditions : Array RuleSideConditionDecl) : Bool :=
+  sideConditions.all fun sc =>
+    match classifySideConditionHook sc.solver sig.levelNormalizerProfiles with
+    | .builtinTrivial | .levelNormalizer => true
+    | .opaque => false
 
 /-- Check selected rewrite-helper side conditions, accepting only the built-in trivial hook. -/
 def checkRewriteHelperSideConditions (rawName helperKind helperName : Name)
@@ -928,7 +932,7 @@ def checkRewriteHelperSideConditions (rawName helperKind helperName : Name)
     let scInput := substObjectVars subst sc.input
     match classifySideConditionHook sc.solver with
     | .builtinTrivial => pure ()
-    | .opaque =>
+    | .levelNormalizer | .opaque =>
         throw <| String.intercalate "\n" [
           s!"object tactic `rw {rawName}` cannot synthesize side-condition certificate " ++
             s!"'{sc.name.eraseMacroScopes}' for {helperKind.eraseMacroScopes} " ++
@@ -989,7 +993,7 @@ partial def synthesizeObjectPremiseProof? (target : InternalDefTarget) (sig : HL
       if ok then
         return some (mkObjectApps (.ident thm.name) args)
   for ruleDecl in sig.rules do
-    if !objectSideConditionsAreBuiltinTrivial ruleDecl.sideConditions then
+    if !objectSideConditionsAreBuiltinTrivial sig ruleDecl.sideConditions then
       continue
     if let some subst0 := matchObjectSynthesisCandidate? sig ctx ruleDecl.params
         ruleDecl.conclusionExpr expected then
@@ -1987,8 +1991,8 @@ mutual
             premiseGoal } argSpec tacticName)
     for sc in cand.sideConditions do
       let scInput := substObjectVars subst sc.input
-      match classifySideConditionHook sc.solver with
-      | .builtinTrivial => pure ()
+      match classifySideConditionHook sc.solver sig.levelNormalizerProfiles with
+      | .builtinTrivial | .levelNormalizer => pure ()
       | .opaque =>
           throw <| internalOpaqueSideConditionMessage tacticName rawName rawName sc.name
             sc.solver scInput
@@ -3393,8 +3397,8 @@ mutual
           outArgs := outArgs.push arg
     for sc in cand.sideConditions do
       let scInput := substObjectVars subst sc.input
-      match classifySideConditionHook sc.solver with
-      | .builtinTrivial => pure ()
+      match classifySideConditionHook sc.solver sig.levelNormalizerProfiles with
+      | .builtinTrivial | .levelNormalizer => pure ()
       | .opaque =>
           throw <| internalOpaqueSideConditionMessage tacticName rawName rawName sc.name
             sc.solver scInput
@@ -3541,8 +3545,8 @@ mutual
           args := args.push arg
     for sc in cand.sideConditions do
       let scInput := substObjectVars subst sc.input
-      match classifySideConditionHook sc.solver with
-      | .builtinTrivial => pure ()
+      match classifySideConditionHook sc.solver sig.levelNormalizerProfiles with
+      | .builtinTrivial | .levelNormalizer => pure ()
       | .opaque =>
           throw <| internalOpaqueSideConditionMessage tacticName rawName cand.name sc.name
             sc.solver scInput
@@ -3600,8 +3604,8 @@ mutual
       args := args.push arg
     for sc in cand.sideConditions do
       let scInput := substObjectVars subst sc.input
-      match classifySideConditionHook sc.solver with
-      | .builtinTrivial => pure ()
+      match classifySideConditionHook sc.solver sig.levelNormalizerProfiles with
+      | .builtinTrivial | .levelNormalizer => pure ()
       | .opaque =>
           throw <| internalOpaqueSideConditionMessage "apply" rawName cand.name sc.name
             sc.solver scInput

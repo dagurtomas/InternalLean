@@ -629,12 +629,27 @@ def checkLFEvidenceType (sig : HLSignature)
   checkLFEvidenceTypeWithLookup (mkLFCheckLookupContext sig) sig globalHeads ownerKind ownerName
     where_ knownTypes locals typeExpr
 
-/-- Classify a declared side-condition solver name into the executable hook registry.
+/-- Classify a source side-condition solver name into the executable hook registry. -/
+def classifySideConditionHook (n : Name) (profiles : Array LFLevelNormalizerProfileDecl := #[]) :
+    CheckedLFSideConditionHookKind :=
+  let n := n.eraseMacroScopes
+  if n == `trivial_side_condition then
+    .builtinTrivial
+  else if profiles.any (fun p => p.solverName.eraseMacroScopes == n) then
+    .levelNormalizer
+  else
+    .opaque
 
-Only `trivial_side_condition` is executable. Other declared solvers remain opaque handles for
-trusted/checkable plugins. -/
-def classifySideConditionHook (n : Name) : CheckedLFSideConditionHookKind :=
-  if n.eraseMacroScopes == `trivial_side_condition then .builtinTrivial else .opaque
+/-- Classify a checked side-condition solver name into the executable hook registry. -/
+def classifyCheckedSideConditionHook (profiles : Array CheckedLFLevelNormalizerProfile) (n : Name) :
+    CheckedLFSideConditionHookKind :=
+  let n := n.eraseMacroScopes
+  if n == `trivial_side_condition then
+    .builtinTrivial
+  else if profiles.any (fun p => p.solverName.eraseMacroScopes == n) then
+    .levelNormalizer
+  else
+    .opaque
 
 /-- Build the checked artifact for one syntax-sort declaration. -/
 def checkedLFSyntaxSortDeclArtifact (sig : HLSignature)
@@ -735,16 +750,33 @@ def checkedLFOpaqueConstDeclArtifact (sig : HLSignature)
     checkedTypeExpr? := checkedTypeExpr?
     typeHead? := typeHead? }
 
+/-- Build the checked artifact for one level-normalizer profile declaration. -/
+def checkedLFLevelNormalizerProfileDeclArtifact (p : LFLevelNormalizerProfileDecl) :
+    CheckedLFLevelNormalizerProfile :=
+  { levelSortName := p.levelSortName.eraseMacroScopes
+    zeroName := p.zeroName.eraseMacroScopes
+    succName := p.succName.eraseMacroScopes
+    maxName := p.maxName.eraseMacroScopes
+    leName := p.leName.eraseMacroScopes
+    solverName := p.solverName.eraseMacroScopes
+    pluginName := p.pluginName.eraseMacroScopes
+    trust := p.trust }
+
 /-- Build the checked artifact for one side-condition solver declaration. -/
-def checkedLFSideConditionSolverDeclArtifact (s : SideConditionSolverDecl) :
+def checkedLFSideConditionSolverDeclArtifact
+    (profiles : Array CheckedLFLevelNormalizerProfile) (s : SideConditionSolverDecl) :
     CheckedLFSideConditionSolver :=
-  { name := s.name.eraseMacroScopes, hookKind := classifySideConditionHook s.name }
+  { name := s.name.eraseMacroScopes, hookKind := classifyCheckedSideConditionHook profiles s.name }
 
 /-- Build the checked artifact for one conversion-plugin declaration. -/
-def checkedLFConversionPluginDeclArtifact (p : ConversionPluginDecl) : CheckedLFConversionPlugin :=
-  { name := p.name.eraseMacroScopes
+def checkedLFConversionPluginDeclArtifact (profiles : Array CheckedLFLevelNormalizerProfile)
+    (p : ConversionPluginDecl) : CheckedLFConversionPlugin :=
+  let pluginName := p.name.eraseMacroScopes
+  { name := pluginName
     trust := p.trust
-    supportedSteps := p.supportedSteps }
+    supportedSteps := p.supportedSteps
+    levelNormalizer? := profiles.find? (fun profile =>
+      profile.pluginName.eraseMacroScopes == pluginName) }
 
 /-- Build checked LF declaration artifacts for syntax sorts, abbreviations, syntax definitions,
 context zones, binder classes, judgments, and opaque placeholders. -/
@@ -752,7 +784,8 @@ def checkedLFDeclarations (sig : HLSignature) :
     CoreM (Array CheckedLFSyntaxSort × Array CheckedLFSyntaxAbbrev ×
       Array CheckedLFSyntaxDef × Array CheckedLFJudgmentAbbrev × Array CheckedLFContextZone ×
       Array CheckedLFBinderClass × Array CheckedLFJudgment × Array CheckedLFOpaqueConst ×
-      Array CheckedLFSideConditionSolver × Array CheckedLFConversionPlugin) := do
+      Array CheckedLFSideConditionSolver × Array CheckedLFConversionPlugin ×
+      Array CheckedLFLevelNormalizerProfile) := do
   let globalHeads := lfGlobalHeadInfo sig
   let syntaxSorts ← sig.syntaxSorts.mapM (checkedLFSyntaxSortDeclArtifact sig globalHeads)
   let syntaxAbbrevs ← sig.syntaxAbbrevs.mapM (checkedLFSyntaxAbbrevDeclArtifact sig globalHeads)
@@ -763,10 +796,11 @@ def checkedLFDeclarations (sig : HLSignature) :
   let binderClasses := sig.binderClasses.map checkedLFBinderClassDeclArtifact
   let judgments ← sig.judgments.mapM (checkedLFJudgmentDeclArtifact sig globalHeads)
   let opaques ← sig.lfOpaqueConsts.mapM (checkedLFOpaqueConstDeclArtifact sig globalHeads)
-  let solvers := sig.sideConditionSolvers.map checkedLFSideConditionSolverDeclArtifact
-  let plugins := sig.conversionPlugins.map checkedLFConversionPluginDeclArtifact
+  let profiles := sig.levelNormalizerProfiles.map checkedLFLevelNormalizerProfileDeclArtifact
+  let solvers := sig.sideConditionSolvers.map (checkedLFSideConditionSolverDeclArtifact profiles)
+  let plugins := sig.conversionPlugins.map (checkedLFConversionPluginDeclArtifact profiles)
   pure (syntaxSorts, syntaxAbbrevs, syntaxDefs, judgmentAbbrevs, contextZones, binderClasses,
-    judgments, opaques, solvers, plugins)
+    judgments, opaques, solvers, plugins, profiles)
 
 /-- Check that identifiers in an LF metadata expression are known globals or local binders.
 
@@ -1486,12 +1520,12 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
           scopedRuleArgs := scopedRuleArgs.push (eraseObjExprScopes arg)
       let mut sideCertificateNames := #[]
       for sc in appliedRule.sideConditions do
-        match classifySideConditionHook sc.solver with
+        match classifySideConditionHook sc.solver sig.levelNormalizerProfiles with
         | .opaque =>
             throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' applies rule \
               '{ruleName}' but side-condition '{sc.name}' uses opaque solver '{sc.solver}' with \
                 no checked certificate"
-        | .builtinTrivial =>
+        | .builtinTrivial | .levelNormalizer =>
             sideCertificateNames :=
               sideCertificateNames.push (lfSideConditionCertificateName appliedRule.name sc.name)
       return some (.ruleApp ruleName expectedConclusion scopedRuleArgs premiseDerivations

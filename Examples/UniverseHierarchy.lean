@@ -38,6 +38,8 @@ declare_type_theory UniverseHierarchy{u} where
   rule le_refl (i : Level) : Le i i
   rule le_succ (i : Level) : Le i (succ i)
 
+  level_normalizer Level zero succ lmax Le
+
   /-- Unguarded lift; well-formedness is judgmental (extrinsic style). -/
   lf_opaque lift {i : Level} {j : Level} (A : Ty i) : Ty j
   judgment IsTy {i : Level} (A : Ty i)
@@ -45,6 +47,10 @@ declare_type_theory UniverseHierarchy{u} where
     premise le : Le i j
     premise wf : IsTy (i := i) A
     conclusion : IsTy (i := j) (lift (i := i) (j := j) A)
+  rule lift_lmax_left_wf {i : Level} {j : Level} (A : Ty i) where
+    side_condition le_left by level_norm_solver : Le i (lmax i j)
+    premise wf : IsTy (i := i) A
+    conclusion : IsTy (i := lmax i j) (lift (i := i) (j := lmax i j) A)
 
   lf_opaque Univ (i : Level) : Ty (succ i)
   rule univ_wf (i : Level) : IsTy (i := succ i) (Univ i)
@@ -76,6 +82,16 @@ internal theorem liftedZeroUniv_wf : IsTy (i := succ (succ zero)) liftedZeroUniv
   · apply le_succ
   · apply univ_wf
 
+/-- A quoted body whose target level is justified by the executable level normalizer. -/
+internal def liftedZeroUnivLmax : Ty (lmax (succ zero) (succ (succ zero))) :=
+  lift (i := succ zero) (j := lmax (succ zero) (succ (succ zero))) (Univ zero)
+
+/-- Native tactics consume a checked level-normalizer side-condition certificate. -/
+internal theorem liftedZeroUnivLmax_wf :
+    IsTy (i := lmax (succ zero) (succ (succ zero))) liftedZeroUnivLmax := by
+  apply lift_lmax_left_wf
+  apply univ_wf
+
 end UniverseHierarchy
 
 #check_theory UniverseHierarchy
@@ -104,6 +120,7 @@ def natModel : Model.{0} where
   le_refl := fun i => ⟨Nat.le_refl i⟩
   le_succ := fun i => ⟨Nat.le_succ i⟩
   lift_wf := fun _ _ _ => PUnit.unit
+  lift_lmax_left_wf := fun _ _ _ => PUnit.unit
   univ_wf := fun _ => PUnit.unit
 
 #check syntacticModel
@@ -112,6 +129,7 @@ def natModel : Model.{0} where
 #check (natModel.Tm (i := natModel.zero) PUnit : Type)
 #check zero_le_succ_zero
 #check liftedZeroUniv_wf
+#check liftedZeroUnivLmax_wf
 
 end UniverseHierarchy
 

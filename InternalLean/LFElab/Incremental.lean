@@ -561,6 +561,7 @@ structure CheckedTheoryDelta where
   opaqueConsts : Array CheckedLFOpaqueConst := #[]
   sideConditionSolvers : Array CheckedLFSideConditionSolver := #[]
   conversionPlugins : Array CheckedLFConversionPlugin := #[]
+  levelNormalizerProfiles : Array CheckedLFLevelNormalizerProfile := #[]
   rules : Array CheckedLFRule := #[]
   ruleRoles : Array RuleRoleDecl := #[]
   rewriteRelations : Array LFRewriteRelationDecl := #[]
@@ -592,6 +593,8 @@ def appendCheckedTheoryDelta (checked : CheckedSignature) (delta : CheckedTheory
   let lfOpaqueConsts := checked.lfOpaqueConsts ++ delta.opaqueConsts
   let lfSideConditionSolvers := checked.lfSideConditionSolvers ++ delta.sideConditionSolvers
   let lfConversionPlugins := checked.lfConversionPlugins ++ delta.conversionPlugins
+  let lfLevelNormalizerProfiles :=
+    checked.lfLevelNormalizerProfiles ++ delta.levelNormalizerProfiles
   let lfRules := checked.lfRules ++ delta.rules
   let lfRuleRoles := checked.lfRuleRoles ++ delta.ruleRoles
   let lfRewriteRelations := checked.lfRewriteRelations ++ delta.rewriteRelations
@@ -622,6 +625,7 @@ def appendCheckedTheoryDelta (checked : CheckedSignature) (delta : CheckedTheory
     opaqueConsts := lfOpaqueConsts
     sideConditionSolvers := lfSideConditionSolvers
     conversionPlugins := lfConversionPlugins
+    levelNormalizerProfiles := lfLevelNormalizerProfiles
     rules := lfRules
     ruleRoles := lfRuleRoles
     rewriteRelations := lfRewriteRelations
@@ -649,6 +653,7 @@ def appendCheckedTheoryDelta (checked : CheckedSignature) (delta : CheckedTheory
     modelSectionMemberships := modelSectionMemberships
     lfSideConditionSolvers := lfSideConditionSolvers
     lfConversionPlugins := lfConversionPlugins
+    lfLevelNormalizerProfiles := lfLevelNormalizerProfiles
     lfRules := lfRules
     lfRuleRoles := lfRuleRoles
     lfRewriteRelations := lfRewriteRelations
@@ -1171,11 +1176,16 @@ def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : Ch
       syntaxSortArities globalHeads o knownLFDefTypes
     checkedOpaques :=
       checkedOpaques.push (← checkedLFOpaqueConstDeclArtifact flatForCheck globalHeads o)
-  let checkedSolvers := block.sideConditionSolvers.map checkedLFSideConditionSolverDeclArtifact
+  checkLFLevelNormalizerProfilesInSignature flatForCheck
+  let checkedProfiles :=
+    block.levelNormalizerProfiles.map checkedLFLevelNormalizerProfileDeclArtifact
+  let allProfiles := checkedBase.lfLevelNormalizerProfiles ++ checkedProfiles
+  let checkedSolvers :=
+    block.sideConditionSolvers.map (checkedLFSideConditionSolverDeclArtifact allProfiles)
   let mut checkedPlugins : Array CheckedLFConversionPlugin := #[]
   for p in block.conversionPlugins do
     checkOneConversionPluginMetadataInSignature flatForCheck p
-    checkedPlugins := checkedPlugins.push (checkedLFConversionPluginDeclArtifact p)
+    checkedPlugins := checkedPlugins.push (checkedLFConversionPluginDeclArtifact allProfiles p)
   let mut checkedRules : Array CheckedLFRule := #[]
   for r in block.rules do
     checkLFLocalBinderHygieneInRuleDecl flatForCheck r
@@ -1184,9 +1194,11 @@ def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : Ch
       checkOneRuleMetadataInSignature flatForCheck lfGlobals opaqueArities globalHeads
         syntaxSortArities judgmentArities solvers r
     checkedRules := checkedRules.push checkedRule
-  let checkedRuleSchemas := checkedRules.map
-    (checkedLFRuleSchemaOfRule (checkedBase.lfContextZones ++ checkedContextZones)
-      (checkedBase.lfBinderClasses ++ checkedBinderClasses))
+  let checkedRuleSchemas ←
+    match checkedLFRuleSchemasOfRules (checkedBase.lfContextZones ++ checkedContextZones)
+        (checkedBase.lfBinderClasses ++ checkedBinderClasses) allProfiles checkedRules with
+    | .ok schemas => pure schemas
+    | .error err => throwError err
   let checkedCertificates := checkedLFSideConditionCertificatesOfSchemas checkedRuleSchemas
   pure {
     syntaxSorts := checkedSyntaxSorts
@@ -1201,6 +1213,7 @@ def checkTheoryBlockMetadataDelta (flatForCheck : HLSignature) (checkedBase : Ch
     opaqueConsts := checkedOpaques
     sideConditionSolvers := checkedSolvers
     conversionPlugins := checkedPlugins
+    levelNormalizerProfiles := checkedProfiles
     rules := checkedRules
     ruleRoles := checkedRuleRoles
     ruleSchemas := checkedRuleSchemas
@@ -1311,6 +1324,7 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
   let flat ← expandSyntaxAbbrevsInSignature flat
   checkLFLocalBinderHygieneMetadata flat
   checkLFUniverseLevelMetadata flat
+  checkLFLevelNormalizerProfilesInSignature flat
   let lfRules ← checkRuleMetadataInSignature flat
   checkLFRewriteTransportMetadata flat
   let (lfObjectDefsFromDecls, lfJudgmentTheoremsFromDecls) ←
@@ -1318,7 +1332,8 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
   let lfObjectDefs := lfObjectDefsFromDecls
   let lfJudgmentTheoremsRaw := lfJudgmentTheoremsFromDecls
   let (lfSyntaxSorts, lfSyntaxAbbrevs, lfSyntaxDefs, lfJudgmentAbbrevs, lfContextZones,
-    lfBinderClasses, lfJudgments, lfOpaqueConsts, lfSideConditionSolvers, lfConversionPlugins) ←
+    lfBinderClasses, lfJudgments, lfOpaqueConsts, lfSideConditionSolvers, lfConversionPlugins,
+      lfLevelNormalizerProfiles) ←
       checkedLFDeclarations flat
   let lfSyntaxSortRoles := flat.syntaxSortRoles.map fun r =>
     { sortName := r.sortName.eraseMacroScopes, kind := r.kind.eraseMacroScopes }
@@ -1349,7 +1364,11 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
     { ruleName := p.ruleName.eraseMacroScopes
       targetHead := p.targetHead.eraseMacroScopes
       argumentIndex := p.argumentIndex }
-  let lfRuleSchemas := checkedLFRuleSchemasOfRules lfContextZones lfBinderClasses lfRules
+  let lfRuleSchemas ←
+    match checkedLFRuleSchemasOfRules lfContextZones lfBinderClasses lfLevelNormalizerProfiles
+        lfRules with
+    | .ok schemas => pure schemas
+    | .error err => throwError err
   let lfSideConditionCertificates := checkedLFSideConditionCertificatesOfSchemas lfRuleSchemas
   let replayDelta : CheckedTheoryDelta := {
     syntaxSorts := lfSyntaxSorts
@@ -1364,6 +1383,7 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
     opaqueConsts := lfOpaqueConsts
     sideConditionSolvers := lfSideConditionSolvers
     conversionPlugins := lfConversionPlugins
+    levelNormalizerProfiles := lfLevelNormalizerProfiles
     rules := lfRules
     ruleRoles := lfRuleRoles
     rewriteRelations := lfRewriteRelations
@@ -1396,6 +1416,7 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
       opaqueConsts := lfOpaqueConsts
       sideConditionSolvers := lfSideConditionSolvers
       conversionPlugins := lfConversionPlugins
+      levelNormalizerProfiles := lfLevelNormalizerProfiles
       rules := lfRules
       ruleRoles := lfRuleRoles
       rewriteRelations := lfRewriteRelations
@@ -1429,6 +1450,7 @@ def checkSignatureForRegistration (sig : HLSignature) : CoreM CheckedSignature :
         declName := m.declName.eraseMacroScopes })
     lfSideConditionSolvers := lfSideConditionSolvers
     lfConversionPlugins := lfConversionPlugins
+    lfLevelNormalizerProfiles := lfLevelNormalizerProfiles
     lfRules := lfRules
     lfRuleRoles := lfRuleRoles
     lfRewriteRelations := lfRewriteRelations
