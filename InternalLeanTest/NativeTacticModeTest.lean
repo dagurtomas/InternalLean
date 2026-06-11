@@ -96,6 +96,43 @@ internal def apply_twice : Good o := by
   exact good_o
 
 set_option internalLean.nativeTacticMode true in
+internal def apply_twice_bullets : Good o := by
+  apply good_twice
+  · exact good_o
+  · exact good_o
+
+set_option internalLean.nativeTacticMode true in
+internal def refine_twice_bullets : Good o := by
+  refine good_twice ?_ ?_
+  · exact good_o
+  · exact good_o
+
+set_option internalLean.nativeTacticMode true in
+internal def apply_twice_focus_lean : Good o := (by
+  apply good_twice
+  · exact good_o
+  · exact good_o)
+
+set_option internalLean.nativeTacticMode true in
+internal def refine_twice_focus_lean : Good o := (by
+  refine good_twice ?left ?right
+  · exact good_o
+  · exact good_o)
+
+set_option internalLean.nativeTacticMode true in
+internal def have_good_by_end : Good o := by
+  have h : Good o := by
+    exact good_o
+  end
+  exact h
+
+set_option internalLean.nativeTacticMode true in
+internal def have_good_by_lean : Good o := (by
+  have h : Good o := by
+    exact good_o
+  exact h)
+
+set_option internalLean.nativeTacticMode true in
 internal theorem exact_theorem : Good o := by
   exact good_o
 
@@ -108,7 +145,27 @@ internal theorem exact_theorem : Good o := by
 #check have_good
 #check apply_refl
 #check apply_twice
+#check apply_twice_bullets
+#check refine_twice_bullets
+#check apply_twice_focus_lean
+#check refine_twice_focus_lean
+#check have_good_by_end
+#check have_good_by_lean
 #check exact_theorem
+
+/--
+error: native tactic `refine good_twice` cannot infer placeholder `_` for a premise; write an
+explicit proof term or `?_`.
+
+Omitted explicit arguments are never turned into subgoals. Use `_` only for inferable parameters,
+and write `?_` exactly where `refine` should create an object-theory subgoal.
+-/
+#guard_msgs (whitespace := lax) in
+set_option internalLean.nativeTacticMode true in
+internal def refine_infer_placeholder_rejected : Good o := by
+  refine good_twice _ _
+  exact good_o
+  exact good_o
 
 /--
 warning: internal declaration 'NativeTacticModeSmoke.direct_sorry_admitted' was admitted by
@@ -122,8 +179,8 @@ internal def direct_sorry_admitted : Good o := by
 
 /--
 error: tactic `decide` is not part of InternalLean native tactic mode yet; supported native tactics
-in this milestone: `intro`, `intros`, `exact`, `apply`, `assumption`, `show`, `change`, term-form
-`have`, and `skip`.
+in this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, `show`, `change`,
+term- and tactic-form `have`, focus bullets, and `skip`.
 -/
 #guard_msgs (whitespace := lax) in
 set_option internalLean.nativeTacticMode true in
@@ -132,8 +189,8 @@ internal def decide_rejected : Good o := by
 
 /--
 error: tactic `constructor` is not part of InternalLean native tactic mode yet; supported native
-tactics in this milestone: `intro`, `intros`, `exact`, `apply`, `assumption`, `show`, `change`,
-term-form `have`, and `skip`.
+tactics in this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, `show`,
+`change`, term- and tactic-form `have`, focus bullets, and `skip`.
 -/
 #guard_msgs (whitespace := lax) in
 set_option internalLean.nativeTacticMode true in
@@ -142,8 +199,8 @@ internal def constructor_rejected : Good o := by
 
 /--
 error: tactic `try` is not part of InternalLean native tactic mode yet; supported native tactics in
-this milestone: `intro`, `intros`, `exact`, `apply`, `assumption`, `show`, `change`, term-form
-`have`, and `skip`.
+this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, `show`, `change`,
+term- and tactic-form `have`, focus bullets, and `skip`.
 -/
 #guard_msgs (whitespace := lax) in
 set_option internalLean.nativeTacticMode true in
@@ -152,8 +209,8 @@ internal def try_rejected : Good o := by
 
 /--
 error: tactic `rfl` is not part of InternalLean native tactic mode yet; supported native tactics in
-this milestone: `intro`, `intros`, `exact`, `apply`, `assumption`, `show`, `change`, term-form
-`have`, and `skip`.
+this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, `show`, `change`,
+term- and tactic-form `have`, focus bullets, and `skip`.
 -/
 #guard_msgs (whitespace := lax) in
 set_option internalLean.nativeTacticMode true in
@@ -166,8 +223,8 @@ macro_rules
 
 /--
 error: tactic `native_macro_sorry` is not part of InternalLean native tactic mode yet; supported
-native tactics in this milestone: `intro`, `intros`, `exact`, `apply`, `assumption`, `show`,
-`change`, term-form `have`, and `skip`.
+native tactics in this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`,
+`show`, `change`, term- and tactic-form `have`, focus bullets, and `skip`.
 -/
 #guard_msgs (whitespace := lax) in
 set_option internalLean.nativeTacticMode true in

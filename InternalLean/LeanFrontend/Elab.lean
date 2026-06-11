@@ -1390,6 +1390,23 @@ def parseInternalNativeLeanTacticFromSource (stx : Syntax) : CommandElabM (TSynt
   let some stopPos := stx.getTailPos? (canonicalOnly := true)
     | throwErrorAt stx "cannot recover source range for native tactic parsing"
   let source := String.Pos.Raw.extract (← getFileMap).source startPos stopPos
+  let trimmedSource := source.trimAscii.toString
+  /- Legacy `internalTactic` focus bullets are standalone markers; Lean-native focus bullets are
+  grouped by the Lean parser in canonical `by` terms.  Preserve the legacy marker as a no-op so
+  existing object-tactic-style bullet scripts keep their goal order. -/
+  if trimmedSource == "·" then
+    return ⟨(← `(tactic| skip)).raw⟩
+  /- Legacy tactic-form `have` uses a closing `end`; Lean's tactic parser expects the nested `by`
+  term without it. -/
+  let source :=
+    if trimmedSource.startsWith "have " && trimmedSource.endsWith "end" then
+      (trimmedSource.dropEnd 3).toString
+    else
+      source
+  /- The Lean parser in this environment accepts named synthetic holes but not anonymous `?_` in
+  this source-reparse path.  Rewriting to a named hole keeps legacy `_` as infer-only while
+  preserving `?_` as a native refine subgoal. -/
+  let source := source.replace "?_" "?nativeHole"
   match Lean.Parser.runParserCategory (← getEnv) `tactic source with
   | .ok stx => pure ⟨stx⟩
   | .error err => throwErrorAt stx "could not parse InternalLean native tactic as Lean tactic: \
@@ -1450,6 +1467,223 @@ def mkInternalNativeApplyPlan (target : InternalDefTarget) (sig : HLSignature)
           (internalOpaqueSideConditionMessage "apply" rawName cand.name sc.name sc.solver scInput)
   pure ({ rawName, candidateName := cand.name, args }, newGoals)
 
+/-- True when a Lean term syntax contains an anonymous or synthetic hole. -/
+partial def internalNativeTermSyntaxHasHole : Syntax → Bool
+  | .node _ `Lean.Parser.Term.hole _ => true
+  | .node _ `Lean.Parser.Term.syntheticHole _ => true
+  | .node _ _ args => args.any internalNativeTermSyntaxHasHole
+  | _ => false
+
+/-- Convert a Lean term from a native `refine` into object-tactic argument syntax. -/
+partial def elabInternalNativeTacticArgSyntax (target : InternalDefTarget) (sig : HLSignature)
+    (ctx : Array HLBinding) (term : Syntax) : CommandElabM InternalTacticArg := do
+  let fallback : CommandElabM InternalTacticArg := do
+    pure (.expr (← elabInternalNativeQuotedTerm target sig ctx none ⟨term⟩))
+  match term with
+  | .node _ `Lean.Parser.Term.paren args =>
+      match args[1]? with
+      | some inner => elabInternalNativeTacticArgSyntax target sig ctx inner
+      | none => fallback
+  | .node _ `Lean.Parser.Term.hole _ => pure .inferPlaceholder
+  | .node _ `Lean.Parser.Term.syntheticHole _ => pure .refineHole
+  | .ident _ _ n _ => pure (.expr (.ident n))
+  | .node _ `Lean.Parser.Term.app args =>
+      match args[0]?, args[1]? with
+      | some head, some argList =>
+          match head with
+          | .ident _ _ rawName _ =>
+              let useCandidate := (findInternalApplyCandidate? target sig rawName).isSome ||
+                internalNativeTermSyntaxHasHole term
+              if useCandidate then
+                pure (.app rawName (← argList.getArgs.mapM
+                  (elabInternalNativeTacticArgSyntax target sig ctx)))
+              else
+                fallback
+          | _ => fallback
+      | _, _ => fallback
+  | _ => fallback
+
+/-- Throw a string-valued object-tactic diagnostic at native tactic source. -/
+def throwInternalNativeObjectTacticErrorAt (ref : Syntax) (x : Except String α) :
+    CommandElabM α :=
+  match x with
+  | .ok value => pure value
+  | .error err => throwErrorAt ref err
+
+/-- Whether a native plan argument contains a user-created proof subgoal. -/
+partial def internalNativeApplyArgHasSubgoal : InternalNativeApplyArg → Bool
+  | .closed _ => false
+  | .subgoal _ => true
+  | .candidateApp _ args => args.any internalNativeApplyArgHasSubgoal
+
+mutual
+  /-- Build a nested native `refine` plan argument and a diagnostic expression for dependencies. -/
+  partial def mkInternalNativeRefinePlanArg (target : InternalDefTarget) (sig : HLSignature)
+      (levels : Array Name) (goal : InternalNativePreElabGoal) (arg : InternalTacticArg)
+      (allowHoles : Bool) (tacticName : String) (ref : Syntax) :
+      CommandElabM (InternalNativeApplyArg × ObjExpr × Array InternalNativePreElabGoal) := do
+    match arg with
+    | .expr e => pure (.closed e, e, #[])
+    | .inferPlaceholder =>
+        throwErrorAt ref
+          (m!"native tactic `{tacticName}` cannot infer nested placeholder `_` without a \
+            candidate head")
+    | .refineHole =>
+        unless allowHoles do
+          throwErrorAt ref "native tactic `exact` does not accept nested refinement hole `?_`"
+        let placeholder := internalObjectGoalPlaceholder `_nested
+        pure (.subgoal goal.target, placeholder, #[goal])
+    | .app rawName args =>
+        mkInternalNativeRefineCandidateArg target sig levels goal rawName args allowHoles
+          tacticName ref
+
+  /-- Build a nested native `refine` candidate application. -/
+  partial def mkInternalNativeRefineCandidateArg (target : InternalDefTarget) (sig : HLSignature)
+      (levels : Array Name) (goal : InternalNativePreElabGoal) (rawName : Name)
+      (suppliedArgs : Array InternalTacticArg) (allowHoles : Bool) (tacticName : String)
+      (ref : Syntax) :
+      CommandElabM (InternalNativeApplyArg × ObjExpr × Array InternalNativePreElabGoal) := do
+    let (candidateName, args, diagArgs, newGoals) ←
+      mkInternalNativeRefinePlanParts target sig levels goal rawName suppliedArgs allowHoles
+        tacticName ref
+    pure (.candidateApp candidateName args, mkObjectApps (.ident candidateName) diagArgs,
+      newGoals)
+
+  /-- Build native `refine` plan arguments and immediate object subgoals. -/
+  partial def mkInternalNativeRefinePlanParts (target : InternalDefTarget) (sig : HLSignature)
+      (levels : Array Name) (goal : InternalNativePreElabGoal) (rawName : Name)
+      (suppliedArgs : Array InternalTacticArg) (allowHoles : Bool) (tacticName : String)
+      (ref : Syntax) :
+      CommandElabM
+        (Name × Array InternalNativeApplyArg × Array ObjExpr ×
+          Array InternalNativePreElabGoal) := do
+    let some cand := findInternalApplyCandidate? target sig rawName
+      | throwErrorAt ref s!"native tactic `{tacticName} {rawName}` failed: unknown rule or \
+          internal declaration '{rawName}' in type theory '{target.theoryName}'"
+    discard <| throwInternalNativeObjectTacticErrorAt ref <|
+      checkInternalCandidateAppArity tacticName rawName suppliedArgs.size cand
+    let some subst0 := matchInternalCandidateConclusion? sig goal.ctx cand.params
+        cand.conclusionExpr goal.target
+      | throwErrorAt ref (s!"native tactic `{tacticName} {rawName}` failed: " ++
+          internalCandidateConclusionMismatchMessage sig goal.ctx cand.conclusionExpr goal.target)
+    let mut planArgs : Array InternalNativeApplyArg := #[]
+    let mut diagArgs : Array ObjExpr := #[]
+    let mut newGoals : Array InternalNativePreElabGoal := #[]
+    let mut subst := subst0
+    let useFullExplicit := internalCandidateUsesFullExplicit cand suppliedArgs.size
+    let mut argIdx := 0
+    for param in cand.params do
+      let key := param.name.eraseMacroScopes
+      let paramTy := substObjectVars subst param.typeExpr
+      let argSpec? :=
+        if useFullExplicit || param.visibility == .explicit then
+          suppliedArgs[argIdx]?
+        else
+          none
+      match argSpec? with
+      | none =>
+          match subst.find? key with
+          | some inferred =>
+              planArgs := planArgs.push (.closed inferred)
+              diagArgs := diagArgs.push inferred
+          | none =>
+              throwErrorAt ref (internalCannotInferParameterMessage tacticName rawName
+                param.name paramTy false false)
+      | some argSpec =>
+          argIdx := argIdx + 1
+          match argSpec with
+          | .inferPlaceholder =>
+              match subst.find? key with
+              | some inferred =>
+                  planArgs := planArgs.push (.closed inferred)
+                  diagArgs := diagArgs.push inferred
+              | none =>
+                  throwErrorAt ref (internalCannotInferParameterMessage tacticName rawName
+                    param.name paramTy true false)
+          | .refineHole =>
+              unless allowHoles do
+                throwErrorAt ref s!"native tactic `exact {rawName}` does not accept refinement \
+                  hole `?_`; use `refine` or provide a complete argument"
+              let placeholder := internalObjectGoalPlaceholder param.name
+              let subgoal := { goal with target := paramTy }
+              planArgs := planArgs.push (.subgoal paramTy)
+              diagArgs := diagArgs.push placeholder
+              newGoals := newGoals.push subgoal
+              subst := subst.insert key placeholder
+          | .expr e =>
+              match subst.find? key with
+              | some inferred =>
+                  unless objectGoalsConvertible sig levels goal.ctx e inferred do
+                    throwErrorAt ref (internalArgumentMismatchMessage tacticName rawName
+                      param.name e inferred)
+              | none => subst := subst.insert key e
+              planArgs := planArgs.push (.closed e)
+              diagArgs := diagArgs.push e
+          | .app _ _ =>
+              let (planArg, diag, nestedGoals) ←
+                mkInternalNativeRefinePlanArg target sig levels { goal with target := paramTy }
+                  argSpec allowHoles tacticName ref
+              newGoals := newGoals ++ nestedGoals
+              match subst.find? key with
+              | some inferred =>
+                  unless internalNativeApplyArgHasSubgoal planArg do
+                    unless objectGoalsConvertible sig levels goal.ctx diag inferred do
+                      throwErrorAt ref (internalArgumentMismatchMessage tacticName rawName
+                        param.name diag inferred true)
+              | none => subst := subst.insert key diag
+              planArgs := planArgs.push planArg
+              diagArgs := diagArgs.push diag
+    for premiseTarget in cand.subgoalTargets do
+      let some argSpec := suppliedArgs[argIdx]?
+        | throwErrorAt ref "internal error: missing checked native refine argument"
+      argIdx := argIdx + 1
+      let premiseGoal := substObjectVars subst premiseTarget
+      match argSpec with
+      | .inferPlaceholder =>
+          throwErrorAt ref (s!"native tactic `{tacticName} {rawName}` cannot infer \
+            placeholder `_` for a premise; write an explicit proof term or `?_`.\n\n" ++
+            internalObjectTacticPlaceholderAdvice tacticName)
+      | .refineHole =>
+          unless allowHoles do
+            throwErrorAt ref s!"native tactic `exact {rawName}` does not accept refinement \
+              hole `?_`; use `refine` or provide a complete argument"
+          let placeholder := internalObjectGoalPlaceholder (.str rawName.eraseMacroScopes
+            s!"premise{argIdx}")
+          planArgs := planArgs.push (.subgoal premiseGoal)
+          diagArgs := diagArgs.push placeholder
+          newGoals := newGoals.push { goal with target := premiseGoal }
+      | .expr e =>
+          discard <| throwInternalNativeObjectTacticErrorAt ref <|
+            checkInternalPremiseProofExpr target sig levels goal.ctx e premiseGoal tacticName
+              rawName
+          planArgs := planArgs.push (.closed e)
+          diagArgs := diagArgs.push e
+      | .app _ _ =>
+          let (planArg, diag, nestedGoals) ←
+            mkInternalNativeRefinePlanArg target sig levels { goal with target := premiseGoal }
+              argSpec allowHoles tacticName ref
+          newGoals := newGoals ++ nestedGoals
+          planArgs := planArgs.push planArg
+          diagArgs := diagArgs.push diag
+    for sc in cand.sideConditions do
+      let scInput := substObjectVars subst sc.input
+      match classifySideConditionHook sc.solver with
+      | .builtinTrivial => pure ()
+      | .opaque =>
+          throwErrorAt ref (internalOpaqueSideConditionMessage tacticName rawName cand.name
+            sc.name sc.solver scInput)
+    pure (cand.name, planArgs, diagArgs, newGoals)
+end
+
+/-- Build a native `refine` plan and the immediate object subgoals for its holes. -/
+def mkInternalNativeRefinePlan (target : InternalDefTarget) (sig : HLSignature)
+    (levels : Array Name) (goal : InternalNativePreElabGoal) (rawName : Name)
+    (args : Array InternalTacticArg) (ref : Syntax) :
+    CommandElabM (InternalNativeApplyPlan × Array InternalNativePreElabGoal) := do
+  let (candidateName, planArgs, _, newGoals) ←
+    mkInternalNativeRefinePlanParts target sig levels goal rawName args true "refine" ref
+  pure ({ rawName, candidateName, args := planArgs }, newGoals)
+
 /-- Check and normalize a native `exact`/`have` proof term against an LF target. -/
 def checkInternalNativeProofTerm (target : InternalDefTarget) (sig : HLSignature)
     (ctx : Array HLBinding) (expected proof : ObjExpr) (tacticName : String) (ref : Syntax) :
@@ -1466,122 +1700,164 @@ def checkInternalNativeProofTerm (target : InternalDefTarget) (sig : HLSignature
       goal:\n{exceptionMessageData ex}"
   pure proof
 
-/-- Pre-elaborate one native tactic step enough that execution need not run Lean proof search
-for supported InternalLean tactics. Unsupported steps are still passed to Lean and then
-rejected/audited, which catches user macros that assign display metavariables. -/
-def elabInternalNativeResolvedStep (target : InternalDefTarget) (sig : HLSignature)
-    (levels : Array Name) (goal : InternalNativePreElabGoal) (stx : Syntax) :
-    CommandElabM (InternalNativeResolvedStep × Array InternalNativePreElabGoal) := do
-  let unsupported : CommandElabM (InternalNativeResolvedStep × Array InternalNativePreElabGoal) :=
-    pure ({ stx, step := .evalLeanForAudit }, #[goal])
-  match (⟨stx⟩ : TSyntax `tactic) with
-  | `(tactic| skip) => pure ({ stx, step := .skip }, #[goal])
-  | `(tactic| intro $name:ident) =>
-      let goal' ←
-        match introObjectGoal { ctx := goal.ctx, target := goal.target } name.getId with
-        | .ok goal' => pure goal'
-        | .error err => throwErrorAt stx err
-      pure ({ stx, step := .intro name.getId }, #[{ ctx := goal'.ctx, target := goal'.target }])
-  | `(tactic| intros $names:ident*) =>
-      let rawNames := names.map (·.getId)
-      let (introNames, goal') ←
-        if rawNames.isEmpty then
-          let (introNames, goal') := autoIntroGoal { ctx := goal.ctx, target := goal.target }
-          pure (introNames, goal')
-        else
-          match introsObjectGoal { ctx := goal.ctx, target := goal.target } rawNames with
-          | .ok goal' => pure (rawNames, goal')
+mutual
+  /-- Pre-elaborate one native tactic step enough that execution need not run Lean proof search.
+  Unsupported steps are still passed to Lean and then rejected/audited, which catches user macros
+  that assign display metavariables. -/
+  partial def elabInternalNativeResolvedStep (target : InternalDefTarget) (sig : HLSignature)
+      (levels : Array Name) (goal : InternalNativePreElabGoal) (stx : Syntax) :
+      CommandElabM (Array InternalNativeResolvedStep × Array InternalNativePreElabGoal) := do
+    let unsupported : CommandElabM
+        (Array InternalNativeResolvedStep × Array InternalNativePreElabGoal) :=
+      pure (#[{ stx, step := .evalLeanForAudit }], #[goal])
+    if let some bodySteps := internalNativeFocusBodySteps? stx then
+      let (body, bodyGoals) ← elabInternalNativeResolvedStepsForGoals target sig levels
+        [{ ctx := goal.ctx, target := goal.target }] bodySteps
+      unless bodyGoals.isEmpty do
+        throwErrorAt stx "focused InternalLean native tactic block left unsolved object goal(s)"
+      return (#[{ stx, step := .focus body }], #[])
+    match (⟨stx⟩ : TSyntax `tactic) with
+    | `(tactic| skip) => pure (#[{ stx, step := .skip }], #[goal])
+    | `(tactic| intro $name:ident) =>
+        let goal' ←
+          match introObjectGoal { ctx := goal.ctx, target := goal.target } name.getId with
+          | .ok goal' => pure goal'
           | .error err => throwErrorAt stx err
-      pure ({ stx, step := .intros introNames }, #[{ ctx := goal'.ctx, target := goal'.target }])
-  | `(tactic| exact $proof:term) =>
-      let proofExpr ← withRef proof.raw <|
-        elabInternalNativeQuotedTerm target sig goal.ctx (some goal.target) proof
-      let proofExpr ← checkInternalNativeProofTerm target sig goal.ctx goal.target proofExpr
-        "exact" proof.raw
-      pure ({ stx, step := .exact proofExpr }, #[])
-  | `(tactic| assumption) =>
-      let some _ := findAssumption? sig levels goal.ctx goal.target
-        | throwErrorAt stx (String.intercalate "\n" [
-            "native tactic `assumption` failed for object goal",
-            s!"  {diagnosticObjExprString goal.target}",
-            "",
-            "Available object hypotheses:",
-            renderInternalObjectContext goal.ctx])
-      pure ({ stx, step := .assumption }, #[])
-  | `(tactic| show $newTarget:term) =>
-      let newTargetExpr ← withRef newTarget.raw <|
-        elabInternalNativeQuotedTerm target sig goal.ctx none newTarget
-      unless objectGoalsConvertible sig levels goal.ctx goal.target newTargetExpr do
-        throwErrorAt newTarget.raw (String.intercalate "\n" [
-          "native tactic `show` cannot replace the current object goal",
-          s!"  {diagnosticObjExprString goal.target}",
-          "with non-convertible/non-identical object goal",
-          s!"  {diagnosticObjExprString newTargetExpr}",
-          "",
-          "This is object judgmental conversion, not Lean equality."])
-      pure ({ stx, step := .showGoal newTargetExpr }, #[{ goal with target := newTargetExpr }])
-  | `(tactic| change $newTarget:term) =>
-      let newTargetExpr ← withRef newTarget.raw <|
-        elabInternalNativeQuotedTerm target sig goal.ctx none newTarget
-      match objectGoalConversionCheck sig levels goal.ctx goal.target newTargetExpr with
-      | .ok _ =>
-          pure ({ stx, step := .changeGoal newTargetExpr },
-            #[{ goal with target := newTargetExpr }])
-      | .error err =>
-          if objectGoalsConvertible sig levels goal.ctx goal.target newTargetExpr then
-            pure ({ stx, step := .changeGoal newTargetExpr },
-              #[{ goal with target := newTargetExpr }])
+        pure (#[{ stx, step := .intro name.getId }],
+          #[{ ctx := goal'.ctx, target := goal'.target }])
+    | `(tactic| intros $names:ident*) =>
+        let rawNames := names.map (·.getId)
+        let (introNames, goal') ←
+          if rawNames.isEmpty then
+            let (introNames, goal') := autoIntroGoal { ctx := goal.ctx, target := goal.target }
+            pure (introNames, goal')
           else
-            throwErrorAt newTarget.raw (String.intercalate "\n" [
-              "native tactic `change` cannot replace the current object goal",
+            match introsObjectGoal { ctx := goal.ctx, target := goal.target } rawNames with
+            | .ok goal' => pure (rawNames, goal')
+            | .error err => throwErrorAt stx err
+        pure (#[{ stx, step := .intros introNames }],
+          #[{ ctx := goal'.ctx, target := goal'.target }])
+    | `(tactic| exact $proof:term) =>
+        let proofExpr ← withRef proof.raw <|
+          elabInternalNativeQuotedTerm target sig goal.ctx (some goal.target) proof
+        let proofExpr ← checkInternalNativeProofTerm target sig goal.ctx goal.target proofExpr
+          "exact" proof.raw
+        pure (#[{ stx, step := .exact proofExpr }], #[])
+    | `(tactic| refine $proof:term) =>
+        let arg ← elabInternalNativeTacticArgSyntax target sig goal.ctx proof.raw
+        match arg with
+        | .app rawName args =>
+            let (plan, newGoals) ← mkInternalNativeRefinePlan target sig levels goal rawName
+              args proof.raw
+            pure (#[{ stx, step := .applyPlan plan }], newGoals)
+        | .expr proofExpr =>
+            let proofExpr ← checkInternalNativeProofTerm target sig goal.ctx goal.target proofExpr
+              "refine" proof.raw
+            pure (#[{ stx, step := .exact proofExpr }], #[])
+        | .inferPlaceholder | .refineHole =>
+            throwErrorAt proof.raw "native tactic `refine` needs a proof term or an application \
+              headed by an object rule, theorem, or declaration"
+    | `(tactic| assumption) =>
+        let some _ := findAssumption? sig levels goal.ctx goal.target
+          | throwErrorAt stx (String.intercalate "\n" [
+              "native tactic `assumption` failed for object goal",
               s!"  {diagnosticObjExprString goal.target}",
-              s!"with\n  {diagnosticObjExprString newTargetExpr}",
               "",
-              "The endpoints are not judgmentally convertible in the active object theory.",
-              "This tactic checks object conversion evidence; it does not use Lean equality or \
-                an internal equality proof.",
-              "",
-              s!"conversion failure: {err}",
-              "",
-              objectGoalNormalizationMismatchString sig goal.ctx goal.target newTargetExpr])
-  | `(tactic| have $name:ident : $typeTerm:term := $proofTerm:term) =>
-      if proofTerm.raw.isOfKind `Lean.Parser.Term.byTactic then
-        throwErrorAt proofTerm.raw "tactic-form `have ... := by` in InternalLean native tactic \
-          mode is implemented in Phase 9c; use term-form `have h : T := proof` for now"
-      if internalObjectContextHasName goal.ctx name.getId then
-        throwErrorAt name.raw "native tactic `have {name.getId}` failed: local name \
-          '{name.getId}' is already in the object context"
-      let typeExpr ← withRef typeTerm.raw <|
-        elabInternalNativeQuotedTerm target sig goal.ctx none typeTerm
-      let proofExpr ← withRef proofTerm.raw <|
-        elabInternalNativeQuotedTerm target sig goal.ctx (some typeExpr) proofTerm
-      let proofExpr ← checkInternalNativeProofTerm target sig goal.ctx typeExpr proofExpr
-        "have" proofTerm.raw
-      let goal' := {
-        ctx := goal.ctx.push { name := name.getId, typeExpr, visibility := .explicit }
-        target := goal.target }
-      pure ({ stx, step := .haveTerm name.getId typeExpr proofExpr }, #[goal'])
-  | `(tactic| apply $candidate:term) =>
-      let some rawName := internalNativeApplyTermName? candidate
-        | throwErrorAt candidate.raw "native tactic `apply` expects an object rule, theorem, or \
-          declaration name"
-      let (plan, newGoals) ← mkInternalNativeApplyPlan target sig goal rawName stx
-      pure ({ stx, step := .applyPlan plan }, newGoals)
-  | _ => unsupported
+              "Available object hypotheses:",
+              renderInternalObjectContext goal.ctx])
+        pure (#[{ stx, step := .assumption }], #[])
+    | `(tactic| show $newTarget:term) =>
+        let newTargetExpr ← withRef newTarget.raw <|
+          elabInternalNativeQuotedTerm target sig goal.ctx none newTarget
+        unless objectGoalsConvertible sig levels goal.ctx goal.target newTargetExpr do
+          throwErrorAt newTarget.raw (String.intercalate "\n" [
+            "native tactic `show` cannot replace the current object goal",
+            s!"  {diagnosticObjExprString goal.target}",
+            "with non-convertible/non-identical object goal",
+            s!"  {diagnosticObjExprString newTargetExpr}",
+            "",
+            "This is object judgmental conversion, not Lean equality."])
+        pure (#[{ stx, step := .showGoal newTargetExpr }],
+          #[{ goal with target := newTargetExpr }])
+    | `(tactic| change $newTarget:term) =>
+        let newTargetExpr ← withRef newTarget.raw <|
+          elabInternalNativeQuotedTerm target sig goal.ctx none newTarget
+        match objectGoalConversionCheck sig levels goal.ctx goal.target newTargetExpr with
+        | .ok _ =>
+            pure (#[{ stx, step := .changeGoal newTargetExpr }],
+              #[{ goal with target := newTargetExpr }])
+        | .error err =>
+            if objectGoalsConvertible sig levels goal.ctx goal.target newTargetExpr then
+              pure (#[{ stx, step := .changeGoal newTargetExpr }],
+                #[{ goal with target := newTargetExpr }])
+            else
+              throwErrorAt newTarget.raw (String.intercalate "\n" [
+                "native tactic `change` cannot replace the current object goal",
+                s!"  {diagnosticObjExprString goal.target}",
+                s!"with\n  {diagnosticObjExprString newTargetExpr}",
+                "",
+                "The endpoints are not judgmentally convertible in the active object theory.",
+                "This tactic checks object conversion evidence; it does not use Lean equality or \
+                  an internal equality proof.",
+                "",
+                s!"conversion failure: {err}",
+                "",
+                objectGoalNormalizationMismatchString sig goal.ctx goal.target newTargetExpr])
+    | `(tactic| have $name:ident : $typeTerm:term := $proofTerm:term) =>
+        if internalObjectContextHasName goal.ctx name.getId then
+          throwErrorAt name.raw "native tactic `have {name.getId}` failed: local name \
+            '{name.getId}' is already in the object context"
+        let typeExpr ← withRef typeTerm.raw <|
+          elabInternalNativeQuotedTerm target sig goal.ctx none typeTerm
+        let goal' := {
+          ctx := goal.ctx.push { name := name.getId, typeExpr, visibility := .explicit }
+          target := goal.target }
+        if let some proofSteps := internalNativeLeanBySteps? proofTerm.raw then
+          let (proofResolved, proofGoals) ← elabInternalNativeResolvedStepsForGoals target sig
+            levels [{ ctx := goal.ctx, target := typeExpr }] proofSteps
+          unless proofGoals.isEmpty do
+            throwErrorAt proofTerm.raw
+              "tactic-form `have ... := by` left unsolved object goal(s)"
+          pure (#[]
+            |>.push { stx, step := .haveStart name.getId typeExpr }
+            |>.push { stx := proofTerm.raw, step := .focus proofResolved }, #[goal'])
+        else
+          let proofExpr ← withRef proofTerm.raw <|
+            elabInternalNativeQuotedTerm target sig goal.ctx (some typeExpr) proofTerm
+          let proofExpr ← checkInternalNativeProofTerm target sig goal.ctx typeExpr proofExpr
+            "have" proofTerm.raw
+          pure (#[{ stx, step := .haveTerm name.getId typeExpr proofExpr }], #[goal'])
+    | `(tactic| apply $candidate:term) =>
+        let some rawName := internalNativeApplyTermName? candidate
+          | throwErrorAt candidate.raw "native tactic `apply` expects an object rule, theorem, \
+            or declaration name"
+        let (plan, newGoals) ← mkInternalNativeApplyPlan target sig goal rawName stx
+        pure (#[{ stx, step := .applyPlan plan }], newGoals)
+    | _ => unsupported
+
+  /-- Pre-elaborate native tactic steps from an explicit object-goal list. -/
+  partial def elabInternalNativeResolvedStepsForGoals (target : InternalDefTarget)
+      (sig : HLSignature) (levels : Array Name) (initialGoals : List InternalNativePreElabGoal)
+      (steps : Array Syntax) :
+      CommandElabM (Array InternalNativeResolvedStep × List InternalNativePreElabGoal) := do
+    let mut goals := initialGoals
+    let mut out := #[]
+    for stx in steps do
+      let some goal := goals.head?
+        | throwErrorAt stx "no remaining InternalLean native goals"
+      let (resolved, newGoals) ← elabInternalNativeResolvedStep target sig levels goal stx
+      out := out ++ resolved
+      goals := newGoals.toList ++ goals.tail
+    pure (out, goals)
+end
 
 /-- Pre-elaborate a native tactic block. -/
 def elabInternalNativeResolvedSteps (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (targetExpr : ObjExpr)
     (steps : Array Syntax) : CommandElabM (Array InternalNativeResolvedStep) := do
-  let mut goals : List InternalNativePreElabGoal := [{ ctx, target := targetExpr }]
-  let mut out := #[]
-  for stx in steps do
-    let some goal := goals.head?
-      | throwErrorAt stx "no remaining InternalLean native goals"
-    let (step, newGoals) ← elabInternalNativeResolvedStep target sig levels goal stx
-    out := out.push step
-    goals := newGoals.toList ++ goals.tail
-  pure out
+  let (resolved, _) ← elabInternalNativeResolvedStepsForGoals target sig levels
+    [{ ctx, target := targetExpr }] steps
+  pure resolved
 
 /-- Run a native tactic block and return its finalized LF proof/body term. -/
 def elabInternalNativeByTerm (target : InternalDefTarget) (sig : HLSignature)
