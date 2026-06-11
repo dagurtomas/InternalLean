@@ -41,31 +41,30 @@ internal def tooManyArgs : Hom o o := idm _ _
 end Phase2HoleSmoke
 
 /--
-error: LF opaque constant declaration 'pair' uses reserved name 'pair', which is reserved by the
-kernel encoding. Reserved kernel names: lam, _app, pair, fst, snd, arrow, sigma, Type, jeq,
-__implicitArg
+error: LF opaque constant declaration 'fst' uses reserved name 'fst', which is reserved by
+InternalLean syntax. Reserved LF names: fst, snd, Type
 -/
 #guard_msgs (whitespace := lax) in
 declare_type_theory Phase2FailedTheory where
   syntax_sort Obj
-  lf_opaque pair : Obj
+  lf_opaque «fst» : Obj
 
 /--
-error: type theory 'Phase2FailedTheory' failed to declare (see the earlier error at line 49,
+error: type theory 'Phase2FailedTheory' failed to declare (see the earlier error at line 48,
 column 20)
 -/
 #guard_msgs (whitespace := lax) in
 #check_type_theory Phase2FailedTheory
 
 /--
-error: type theory 'Phase2FailedTheory' failed to declare (see the earlier error at line 49,
+error: type theory 'Phase2FailedTheory' failed to declare (see the earlier error at line 48,
 column 20)
 -/
 #guard_msgs (whitespace := lax) in
 #check_theory Phase2FailedTheory
 
 /--
-error: type theory 'Phase2FailedTheory' failed to declare (see the earlier error at line 49,
+error: type theory 'Phase2FailedTheory' failed to declare (see the earlier error at line 48,
 column 20)
 -/
 #guard_msgs (whitespace := lax) in
@@ -164,26 +163,25 @@ internal def badThm : Good o := missing
 end Phase2SinglePathSmoke
 
 /--
-error: LF opaque constant declaration 'pair' uses reserved name 'pair', which is reserved by the
-kernel encoding. Reserved kernel names: lam, _app, pair, fst, snd, arrow, sigma, Type, jeq,
-__implicitArg
+error: LF opaque constant declaration 'fst' uses reserved name 'fst', which is reserved by
+InternalLean syntax. Reserved LF names: fst, snd, Type
 -/
 #guard_msgs (whitespace := lax) in
 set_option internalLean.requireLeanQuotedTheoryBlocks true in
 declare_type_theory Phase2StrictQuotedFailedTheory where
   syntax_sort Obj
-  lf_opaque pair : Obj
+  lf_opaque «fst» : Obj
 
 /--
 error: type theory 'Phase2StrictQuotedFailedTheory' failed to declare (see the earlier error at
-line 173, column 20)
+line 171, column 20)
 -/
 #guard_msgs (whitespace := lax) in
 #check_theory Phase2StrictQuotedFailedTheory
 
 /--
 error: type theory 'Phase2StrictQuotedFailedTheory' failed to declare (see the earlier error at
-line 173, column 20)
+line 171, column 20)
 -/
 #guard_msgs (whitespace := lax) in
 internal def Phase2StrictQuotedFailedTheory.a : Obj := o

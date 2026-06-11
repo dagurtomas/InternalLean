@@ -139,11 +139,11 @@ partial def substParams (σ : NameMap LevelExpr) : LevelExpr → LevelExpr
 end LevelExpr
 
 
-/-- LF head names reserved for the current raw-kernel structural encoding. -/
+/-- LF head names that still collide with surface grammar tokens after the structural cutover. -/
 public def lfKernelReservedNameList : List Name :=
-  [`lam, `_app, `pair, `fst, `snd, `arrow, `sigma, `Type, `jeq, `__implicitArg]
+  [`fst, `snd, `Type]
 
-/-- Set of LF head names reserved for the current raw-kernel structural encoding. -/
+/-- Set of LF head names that still collide with surface grammar tokens. -/
 public def lfKernelReservedNames : NameSet :=
   lfKernelReservedNameList.foldl (init := {}) fun names n => names.insert n
 
@@ -151,11 +151,11 @@ public def lfKernelReservedNames : NameSet :=
 public def lfKernelReservedNamesString : String :=
   String.intercalate ", " (lfKernelReservedNameList.map (fun n => toString n))
 
-/-- Whether a user LF declaration name is reserved by the raw-kernel encoding. -/
+/-- Whether a user LF declaration name is still reserved by surface grammar. -/
 public def isLFKernelReservedName (n : Name) : Bool :=
   lfKernelReservedNames.contains n.eraseMacroScopes
 
-/-- Shared user-facing diagnostic for a kernel-reserved LF declaration name. -/
+/-- Shared user-facing diagnostic for a surface-reserved LF declaration name. -/
 public def lfKernelReservedNameError (kind : String) (rawName : Name) : String :=
   let n := rawName.eraseMacroScopes
   let label :=
@@ -163,8 +163,8 @@ public def lfKernelReservedNameError (kind : String) (rawName : Name) : String :
       kind
     else
       s!"{kind} declaration"
-  s!"{label} '{rawName}' uses reserved name '{n}', which is reserved by the kernel encoding. \
-    Reserved kernel names: {lfKernelReservedNamesString}"
+  s!"{label} '{rawName}' uses reserved name '{n}', which is reserved by InternalLean syntax. \
+    Reserved LF names: {lfKernelReservedNamesString}"
 
 /-- A small universe-polymorphic equivalence type used by generated structural model
 equivalence interfaces. InternalLean avoids depending on an external `Equiv` definition here so
@@ -1848,7 +1848,7 @@ def conversionPluginsByName (sig : Signature) (pluginName : Name) : List Convers
 def findConversionPlugin? (sig : Signature) (pluginName : Name) : Option ConversionPluginSchema :=
   (sig.conversionPluginsByName pluginName).head?
 
-/-- Validate that kernel-facing constants and rules do not shadow structural raw encodings. -/
+/-- Validate that kernel-facing constants and rules do not use reserved surface names. -/
 def validateNoKernelReservedNames (sig : Signature) : Except String Unit := do
   for c in sig.constants do
     if isLFKernelReservedName c.name then

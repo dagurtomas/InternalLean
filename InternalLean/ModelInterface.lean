@@ -1746,7 +1746,7 @@ def lfJudgmentTheoremObligationStatus (checked : CheckedSignature) (t : CheckedL
   let sidePredicateNames := lfSideConditionPredicateNames checked
   if t.derivation?.isNone then
     (.omitted, false, some "no checked derivation tree")
-  else if t.checkedKernelDerivation?.isNone then
+  else if !t.hasCheckedKernelReplay then
     (.omitted, false, some "no checked kernel replay artifact")
   else if t.binders.any (fun b =>
       !lfExprRenderableInModel defValues blockingUntyped sidePredicateNames b.checkedTypeExpr) then

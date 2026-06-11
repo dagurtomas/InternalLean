@@ -654,7 +654,7 @@ end
 /-- Render a checked LF theorem as a Lean definition in a generated derivation family. -/
 def renderRuleInductionTheoremWitness (checked : CheckedSignature) (targets : Array Name)
     (t : CheckedLFJudgmentTheorem) : Except String String := do
-  unless t.checkedKernelDerivation?.isSome do
+  unless t.hasCheckedKernelReplay do
     throw s!"judgment_theorem '{t.name}' does not have a checked kernel replay artifact"
   let some derivation := t.derivation?
     | throw s!"judgment_theorem '{t.name}' does not have a shallow checked derivation"
@@ -1844,17 +1844,25 @@ elab "#print_logical_framework_definitions " nm:ident : command => do
         [{premiseProofs}] certificates [{certs}]"
     if let some derivation := t.derivation? then
       logInfo m!"  derivation: {replayAuditCheckedLFDerivationString derivation}"
+    if let some derivation := t.structuralKernelDerivation? then
+      logInfo m!"  structural kernel replay: {replayAuditStructuralDerivationString derivation}"
     if let some derivation := t.kernelDerivation? then
-      logInfo m!"  kernel replay: {replayAuditDerivationString derivation}"
-      match t.checkedKernelDerivation? with
-      | some checkedReplay =>
-          match checkedReplay.check with
-          | .ok () =>
-              logInfo m!"  checked kernel replay wrapper: eligible"
-          | .error err =>
-              logInfo m!"  checked kernel replay wrapper: ineligible: {err}"
-      | none =>
-          logInfo m!"  checked kernel replay wrapper: unavailable"
+      logInfo m!"  legacy raw kernel replay: {replayAuditDerivationString derivation}"
+    match t.checkedStructuralKernelDerivation?, t.checkedKernelDerivation? with
+    | some checkedReplay, _ =>
+        match checkedReplay.check with
+        | .ok () =>
+            logInfo m!"  checked structural kernel replay wrapper: eligible"
+        | .error err =>
+            logInfo m!"  checked structural kernel replay wrapper: ineligible: {err}"
+    | none, some checkedReplay =>
+        match checkedReplay.check with
+        | .ok () =>
+            logInfo m!"  checked legacy raw kernel replay wrapper: eligible"
+        | .error err =>
+            logInfo m!"  checked legacy raw kernel replay wrapper: ineligible: {err}"
+    | none, none =>
+        logInfo m!"  checked kernel replay wrapper: unavailable"
 
 /-- Print Phase-3 LF side-condition hook registry and produced certificates. -/
 elab "#print_logical_framework_side_condition_hooks " nm:ident : command => do

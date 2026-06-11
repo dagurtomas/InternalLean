@@ -8,12 +8,12 @@ module
 public import InternalLean.Basic
 
 /-!
-# Parallel structural LF kernel prototype
+# Structural LF kernel
 
-This module contains the Phase-5b structural kernel that runs beside the existing raw kernel.
-It uses first-class constructors for binders, applications, structural products/functions,
-universes, and judgmental equality.  The old raw kernel remains authoritative during Phase 5b;
-this module is used for opt-in dual replay comparison.
+This module contains InternalLean's structural LF replay kernel. It uses first-class constructors
+for binders, applications, structural products/functions, universes, and judgmental equality.
+During the Phase-5c cutover, replay registration checks direct checked-LF-to-structural lowering
+while legacy raw replay APIs remain as compatibility scaffolding.
 -/
 
 @[expose] public section
@@ -24,7 +24,7 @@ namespace InternalLean
 
 register_option internalLean.kernel.dualReplay : Bool := {
   defValue := false
-  descr := "also replay checked LF kernel certificates through the Phase-5b structural kernel"
+  descr := "run the structural-kernel replay disagreement probe during checked LF replay"
 }
 
 namespace Kernel

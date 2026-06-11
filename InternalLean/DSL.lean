@@ -8,6 +8,7 @@ module
 public import Lean.Exception
 public import Lean.Message
 public import InternalLean.Basic
+public import InternalLean.Kernel
 public meta import InternalLean.Basic
 
 /-!
@@ -1073,7 +1074,19 @@ structure CheckedLFJudgmentTheorem where
   kernelDerivation? : Option KernelLFDerivation := none
   /-- Checked kernel-facing replay artifact accepted during signature registration. -/
   checkedKernelDerivation? : Option CheckedKernelLFDerivation := none
+  /-- Structural-kernel replay artifact lowered directly from the checked LF derivation. -/
+  structuralKernelDerivation? : Option Kernel.KernelLFDerivation := none
+  /-- Checked structural-kernel replay artifact accepted during signature registration. -/
+  checkedStructuralKernelDerivation? : Option Kernel.CheckedKernelLFDerivation := none
   deriving Inhabited, Repr, BEq
+
+namespace CheckedLFJudgmentTheorem
+
+/-- Whether this theorem has a checked replay artifact at the current kernel boundary. -/
+def hasCheckedKernelReplay (t : CheckedLFJudgmentTheorem) : Bool :=
+  t.checkedStructuralKernelDerivation?.isSome || t.checkedKernelDerivation?.isSome
+
+end CheckedLFJudgmentTheorem
 
 /-- A checked LF rule metadata artifact.
 

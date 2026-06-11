@@ -9,11 +9,10 @@ public import InternalLean.Command
 public import InternalLean.LFElab.Kernel
 
 /-!
-# Phase-5b structural kernel dual-replay smoke tests
+# Structural kernel replay smoke tests
 
-The structural kernel is opt-in during Phase 5b. These tests keep the option default off,
-exercise checked-LF-expression lowering to `KTerm`, and run a small checked theorem with dual
-replay enabled.
+These tests keep the legacy `dualReplay` disagreement option default off, exercise checked-LF
+expression lowering to `KTerm`, and run small checked theories through structural replay.
 -/
 
 @[expose] public section
@@ -194,6 +193,23 @@ run_cmd do
 #check Kernel.KernelLFDerivation.ContextDeriv.interp
 
 set_option internalLean.kernel.dualReplay true
+
+run_cmd do
+  let kn (n : Name) := Kernel.KName.ofName n
+  let stmt : Kernel.Judgment := { head := kn `J }
+  let badStmt : Kernel.Judgment := { head := kn `K }
+  let sig : Kernel.Signature := {
+    name := kn `StructuralDivergenceSmoke
+    rules := [{ name := kn `intro, conclusionStmt := stmt }] }
+  let badDeriv := Kernel.KernelLFDerivation.ruleApp (kn `intro) badStmt {} [] []
+  let mut rejected := false
+  try
+    Lean.Elab.Command.liftCoreM <|
+      validateStructuralKernelDualReplay "deliberate divergence" sig {} stmt badDeriv
+  catch _ =>
+    rejected := true
+  unless rejected do
+    throwError "structural dual-replay divergence branch did not fire"
 
 declare_type_theory KernelDualReplaySmoke where
   syntax_sort Obj

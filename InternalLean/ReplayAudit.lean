@@ -200,6 +200,66 @@ partial def kernelLFDerivationSourceStringWithDepth : Nat → KernelLFDerivation
         s!"premises [{String.intercalate "; " (premiseText ++ morePremises)}]; " ++
         s!"certificates [{String.intercalate ", " certText}]"
 
+/-- Source-ish rendering for structural kernel terms. -/
+partial def structuralKTermSourceStringWithDepth : Nat → Kernel.KTerm → String
+  | 0, _ => "..."
+  | _ + 1, .ident h => lfReplayNameString h.name.raw
+  | _ + 1, .fvar name => lfReplayNameString name.raw
+  | _ + 1, .bvar idx => s!"#{idx}"
+  | _ + 1, .mvar name _ => s!"?{lfReplayNameString name.raw}"
+  | depth + 1, .app f a =>
+      s!"({structuralKTermSourceStringWithDepth depth f} " ++
+        s!"{structuralKTermSourceStringWithDepth depth a})"
+  | depth + 1, .lam body => s!"(fun => {structuralKTermSourceStringWithDepth depth body})"
+  | depth + 1, .arrow A B =>
+      s!"({structuralKTermSourceStringWithDepth depth A} ⇒ " ++
+        s!"{structuralKTermSourceStringWithDepth depth B})"
+  | depth + 1, .sigma A B =>
+      s!"(Σ _ : {structuralKTermSourceStringWithDepth depth A}, " ++
+        s!"{structuralKTermSourceStringWithDepth depth B})"
+  | depth + 1, .pair a b =>
+      s!"⟨{structuralKTermSourceStringWithDepth depth a}, " ++
+        s!"{structuralKTermSourceStringWithDepth depth b}⟩"
+  | depth + 1, .fst e => s!"(fst {structuralKTermSourceStringWithDepth depth e})"
+  | depth + 1, .snd e => s!"(snd {structuralKTermSourceStringWithDepth depth e})"
+  | _ + 1, .univ u => s!"Type {u}"
+  | depth + 1, .jeq lhs rhs =>
+      s!"({structuralKTermSourceStringWithDepth depth lhs} ≡ " ++
+        s!"{structuralKTermSourceStringWithDepth depth rhs})"
+
+/-- Source-ish rendering for structural kernel judgments. -/
+def structuralJudgmentSourceStringWithDepth (depth : Nat) (j : Kernel.Judgment) : String :=
+  let head := lfReplayNameString j.head.raw
+  match j.args with
+  | [] => head
+  | args => s!"({String.intercalate " " (head :: args.map
+      (structuralKTermSourceStringWithDepth depth))})"
+
+/-- Compact source-ish structural replay-tree rendering with a depth and size budget. -/
+partial def structuralKernelLFDerivationSourceStringWithDepth : Nat →
+    Kernel.KernelLFDerivation → String
+  | 0, _ => "..."
+  | depth + 1, .assumption name stmt =>
+      s!"assumption {lfReplayNameString name.raw} : " ++
+        s!"{structuralJudgmentSourceStringWithDepth depth stmt}"
+  | depth + 1, .theoremRef name stmt =>
+      s!"theorem {lfReplayNameString name.raw} : " ++
+        s!"{structuralJudgmentSourceStringWithDepth depth stmt}"
+  | depth + 1, .certificate name stmt cert =>
+      s!"certificate {lfReplayNameString name.raw} via {lfReplayNameString cert.raw} : " ++
+        s!"{structuralJudgmentSourceStringWithDepth depth stmt}"
+  | depth + 1, .ruleApp ruleName concl inst premises certs =>
+      let entryNames := inst.entries.map (fun e => lfReplayNameString e.name.raw)
+      let premiseText := premises.take 3 |>.map
+        (structuralKernelLFDerivationSourceStringWithDepth depth)
+      let morePremises := if premises.length > 3 then [s!"... +{premises.length - 3} more"] else []
+      let certText := certs.map (fun c => lfReplayNameString c.raw)
+      s!"rule {lfReplayNameString ruleName.raw} : " ++
+        s!"{structuralJudgmentSourceStringWithDepth depth concl}; " ++
+        s!"inst [{String.intercalate ", " entryNames}]; " ++
+        s!"premises [{String.intercalate "; " (premiseText ++ morePremises)}]; " ++
+        s!"certificates [{String.intercalate ", " certText}]"
+
 /-- Source-ish rendering for resolved checked LF expressions. -/
 partial def checkedLFExprSourceStringWithDepth : Nat → CheckedLFExpr → String
   | 0, _ => "..."
@@ -270,6 +330,14 @@ def replayAuditCheckedLFDerivationString (derivation : CheckedLFDerivation) : St
 /-- Default source-ish derivation rendering for replay-audit summaries. -/
 def replayAuditDerivationString (derivation : KernelLFDerivation) : String :=
   truncateDiagnosticString 1200 (kernelLFDerivationSourceStringWithDepth 5 derivation)
+
+/-- Default source-ish structural target rendering for replay-audit summaries. -/
+def replayAuditStructuralTargetString (stmt : Kernel.Judgment) : String :=
+  truncateDiagnosticString 600 (structuralJudgmentSourceStringWithDepth 6 stmt)
+
+/-- Default source-ish structural derivation rendering for replay-audit summaries. -/
+def replayAuditStructuralDerivationString (derivation : Kernel.KernelLFDerivation) : String :=
+  truncateDiagnosticString 1200 (structuralKernelLFDerivationSourceStringWithDepth 5 derivation)
 
 /-- Kernel-facing signature fragment for a compact replay certificate. -/
 def kernelLFReplayCertificateSignature (checked : CheckedSignature)

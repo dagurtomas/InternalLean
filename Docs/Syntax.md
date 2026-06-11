@@ -90,8 +90,10 @@ Notes:
 - `fun x => body` builds an internal lambda.
 - `A × B` and `Σ x : A, B` are structural product/record type expressions.
 - `⟨a, b⟩`, `fst p`, and `snd p` build and project structural record values. The tokens
-  `fst` and `snd` are reserved structural projection syntax, so they cannot be used as declaration
-  names. Use a different LF head name such as `first` or `second` when declaring projections.
+  `fst`, `snd`, and `Type` are surface syntax, so they cannot be used as declaration names unless
+  Lean accepts an escaped identifier and InternalLean then rejects it. Former raw-kernel names such
+  as `lam`, `_app`, `pair`, `arrow`, `sigma`, and `jeq` are ordinary LF head names after the
+  structural-kernel cutover.
 - `lhs ≡ rhs` is internal syntax for judgmental-equality-shaped expressions.
 - `{x := value}` is an explicit implicit-argument marker used by the LF elaborator.
 

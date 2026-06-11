@@ -29,14 +29,18 @@ checker, store declarations, and generate model code.
 
 ### 1. Kernel and LF layer
 
-Main file:
+Main files:
 
 - `InternalLean/Basic.lean`
+- `InternalLean/Kernel.lean`
 
 This layer contains the low-level representation of LF syntax, judgments, signatures, derivations,
-and certificate checking. It is responsible for generic trust-boundary concerns such as:
+and certificate checking. The checked replay boundary now uses first-class structural kernel terms
+for binders, products, functions, universes, and equality-shaped expressions, so former raw-kernel
+constructor names are ordinary LF heads. It is responsible for generic trust-boundary concerns such
+as:
 
-- raw syntax and checked judgments;
+- structural LF terms and checked judgments;
 - rule schemas and derivations;
 - scoped instantiation;
 - binder and context-zone validation;
@@ -127,7 +131,7 @@ The main trusted leaves are explicit:
 - opaque LF constants declared by the user;
 - admitted internal declarations;
 - side-condition solvers or certificates without checked hooks;
-- low-level raw replay payload constructors.
+- declared external conversion certificates.
 
 Everything else should be pushed toward checked LF rules, checked certificates, generated model
 obligations, or checked replay wrappers at public API boundaries.
@@ -136,9 +140,10 @@ obligations, or checked replay wrappers at public API boundaries.
 
 ### Extrinsic syntax
 
-Raw internal syntax may be ill-formed. Checked derivations certify judgments about raw syntax. This
-keeps the framework flexible enough for many declared type theories and makes the checking boundary
-explicit.
+Internal syntax is extrinsic: a term can be represented before the declared type theory has proved
+that it has a particular judgment. Checked derivations certify judgments about structural kernel
+terms. This keeps the framework flexible enough for many declared type theories and makes the
+checking boundary explicit.
 
 ### Internal reasoning belongs to the declared type theory
 
@@ -183,7 +188,8 @@ For detailed implementation checklists, see `.agents/docs/InternalLeanDevelopmen
 Useful entry points for reading the code:
 
 - `InternalLean/Command.lean` — public command aggregator.
-- `InternalLean/Basic.lean` — low-level LF syntax, signatures, derivations, and checking.
+- `InternalLean/Basic.lean` — shared low-level LF vocabulary and compatibility utilities.
+- `InternalLean/Kernel.lean` — structural LF terms, signatures, derivations, and checking.
 - `InternalLean/DSL.lean` — high-level declaration data and metadata structures.
 - `InternalLean/LFElab.lean` — LF declaration elaboration and metadata validation.
 - `InternalLean/Registration.lean` — theory and internal-declaration registration.

@@ -8,10 +8,11 @@ module
 public import InternalLean.Command
 
 /-!
-# Kernel-reserved LF names
+# Surface-reserved LF names
 
-These regressions keep the current raw-kernel structural encodings from being shadowed by user
-LF head declarations.
+After the structural-kernel cutover, former raw-kernel constructor names such as `lam`, `pair`,
+`arrow`, `sigma`, and `jeq` are ordinary LF heads. Only names that still collide with the surface
+syntax remain reserved.
 -/
 
 @[expose] public section
@@ -19,28 +20,57 @@ LF head declarations.
 open InternalLean
 
 /--
-error: LF opaque constant declaration 'pair' uses reserved name 'pair', which is reserved by the
-kernel encoding. Reserved kernel names: lam, _app, pair, fst, snd, arrow, sigma, Type, jeq,
-__implicitArg
+error: LF opaque constant declaration 'fst' uses reserved name 'fst', which is reserved by
+InternalLean syntax. Reserved LF names: fst, snd, Type
 -/
 #guard_msgs (whitespace := lax) in
-declare_type_theory ReservedPairSmoke where
+declare_type_theory ReservedFstSmoke where
   syntax_sort Obj
   lf_opaque o : Obj
-  lf_opaque pair (x : Obj) (y : Obj) : Obj
+  lf_opaque «fst» (x : Obj) : Obj
 
 /--
-error: LF opaque constant declaration 'lam' uses reserved name 'lam', which is reserved by the
-kernel encoding. Reserved kernel names: lam, _app, pair, fst, snd, arrow, sigma, Type, jeq,
-__implicitArg
+error: LF opaque constant declaration 'Type' uses reserved name 'Type', which is reserved by
+InternalLean syntax. Reserved LF names: fst, snd, Type
 -/
 #guard_msgs (whitespace := lax) in
-declare_type_theory ReservedLamSmoke where
+declare_type_theory ReservedTypeSmoke where
   syntax_sort Obj
   lf_opaque o : Obj
-  lf_opaque lam (x : Obj) (y : Obj) : Obj
-  judgment Good (z : Obj)
-  rule mk_good (x : Obj) (y : Obj) : Good (lam x y)
+  lf_opaque «Type» (x : Obj) : Obj
+
+/-- Former raw-kernel constructor names are now ordinary LF heads. -/
+declare_type_theory FormerReservedPositiveSmoke where
+  syntax_sort Obj
+  lf_opaque o : Obj
+  lf_opaque lam (x : Obj) : Obj
+  lf_opaque _app (x : Obj) : Obj
+  lf_opaque pair (x : Obj) (y : Obj) : Obj
+  lf_opaque arrow (x : Obj) (y : Obj) : Obj
+  lf_opaque sigma (x : Obj) (y : Obj) : Obj
+  lf_opaque jeq (x : Obj) (y : Obj) : Obj
+  judgment Good (x : Obj)
+  rule good_lam : Good (lam o)
+  rule good_app : Good (_app o)
+  rule good_pair : Good (pair o o)
+  rule good_arrow : Good (arrow o o)
+  rule good_sigma : Good (sigma o o)
+  rule good_jeq : Good (jeq o o)
+  judgment_theorem pair_good : Good (pair o o) := good_pair
+
+namespace FormerReservedPositiveSmoke
+
+internal def use_lam : Obj := lam o
+internal def use_pair : Obj := pair (arrow o o) (sigma o o)
+internal theorem pair_good_again : Good (pair o o) := good_pair
+
+end FormerReservedPositiveSmoke
+
+generate_model_interface FormerReservedPositiveSmoke as FormerReservedPositiveModel
+
+#check FormerReservedPositiveSmoke.FormerReservedPositiveModel.lam
+#check FormerReservedPositiveSmoke.FormerReservedPositiveModel.pair
+#check FormerReservedPositiveSmoke.FormerReservedPositiveModel.good_pair
 
 declare_type_theory ReservedExtensionBase where
   syntax_sort Obj
@@ -48,29 +78,21 @@ declare_type_theory ReservedExtensionBase where
   judgment Good (x : Obj)
 
 /--
-error: rule declaration 'jeq' uses reserved name 'jeq', which is reserved by the kernel encoding.
-Reserved kernel names: lam, _app, pair, fst, snd, arrow, sigma, Type, jeq, __implicitArg
+error: rule declaration 'snd' uses reserved name 'snd', which is reserved by InternalLean syntax.
+Reserved LF names: fst, snd, Type
 -/
 #guard_msgs (whitespace := lax) in
 extend_type_theory ReservedExtensionBase where
-  rule jeq : Good o
+  rule «snd» : Good o
 
 namespace ReservedExtensionBase
 
 /--
-error: internal declaration 'pair' uses reserved name 'pair', which is reserved by the kernel
-encoding. Reserved kernel names: lam, _app, pair, fst, snd, arrow, sigma, Type, jeq, __implicitArg
+error: internal declaration 'fst' uses reserved name 'fst', which is reserved by InternalLean
+syntax. Reserved LF names: fst, snd, Type
 -/
 #guard_msgs (whitespace := lax) in
-internal def pair : Obj := o
-
-/--
-error: internal declaration 'lam' uses reserved name 'lam', which is reserved by the kernel
-encoding. Reserved kernel names: lam, _app, pair, fst, snd, arrow, sigma, Type, jeq, __implicitArg
--/
-#guard_msgs (whitespace := lax) in
-internal_defs where
-  def lam : Obj := o
+internal def «fst» : Obj := o
 
 end ReservedExtensionBase
 
@@ -94,22 +116,22 @@ run_cmd do
   let badConstantSig : Signature := {
     name := `KernelReservedConstantSmoke
     constants := [{
-      name := `lam
+      name := `Type
       resultType := .tyConst `Obj }] }
   match CheckedKernelLFDerivation.ofReplay badConstantSig ctx stmt (.assumption `h stmt) with
   | .ok _ => throwError "reserved kernel constant was accepted by replay wrapper"
   | .error err =>
-      unless err.contains "kernel LF constant declaration 'lam' uses reserved name 'lam'" do
+      unless err.contains "kernel LF constant declaration 'Type' uses reserved name 'Type'" do
         throwError "unexpected reserved-constant error: {err}"
   let badRuleSig : Signature := {
     name := `KernelReservedRuleSmoke
     rules := [{
-      name := `jeq
+      name := `fst
       «conclusion» := stmt }] }
   match CheckedKernelLFDerivation.ofReplay badRuleSig ctx stmt (.assumption `h stmt) with
   | .ok _ => throwError "reserved kernel rule was accepted by replay wrapper"
   | .error err =>
-      unless err.contains "kernel LF rule declaration 'jeq' uses reserved name 'jeq'" do
+      unless err.contains "kernel LF rule declaration 'fst' uses reserved name 'fst'" do
         throwError "unexpected reserved-rule error: {err}"
   let conversionStmt : ConversionStatement := {
     plugin := `p
@@ -119,5 +141,5 @@ run_cmd do
       (.refl conversionStmt) with
   | .ok _ => throwError "reserved kernel constant was accepted by conversion wrapper"
   | .error err =>
-      unless err.contains "kernel LF constant declaration 'lam' uses reserved name 'lam'" do
+      unless err.contains "kernel LF constant declaration 'Type' uses reserved name 'Type'" do
         throwError "unexpected reserved-conversion error: {err}"
