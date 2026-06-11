@@ -4693,6 +4693,158 @@ def lfModelStructureSyntaxes (checked : CheckedSignature) (structureName : Name)
   let obs ← validateLFModelObligations checked admittedNames mode
   lfModelStructureSyntaxesFromObligations checked structureName obs
 
+/-- A generated structure-instance field for a syntactic mirror-backed model. -/
+abbrev LFSyntacticModelField := Syntax
+
+/-- Lambda binder used by generated syntactic mirror-backed model fields. -/
+structure LFSyntacticModelLambdaBinder where
+  /-- Local identifier used in the generated lambda. -/
+  ident : Ident
+  /-- Binder visibility expected by the generated field type. -/
+  visibility : BinderVisibility := .explicit
+
+/-- Build a generated lambda with explicit/implicit binders. -/
+def mkLFSyntacticModelLambda (binders : Array LFSyntacticModelLambdaBinder)
+    (body : TSyntax `term) : CommandElabM (TSyntax `term) := do
+  let mut result := body
+  for binder in binders.reverse do
+    match binder.visibility with
+    | .implicit => result ← `(term| fun {$binder.ident:ident} => $result)
+    | .explicit => result ← `(term| fun $binder.ident:ident => $result)
+  pure result
+
+/-- Term syntax for a generated declaration under the source theory's mirror namespace. -/
+def lfSyntacticModelMirrorConstTerm (theoryName sourceName : Name) : TSyntax `term :=
+  mkIdent (lfMirrorDeclName theoryName sourceName)
+
+/-- Term syntax for a side-condition predicate in the syntactic model.
+
+Side-condition predicates are inferred from untyped LF placeholders and are not represented by
+mirror declarations.  The syntactic instance interprets them as a trivial proof-relevant family;
+rule fields ignore the corresponding certificate arguments when applying the mirror rule axiom. -/
+def lfSyntacticModelSideConditionPredicateTerm (params : Array CheckedLFBinding) :
+    CommandElabM (TSyntax `term) := do
+  let mut locals : LFLocalSyntaxCtx := []
+  let mut binders : Array LFSyntacticModelLambdaBinder := #[]
+  for p in params do
+    let id := freshLFLocalIdent p.name locals
+    binders := binders.push { ident := id, visibility := p.visibility }
+    locals := (p.name, id) :: locals
+  mkLFSyntacticModelLambda binders (mkIdent ``PUnit)
+
+/-- Term syntax for a generated rule field in the syntactic model.
+
+The mirror rule axiom contains LF parameters and ordinary rule premises.  Generated model rule
+fields may also quantify over parameter-evidence and side-condition certificate arguments; those
+extra semantic certificates are ignored by this syntactic interpretation. -/
+def lfSyntacticModelRuleTerm (theoryName : Name) (o : LFModelObligation) :
+    CommandElabM (TSyntax `term) := do
+  let mut locals : LFLocalSyntaxCtx := []
+  let mut binders : Array LFSyntacticModelLambdaBinder := #[]
+  let mut args : Array (TSyntax `term) := #[]
+  for p in o.params do
+    let id := freshLFLocalIdent p.name locals
+    binders := binders.push { ident := id, visibility := p.visibility }
+    args := args.push (mkIdent id.getId)
+    locals := (p.name, id) :: locals
+  for p in o.premises do
+    let id := freshLFLocalIdent p.name locals
+    binders := binders.push { ident := id }
+    args := args.push (mkIdent id.getId)
+    locals := (p.name, id) :: locals
+  for e in o.paramEvidences do
+    let id := freshLFLocalIdent e.name locals
+    binders := binders.push { ident := id }
+    locals := (e.name, id) :: locals
+  for sc in o.sideConditions do
+    let id := freshLFLocalIdent sc.name locals
+    binders := binders.push { ident := id }
+    locals := (sc.name, id) :: locals
+  let head ← explicitLeanHeadSyntax (lfSyntacticModelMirrorConstTerm theoryName o.name)
+  let body ← mkTermAppSyntax head args
+  mkLFSyntacticModelLambda binders body
+
+/-- Right-hand side for one generated syntactic mirror-backed model field. -/
+def lfSyntacticModelFieldTerm (theoryName : Name) (o : LFModelObligation) :
+    CommandElabM (TSyntax `term) := do
+  match o.source with
+  | .syntaxSort | .judgment | .typedOpaque | .admittedOpaque =>
+      pure (lfSyntacticModelMirrorConstTerm theoryName o.name)
+  | .sideConditionPredicate =>
+      lfSyntacticModelSideConditionPredicateTerm o.params
+  | .rule =>
+      lfSyntacticModelRuleTerm theoryName o
+  | _ =>
+      throwError "cannot generate syntactic model field for non-field obligation '{o.name}' \
+        ({o.source.label})"
+
+/-- Generated structure-literal field for one syntactic mirror-backed model obligation. -/
+def lfSyntacticModelStructField (theoryName : Name) (o : LFModelObligation) :
+    CommandElabM LFSyntacticModelField := do
+  let some fieldName := o.generatedName?
+    | throwError "model obligation '{o.name}' has no generated field name"
+  let rhs ← lfSyntacticModelFieldTerm theoryName o
+  pure <| mkNode `Lean.Parser.Term.structInstField #[
+    mkNode `Lean.Parser.Term.structInstLVal #[mkIdent fieldName, mkNullNode #[]],
+    mkNullNode #[
+      mkNullNode #[],
+      mkNullNode #[],
+      mkNode `Lean.Parser.Term.structInstFieldDef #[
+        Syntax.atom SourceInfo.none ":=",
+        mkNullNode #[],
+        rhs.raw]]]
+
+/-- Structure-instance term syntax for generated syntactic mirror-backed model fields. -/
+def lfSyntacticModelStructInstTerm (fields : Array LFSyntacticModelField) : TSyntax `term :=
+  Id.run do
+    let mut elems : Array Syntax := #[]
+    for h : i in [:fields.size] do
+      if i > 0 then
+        elems := elems.push (Syntax.atom SourceInfo.none ",")
+      elems := elems.push fields[i]
+    return ⟨mkNode `Lean.Parser.Term.structInst #[
+      Syntax.atom SourceInfo.none "{",
+      mkNullNode #[],
+      mkNode `Lean.Parser.Term.structInstFields #[mkNullNode elems],
+      mkNode `Lean.Parser.Term.optEllipsis #[mkNullNode #[]],
+      mkNullNode #[],
+      Syntax.atom SourceInfo.none "}"]⟩
+
+/-- Syntax for `generate_syntactic_model_instance`.
+
+The generated instance witnesses that the generated obligation set is coherent modulo the mirror
+translation and its axioms; it is not a conservativity or adequacy proof. -/
+def lfSyntacticModelInstanceCommandSyntax (checked : CheckedSignature) (instanceName
+    structureName : Name) (admittedNames : NameSet := {}) : CommandElabM Syntax := do
+  let obs ← validateLFModelObligations checked admittedNames
+  let fields := obs.filter (fun o => o.generatedRole == .field && o.renderable)
+  let fieldStxs ← fields.mapM (lfSyntacticModelStructField checked.name)
+  let value := lfSyntacticModelStructInstTerm fieldStxs
+  let levelParams ← lfModelInterfaceLevelParams checked admittedNames
+  let levelIds := levelParams.map fun u =>
+    mkIdent (Name.mkSimple s!"{flatNameString u}_syntactic")
+  let instanceId := mkIdent instanceName
+  let structureId := mkIdent structureName
+  let modelTy ←
+    if levelIds.isEmpty then
+      pure (structureId : TSyntax `term)
+    else
+      `(term| $structureId:ident.{$[$levelIds:ident],*})
+  let cmd ←
+    if levelIds.isEmpty then
+      `(command| /-- Syntactic mirror-backed generated model instance.
+        This instance witnesses that the generated obligation set is coherent modulo the mirror
+        translation and its axioms; it is not a conservativity or adequacy proof. -/
+        noncomputable def $instanceId:ident : $modelTy:term := $value:term)
+    else
+      `(command| /-- Syntactic mirror-backed generated model instance.
+        This instance witnesses that the generated obligation set is coherent modulo the mirror
+        translation and its axioms; it is not a conservativity or adequacy proof. -/
+        noncomputable def $instanceId:ident.{$[$levelIds:ident],*} : $modelTy:term := $value:term)
+  let autoImplicitOpt := mkIdent `autoImplicit
+  let wrapped ← `(command| set_option $autoImplicitOpt:ident false in $cmd:command)
+  pure wrapped.raw
+
 /-- User-facing section assigned to a source LF declaration, if any. -/
 def lfModelSectionMap (checked : CheckedSignature) : NameMap Name := Id.run do
   let mut out : NameMap Name := {}

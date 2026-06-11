@@ -42,6 +42,8 @@ A small command sequence looks like this:
 #check_model_obligations TinyNat
 #print_model_interface TinyNat as TinyNatModel
 generate_model_interface TinyNat as TinyNatModel
+-- Optional coherence smoke test through the Lean mirror backend:
+generate_syntactic_model_instance TinyNat as tinyNatSyntactic for TinyNatModel
 
 #print_model_transport_status TinyNat for TinyNatModel
 #print_model_transport_signature TinyNat someTheorem for TinyNatModel
@@ -149,6 +151,29 @@ generate_public_model_interface T as M
 
 Use the public/minimal variants when you want an interface intended for public model authors rather
 than a full debug interface.
+
+## Syntactic mirror-backed model instances
+
+After generating a model interface, you can ask InternalLean to fill it with the theory's Lean
+mirror interpretation:
+
+```lean
+generate_model_interface T as M
+generate_syntactic_model_instance T as I for M
+#check T.I
+```
+
+The command generates `T.I : T.M`. Sort and judgment fields are filled by `T.LFMirror` type
+families, typed constants by mirror constants, and rule fields by wrappers around mirror rule
+axioms. If a model-facing obligation depends on a `sorry`-admitted internal declaration, the
+syntactic instance fills the temporary field with the corresponding opaque mirror constant, keeping
+that admission visible as an opaque mirror leaf.
+
+The instance witnesses that the generated obligation set is coherent modulo the mirror translation
+and its axioms; it is not a conservativity or adequacy proof. It is useful as a regression test for
+model-obligation generation and as a quick sanity check that a generated interface can be inhabited
+by the syntactic backend. Semantic models for applications should still provide their own field
+interpretations and use the transport commands below.
 
 ## Model templates
 

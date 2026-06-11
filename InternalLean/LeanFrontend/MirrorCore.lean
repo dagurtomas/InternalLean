@@ -728,10 +728,13 @@ def addLFMirrorPendingDecl (theoryName : Name) (levelParams : List Name)
         pure (type, value)
       addLFMirrorDefinitionIfMissing (lfMirrorDeclName theoryName d.name) levelParams type value
   | .lfOpaqueConst d =>
-      if let some typeExpr := d.typeExpr? then
-        let type ← MetaM.run' <| lfMirrorForallTypeWithLevels theoryName levelArgs d.params
-          (fun locals => lfMirrorExprWithLevels theoryName levelArgs locals typeExpr)
-        addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+      match d.typeExpr? with
+      | some typeExpr =>
+          let type ← MetaM.run' <| lfMirrorForallTypeWithLevels theoryName levelArgs d.params
+            (fun locals => lfMirrorExprWithLevels theoryName levelArgs locals typeExpr)
+          addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+      | none =>
+          return ()
   | .lfObjectDef d =>
       let (type, value) ← MetaM.run' do
         let type ← lfMirrorExprWithLevels theoryName levelArgs {} d.typeExpr

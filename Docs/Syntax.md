@@ -607,6 +607,7 @@ Model workflow commands:
 #print_public_model_interface T as M
 generate_model_interface T as M
 generate_public_model_interface T as M
+generate_syntactic_model_instance T as I for M
 #print_model_template T as M
 #print_public_model_template T as M
 #print_model_structural_equiv T for M
@@ -616,9 +617,12 @@ generate_public_model_structural_equiv T for M
 ```
 
 Generation commands must be run at the root namespace. Printing and checking commands are safe to
-use for inspection before generation. Model interfaces do not include structural equivalences by
-default; use `generate_model_structural_equiv T for M` when strict structure-preserving
-comparisons between completed models are useful. Syntax-sort fields use the declared result
+use for inspection before generation. `generate_syntactic_model_instance T as I for M` fills a
+generated interface from `T.LFMirror` as a coherence smoke test modulo mirror axioms. Model
+interfaces do not include structural equivalences by default; use
+`generate_model_structural_equiv T for M` when strict structure-preserving comparisons between
+completed models are useful.
+Syntax-sort fields use the declared result
 universe: unannotated sorts generate `S : Type`, while `syntax_sort S : Type u` generates
 `S : Type u`.
 

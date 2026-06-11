@@ -929,6 +929,27 @@ elab "generate_model_interface " theory:ident " as " structureName:ident : comma
   LeanTypeModelGeneration.addLFModelStructureFieldDocStringsFromObligations theory.getId
     structureName.getId obs ownerMap
 
+/-- Generate a syntactic mirror-backed model instance for a generated LF model interface.
+
+The generated instance witnesses that the generated obligation set is coherent modulo the mirror
+translation and its axioms; it is not a conservativity or adequacy proof. -/
+elab "generate_syntactic_model_instance " theory:ident " as " instanceName:ident " for "
+    structureName:ident : command => do
+  requireRootNamespaceForModelGeneration "generate_syntactic_model_instance"
+  let some checked ← liftCoreM <| getCheckedTheory? theory.getId
+    | throwError "no checked artifact stored for type theory '{theory.getId}'"
+  let structureFullName := theory.getId ++ structureName.getId
+  unless (← getEnv).contains structureFullName do
+    throwError "generated model interface '{structureFullName}' was not found; run \
+      `generate_model_interface {theory.getId} as {structureName.getId}` first"
+  liftCoreM <| ensureLFMirrorForTheory theory.getId
+  let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theory.getId
+  let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  let cmd ←
+    LeanTypeModelGeneration.lfSyntacticModelInstanceCommandSyntax checked instanceName.getId
+      structureName.getId admittedNames
+  elabGeneratedCommandSyntaxInTheoryNamespaceNoHeartbeats theory.getId cmd
+
 /-- Generate a public/minimal model interface using the LF workflow backend. -/
 elab "generate_public_model_interface " theory:ident " as " structureName:ident : command => do
   requireRootNamespaceForModelGeneration "generate_public_model_interface"

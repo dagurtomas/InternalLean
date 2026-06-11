@@ -209,6 +209,7 @@ Model workflow:
 #print_public_model_interface T as M
 generate_model_interface T as M
 generate_public_model_interface T as M
+generate_syntactic_model_instance T as I for M
 #print_model_template T as M
 #print_model_structural_equiv T for M
 generate_model_structural_equiv T for M
@@ -222,9 +223,11 @@ generate_model_transports T only f g h for M
 
 Run model-generation commands at the root namespace. `generate_model_interface` creates the model
 structure; use `#print_model_provenance` when you need to explain generated fields or omissions.
-Use `generate_model_structural_equiv` separately when a strict structure-preserving comparison type
-is useful. Selected model transport generation includes checked theorem dependencies before
-selected theorem transports.
+Use `generate_syntactic_model_instance T as I for M` as a mirror-backed coherence smoke test; the
+instance witnesses coherence modulo the mirror translation and its axioms, not conservativity or
+adequacy. Use `generate_model_structural_equiv` separately when a strict structure-preserving
+comparison type is useful. Selected model transport generation includes checked theorem
+dependencies before selected theorem transports.
 
 Longer `#check_default_profile_lf_*`, `#print_default_profile_*`, `#print_lean_type_*`, and
 `#print_lf_model_*` commands are developer diagnostics for inspecting replay/model internals.

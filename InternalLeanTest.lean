@@ -41,6 +41,7 @@ import InternalLeanTest.ReservedNamesTest
 import InternalLeanTest.RawConversionTest
 import InternalLeanTest.SoundnessRegressionTest
 import InternalLeanTest.StructuralInternalAdmissionTest
+import InternalLeanTest.SyntacticModelInstanceTest
 import InternalLeanTest.SyntaxAbbrevPiTest
 import InternalLeanTest.SyntaxDefTest
 import InternalLeanTest.TheoryAnchorTest

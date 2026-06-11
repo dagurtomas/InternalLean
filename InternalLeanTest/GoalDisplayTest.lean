@@ -170,6 +170,28 @@ run_cmd do
         throwError "fallback display target has unexpected head '{n}'"
   | _ => throwError "fallback display target is not headed by InternalObjectGoalView"
 
+-- Assert that whole-theory mirror construction failures also use the marker fallback path.
+run_cmd do
+  let goalDisplayTestTarget : InternalDefTarget := {
+    theoryName := `GoalDisplaySmoke
+    localName := `displayProbe
+    anchorName := `GoalDisplaySmoke.displayProbe }
+  let displayCtx : InternalGoalDisplayContext := {
+    theoryName := `GoalDisplaySmoke
+    mirrorError? := some m!"forced mirror failure for branch coverage" }
+  let goal := mkInternalGoalDisplayGoal #[] (.app (.app (.ident `Good) (.ident `o)) (.ident `o))
+  let snapshot ← liftTermElabM do
+    mkInternalObjectGoalDisplaySnapshotWithContext goalDisplayTestTarget displayCtx #[goal]
+  unless snapshot.fallbacks.any (fun fallback => fallback.kind == `mirrorUnavailable) do
+    throwError "whole-theory mirror failure did not record a mirror-unavailable fallback"
+  let some mvarId := snapshot.goals.head? | throwError "missing mirror-unavailable fallback goal"
+  let mvarDecl := snapshot.mctx.getDecl mvarId
+  match mvarDecl.type.getAppFn with
+  | .const n _ =>
+      unless n == ``InternalObjectGoalView do
+        throwError "mirror-unavailable fallback target has unexpected head '{n}'"
+  | _ => throwError "mirror-unavailable fallback target is not headed by InternalObjectGoalView"
+
 run_cmd do
   recordInternalGoalDisplayFallbacks (← getRef) #[{
     kind := `unitTest
