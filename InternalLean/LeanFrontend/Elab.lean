@@ -501,17 +501,18 @@ partial def leanQuotedFunView? (stx : Syntax) : Option (Array Name × Syntax) :=
 /-- Save one Lean infoview goal marker over a quoted-LF body syntax node. -/
 def saveLeanQuotedLFGoalInfo (target : InternalDefTarget) (goal : InternalObjectGoal)
     (stx : Syntax) : CommandElabM Unit := do
-  liftTermElabM do
-    let goalsBefore ← mkInternalObjectGoalMVars target #[goal]
-    let mctxBefore ← getMCtx
-    let mctxAfter ← getMCtx
+  let snapshot ← liftTermElabM do
+    let displayGoal := mkInternalGoalDisplayGoal goal.ctx goal.target
+    let snapshot ← mkInternalObjectGoalDisplaySnapshot target #[displayGoal]
     pushInfoLeaf <| .ofTacticInfo {
       elaborator := `InternalLean.leanQuotedLFBodyInfo
       stx := mkNullNode #[stx]
-      mctxBefore := mctxBefore
-      goalsBefore := goalsBefore
-      mctxAfter := mctxAfter
-      goalsAfter := goalsBefore }
+      mctxBefore := snapshot.mctx
+      goalsBefore := snapshot.goals
+      mctxAfter := snapshot.mctx
+      goalsAfter := snapshot.goals }
+    pure snapshot
+  recordInternalGoalDisplayFallbacks stx snapshot.fallbacks
 
 /-- Collect direct tactic syntax nodes from a Lean tactic sequence. -/
 partial def collectLeanQuotedTacticSteps (stx : Syntax) : Array Syntax :=
@@ -616,11 +617,15 @@ def collectLeanQuotedByTacticInfo (target : InternalDefTarget) (sig : HLSignatur
   let mut infos := #[]
   for stepStx in collectLeanQuotedTacticSteps stx do
     let before := goals
-    let after :=
+    let (after, stale) :=
       match stepLeanQuotedTacticInfoState target sig goals stepStx with
-      | .ok goals => goals
-      | .error _ => goals
-    infos := infos.push { stx := stepStx, goalsBefore := before, goalsAfter := after }
+      | .ok goals => (goals, false)
+      | .error _ => (goals, true)
+    infos := infos.push {
+      stx := stepStx
+      goalsBefore := before
+      goalsAfter := after
+      goalsAfterStale := stale }
     goals := after
   return infos
 
@@ -779,6 +784,7 @@ def elabLeanQuotedInternalTheoremCheckedExpr
     .checkedJudgmentTheorem params (some valueExpr) sourceCommand sourceDoc? (← getRef)
     declNameStx
   addInternalDeclarationQuoteStub target params typeExpr
+  refreshLFMirrorAfterInternalRegistration target.theoryName
 
 /-- Run a command elaboration step with configurable state restoration. -/
 def withRestoredCommandStateCore (restoreOnSuccess : Bool) (x : CommandElabM α) :
@@ -1473,6 +1479,7 @@ def elabLeanQuotedInternalDefsDeclsWithSorryOpaqueBatches
         annotation was checked in theory '{item.target.theoryName}', but the body was not \
         checked. Use `#lint_type_theory_sorries {item.target.theoryName}` to list current \
         admissions."
+    refreshLFMirrorAfterInternalRegistration theoryName
   let mut batch : Array InternalDefsSorryBatchItem := #[]
   for decl in decls do
     match ← elabInternalDefsSorryBatchItem? decl with

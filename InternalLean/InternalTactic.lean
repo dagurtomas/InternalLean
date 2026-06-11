@@ -6,6 +6,7 @@ Authors: Dagur Asgeirsson
 module
 
 public meta import InternalLean.Registration
+public meta import InternalLean.LeanFrontend.GoalDisplay
 public meta import Lean.PrettyPrinter
 
 /-!
@@ -1695,14 +1696,6 @@ partial def internalObjExprMentionsName (needle : Name) : ObjExpr → Bool
   | .lam _ body => internalObjExprMentionsName needle body
   | .jeq lhs rhs => internalObjExprMentionsName needle lhs || internalObjExprMentionsName needle rhs
 
-/-- Render the local object context shown by tactic errors. -/
-def renderInternalObjectContext (ctx : Array HLBinding) : String :=
-  if ctx.isEmpty then
-    "  (empty object context)"
-  else
-    String.intercalate "\n" <| ctx.toList.map fun b =>
-      s!"  {b.name.eraseMacroScopes} : {diagnosticObjExprString b.typeExpr}"
-
 /-- Match a candidate conclusion against a goal, unfolding checked LF definitions if needed. -/
 def matchInternalCandidateConclusion? (sig : HLSignature) (ctx : Array HLBinding)
     (params : Array HLBinding) (candidateConclusion goalTarget : ObjExpr) :
@@ -1838,6 +1831,8 @@ structure InternalObjectTacticInfo where
   stx : Syntax
   goalsBefore : Array InternalObjectGoal
   goalsAfter : Array InternalObjectGoal
+  /-- True when the after-goals are a stale display-only simulation snapshot. -/
+  goalsAfterStale : Bool := false
   deriving Inhabited
 
 /-- Placeholder object term used in infoview-only dependent subgoals created by `apply`. -/
@@ -2624,19 +2619,10 @@ def collectInternalObjectTacticInfo (target : InternalDefTarget) (sig : HLSignat
       Array InternalObjectTacticInfo :=
   (collectInternalObjectTacticGoalInfo target sig levels steps stepStxs 0 { target := typeExpr }).1
 
-/-- Lean proposition type used for one object-theory goal in the ordinary Lean infoview. -/
-def internalObjectGoalViewType (target : InternalDefTarget) (goal : InternalObjectGoal) : Expr :=
-  mkApp3 (mkConst ``InternalObjectGoalView)
-    (mkStrLit target.theoryName.eraseMacroScopes.toString)
-    (mkStrLit (renderInternalObjectContext goal.ctx))
-    (mkStrLit (toString goal.target))
-
-/-- Create Lean metavariables whose targets encode object-theory goals for infoview display. -/
-def mkInternalObjectGoalMVars (target : InternalDefTarget) (goals : Array InternalObjectGoal) :
-  TermElabM (List MVarId) := do
-  goals.toList.mapM fun goal => do
-    let mvar ← Meta.mkFreshExprMVar (some (internalObjectGoalViewType target goal)) .natural `object
-    pure mvar.mvarId!
+/-- Convert object-tactic goals to display renderer inputs. -/
+def internalObjectGoalsForDisplay (goals : Array InternalObjectGoal) (stale : Bool := false) :
+    Array InternalGoalDisplayGoal :=
+  goals.map fun goal => mkInternalGoalDisplayGoal goal.ctx goal.target stale
 
 /-- Description shown when hovering over a name in an internal tactic script. -/
 structure InternalObjectHover where
@@ -2738,21 +2724,37 @@ def saveInternalObjectHoverInfo (target : InternalDefTarget) (sig : HLSignature)
 can show the current object context and target while editing `internal def ... := by`. -/
 def saveInternalObjectTacticInfo (target : InternalDefTarget) (sig : HLSignature)
     (infos : Array InternalObjectTacticInfo) : CommandElabM Unit := do
+  let displayCtx ← liftTermElabM <| prepareInternalGoalDisplayContext target
   for info in infos do
-    liftTermElabM do
-      let goalsBefore ← mkInternalObjectGoalMVars target info.goalsBefore
-      let mctxBefore ← getMCtx
-      let goalsAfter ← mkInternalObjectGoalMVars target info.goalsAfter
-      let mctxAfter ← getMCtx
+    let (beforeSnapshot, afterSnapshot) ← liftTermElabM do
+      let beforeGoals := internalObjectGoalsForDisplay info.goalsBefore
+      let afterGoals := internalObjectGoalsForDisplay info.goalsAfter info.goalsAfterStale
+      let beforeSnapshot ←
+        mkInternalObjectGoalDisplaySnapshotWithContext target displayCtx beforeGoals
+      let afterSnapshot ←
+        mkInternalObjectGoalDisplaySnapshotWithContext target displayCtx afterGoals
       pushInfoLeaf <| .ofTacticInfo {
         elaborator := `InternalLean.internalObjectTacticInfo
         stx := info.stx
-        mctxBefore := mctxBefore
-        goalsBefore := goalsBefore
-        mctxAfter := mctxAfter
-        goalsAfter := goalsAfter
+        mctxBefore := beforeSnapshot.mctx
+        goalsBefore := beforeSnapshot.goals
+        mctxAfter := afterSnapshot.mctx
+        goalsAfter := afterSnapshot.goals
       }
+      pure (beforeSnapshot, afterSnapshot)
+    recordInternalGoalDisplayFallbacks info.stx beforeSnapshot.fallbacks
+    recordInternalGoalDisplayFallbacks info.stx afterSnapshot.fallbacks
     saveInternalObjectHoverInfo target sig info
+
+/-- Refresh generated mirror declarations after a successful internal registration.  Goal display
+may force mirror generation while compiling a source module; this best-effort refresh ensures the
+new declaration's mirror is exported from the module that introduced it, avoiding duplicate mirror
+names in later aggregate imports. -/
+def refreshLFMirrorAfterInternalRegistration (theoryName : Name) : CommandElabM Unit := do
+  try
+    liftCoreM <| ensureLFMirrorForTheoryBestEffort theoryName
+  catch _ =>
+    pure ()
 
 /-- Structured object-tactic compilation errors, optionally tagged with a source step index. -/
 inductive InternalObjectTacticCompileError where
@@ -3515,6 +3517,7 @@ def elabInternalDefCheckedExpr (doc? : Option (TSyntax ``Parser.Command.docComme
   addInternalDeclarationAnchor target typeExpr evidenceKind #[] (some valueExpr) sourceCommand
     sourceDoc? (← getRef) declNameStx
   addInternalDeclarationQuoteStub target #[] typeExpr
+  refreshLFMirrorAfterInternalRegistration target.theoryName
 
 /-- Parse and register a non-admitted top-level `internal def`. -/
 def elabInternalDefChecked (doc? : Option (TSyntax ``Parser.Command.docComment))
@@ -3555,6 +3558,7 @@ def elabInternalDefCheckedWithBindersExpr (doc? : Option (TSyntax ``Parser.Comma
   addInternalDeclarationAnchor target fullType evidenceKind params (some fullValue) sourceCommand
     sourceDoc? (← getRef) declNameStx
   addInternalDeclarationQuoteStub target params typeExpr
+  refreshLFMirrorAfterInternalRegistration target.theoryName
 
 /-- Elaborate a binder-style checked `internal def`. -/
 def elabInternalDefCheckedWithBinders (doc? : Option (TSyntax ``Parser.Command.docComment))
@@ -3601,6 +3605,7 @@ def elabInternalDefSorryWithBinders (doc? : Option (TSyntax ``Parser.Command.doc
   addInternalDeclarationAnchor target typeExpr evidenceKind params none "internal def := sorry"
     sourceDoc? (← getRef) declNameStx
   addInternalDeclarationQuoteStub target params typeExpr
+  refreshLFMirrorAfterInternalRegistration target.theoryName
   addInternalDefAnnotationNavigationInfo declName binders typeStx
   logWarning m!"internal declaration '{target.anchorName}' was admitted by `sorry`; the \
     annotation was checked in theory '{target.theoryName}', but the body was not checked. Use \
@@ -3646,6 +3651,7 @@ def elabInternalTheoremCheckedWithBinders (doc? : Option (TSyntax ``Parser.Comma
     .checkedJudgmentTheorem params (some valueExpr) "internal theorem" sourceDoc? (← getRef)
     declNameStx
   addInternalDeclarationQuoteStub target params typeExpr
+  refreshLFMirrorAfterInternalRegistration target.theoryName
   addInternalDefExprNavigationInfo declName binders typeStx valueStx
 
 /-- Register an explicit non-model-facing admitted internal theorem. -/
@@ -3668,6 +3674,7 @@ def elabInternalTheoremSorryWithBinders (doc? : Option (TSyntax ``Parser.Command
     .admittedJudgmentTheorem params none "internal theorem := sorry" sourceDoc? (← getRef)
     declNameStx
   addInternalDeclarationQuoteStub target params typeExpr
+  refreshLFMirrorAfterInternalRegistration target.theoryName
   addInternalDefAnnotationNavigationInfo declName binders typeStx
   logWarning m!"internal theorem '{target.anchorName}' was admitted by `sorry`; the statement was \
     checked in theory '{target.theoryName}', but the proof was not checked. Use \
@@ -3870,6 +3877,7 @@ def tryElabInternalDefsCheckedObjectBatch (decls : Array (TSyntax `internalDefsD
       item.declNameStx
     addInternalDeclarationQuoteStub item.target item.params item.resultTypeExpr
     addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
+  refreshLFMirrorAfterInternalRegistration theoryName
   return true
 
 /-- Try to register an all-opaque-admission `internal_defs where` block as one checked delta. -/
@@ -3929,6 +3937,8 @@ def tryElabInternalDefsSorryOpaqueBatch (decls : Array (TSyntax `internalDefsDec
       logWarning m!"internal declaration '{item.target.anchorName}' was admitted by `sorry`; the \
       annotation was checked in theory '{item.target.theoryName}', but the body was not checked. \
       Use `#lint_type_theory_sorries {item.target.theoryName}` to list current admissions."
+  profileInternalLeanCommandPhase "admitted opaque mirror refresh" do
+    refreshLFMirrorAfterInternalRegistration theoryName
   return true
 
 /-- Elaborate one declaration in an `internal_defs where` batch. -/
@@ -3974,6 +3984,7 @@ def elabInternalDefsDeclsWithSorryOpaqueBatches (decls : Array (TSyntax `interna
         annotation was checked in theory '{item.target.theoryName}', but the body was not \
         checked. Use `#lint_type_theory_sorries {item.target.theoryName}` to list current \
         admissions."
+    refreshLFMirrorAfterInternalRegistration theoryName
   let mut batch : Array InternalDefsSorryBatchItem := #[]
   for decl in decls do
     match ← elabInternalDefsSorryBatchItem? decl with

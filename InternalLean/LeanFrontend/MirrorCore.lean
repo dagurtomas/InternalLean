@@ -611,7 +611,39 @@ def addLFMirrorDefinitionIfMissing (declName : Name) (levelParams : List Name)
       value := value
       hints := ReducibilityHints.abbrev
       safety := DefinitionSafety.safe }
-    addDecl (Declaration.defnDecl defVal)
+    -- Goal display can construct mirrors while compiling the source module.  Force exposure keeps
+    -- generated mirror definitions reducible for later `public import` clients and mirror compares.
+    addDecl (Declaration.defnDecl defVal) (forceExpose := true)
+
+/-- Find the Lean source-anchor declaration used for editor navigation to an InternalLean source
+name.  This local copy stays below `Registration` so mirror generation does not create an import
+cycle. -/
+def lfMirrorSourceDeclAnchorName? (theoryName sourceName : Name) : CoreM (Option Name) := do
+  let env ← getEnv
+  let hiddenAnchor := internalTheoryDeclarationAnchorName theoryName sourceName
+  if env.contains hiddenAnchor then
+    return some hiddenAnchor
+  let publicAnchor := theoryName ++ sourceName.eraseMacroScopes
+  if env.contains publicAnchor then
+    return some publicAnchor
+  return none
+
+/-- Copy same-module InternalLean source declaration ranges to a generated mirror declaration, so
+editor navigation from mirror-backed goals goes to the source declaration instead of the generated
+stub. -/
+def addLFMirrorDeclarationRangesFromSourceAnchorIfSameModule (targetName theoryName sourceName :
+    Name) : CoreM Unit := do
+  if (← findDeclarationRanges? targetName).isSome then
+    return ()
+  let some sourceAnchor ← lfMirrorSourceDeclAnchorName? theoryName sourceName
+    | return ()
+  let sourceModule? ← findModuleOf? sourceAnchor
+  let targetModule? ← findModuleOf? targetName
+  unless sourceModule? == targetModule? do
+    return ()
+  let some ranges ← findDeclarationRanges? sourceAnchor
+    | return ()
+  addDeclarationRanges targetName ranges
 
 /-- One mirror declaration waiting for its dependencies to be available in Lean. -/
 inductive LFMirrorPendingDecl where
@@ -656,7 +688,9 @@ end LFMirrorPendingDecl
 /-- Add one mirror declaration, assuming any declarations it references already exist. -/
 def addLFMirrorPendingDecl (theoryName : Name) (levelParams : List Name)
     (levelArgs : List Level) (decl : LFMirrorPendingDecl) : CoreM Unit := do
-  if (← getEnv).contains (lfMirrorDeclName theoryName decl.name) then
+  let declName := lfMirrorDeclName theoryName decl.name
+  if (← getEnv).contains declName then
+    addLFMirrorDeclarationRangesFromSourceAnchorIfSameModule declName theoryName decl.name
     return
   match decl with
   | .syntaxSort d =>
@@ -715,6 +749,7 @@ def addLFMirrorPendingDecl (theoryName : Name) (levelParams : List Name)
       let type ← MetaM.run' <| lfMirrorForallTypeWithLevels theoryName levelArgs d.binders
         (fun locals => lfMirrorExprWithLevels theoryName levelArgs locals d.judgmentExpr)
       addLFMirrorAxiomIfMissing (lfMirrorDeclName theoryName d.name) levelParams type
+  addLFMirrorDeclarationRangesFromSourceAnchorIfSameModule declName theoryName decl.name
 
 /-- Add mirror declarations in dependency order by retrying declarations blocked on later heads. -/
 partial def addLFMirrorPendingDecls (theoryName : Name) (levelParams : List Name)
@@ -856,6 +891,12 @@ def ensureLFMirrorForTheory (theoryName : Name) : CoreM Unit := do
   let some checkedHL ← getCheckedHLSignature? theoryName
     | throwError "no checked high-level signature stored for type theory '{theoryName}'"
   ensureLFMirrorForSignature checkedHL
+
+/-- Add all currently unblocked mirror declarations for a registered theory. -/
+def ensureLFMirrorForTheoryBestEffort (theoryName : Name) : CoreM Unit := do
+  let some checkedHL ← getCheckedHLSignature? theoryName
+    | throwError "no checked high-level signature stored for type theory '{theoryName}'"
+  ensureLFMirrorForSignatureBestEffort checkedHL
 
 /-- Check one LF value against an LF type using only the experimental Lean mirror backend. -/
 def checkWithLFMirrorOnlyInSignature (sig : HLSignature) (params : Array HLBinding)

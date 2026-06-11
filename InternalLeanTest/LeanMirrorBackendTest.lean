@@ -54,9 +54,9 @@ Internal value:
 
 Reason:
 Lean mirror translated LF term with type
-  LeanMirrorSigmaSmoke.LFMirror.Obj
+  Obj
 expected
-  (_ : LeanMirrorSigmaSmoke.LFMirror.Obj) × LeanMirrorSigmaSmoke.LFMirror.Obj
+  (_ : Obj) × Obj
 -/
 #guard_msgs (whitespace := lax) in
 #check_lf_mirror LeanMirrorSigmaSmoke : Σ x : Obj, Obj := o
@@ -92,9 +92,9 @@ Internal value:
 
 Reason:
 Lean mirror translated LF term with type
-  LeanMirrorDependentSmoke.LFMirror.Obj
+  Obj
 expected
-  LeanMirrorDependentSmoke.LFMirror.Fiber LeanMirrorDependentSmoke.LFMirror.o
+  Fiber o
 -/
 #guard_msgs (whitespace := lax) in
 #check_lf_mirror LeanMirrorDependentSmoke : Σ x : Obj, Fiber x := ⟨o, o⟩
@@ -110,9 +110,9 @@ Internal value:
 
 Reason:
 Lean mirror translated LF term with type
-  LeanMirrorDependentSmoke.LFMirror.Obj
+  Obj
 expected
-  LeanMirrorDependentSmoke.LFMirror.Fiber LeanMirrorDependentSmoke.LFMirror.o
+  Fiber o
 -/
 #guard_msgs (whitespace := lax) in
 #check_lf_mirror LeanMirrorDependentSmoke : Obj := usePack ⟨o, o⟩
@@ -241,9 +241,9 @@ Internal value:
 
 Reason:
 Lean mirror translated LF term with type
-  LeanMirrorTransparencySmoke.LFMirror.Obj
+  Obj
 expected
-  LeanMirrorTransparencySmoke.LFMirror.AdmittedAlias
+  AdmittedAlias
 -/
 #guard_msgs (whitespace := lax) in
 #check_lf_mirror LeanMirrorTransparencySmoke : AdmittedAlias := o

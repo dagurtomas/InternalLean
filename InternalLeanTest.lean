@@ -12,6 +12,7 @@ import InternalLeanTest.FrontendFallbackProfileTest
 import InternalLeanTest.FrontendMacroTest
 import InternalLeanTest.GenerationHygieneTest
 import InternalLeanTest.GenericStructuralMetatheoryTest
+import InternalLeanTest.GoalDisplayTest
 import InternalLeanTest.ImplicitVariablesTest
 import InternalLeanTest.IncrementalCacheTest
 import InternalLeanTest.InternalDefScalabilityTest
