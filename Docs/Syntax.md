@@ -184,9 +184,20 @@ judgment_role Le : universe_leq
 
 `#print_type_theory`, `#print_logical_framework_roles`, and model-obligation output summarize
 these roles and flag partial role profiles. The roles are metadata for diagnostics; LF checking and
-replay still use the ordinary expanded declarations. Object-language levels remain object data and
-do not determine Lean universe levels. Use the hand-written declarations when you need different
-field names, rule names, or framework universe parameters.
+replay still use the ordinary expanded declarations. The tracked `Examples.UniverseHierarchy`
+example also registers parse-only object notation helpers:
+
+```lean
+object_notation UniverseHierarchy "𝒰[" i "]" => Ty i
+object_notation UniverseHierarchy "El[" A "]" => Tm A
+object_notation UniverseHierarchy "Level.max[" i "," j "]" => lmax i j
+```
+
+Use `𝒰[ i ]`, `El[ A ]`, and `Level.max[ i, j ]` in later object expressions for that example
+signature. `#expand_object UniverseHierarchy ...` shows the ordinary expression that will be
+checked. Object-language levels remain object data and do not determine Lean universe levels. Use
+the hand-written declarations when you need different field names, rule names, or framework
+universe parameters.
 
 ### Syntax abbreviations and definitions
 
@@ -363,9 +374,11 @@ parser tokens, and identifiers are object-expression holes substituted into the 
 The notation expands before checked LF artifacts are built, so LF checking, replay, and model
 rendering see the expanded expression. The built-in LF dependent-arrow token `⇒` is reserved and
 cannot be used as an object-notation literal; use a different token such as `⟶` or `⇛` for
-category-style arrows. The first implementation supports leading notation whose first pattern part
-is a quoted token; parser patterns are global once installed, so identical concrete patterns cannot
-currently be overloaded between theories.
+category-style arrows. Prefer literal heads that are not plausible Lean identifiers; for example,
+the universe-hierarchy helper uses `𝒰[ ... ]` and `El[ ... ]` instead of reserving bare `𝒰` or
+`El`. The first implementation supports leading notation whose first pattern part is a quoted
+token; parser patterns are global once installed, so identical concrete patterns cannot currently
+be overloaded between theories.
 
 `object_macro` records theory-local diagnostic notation and can be expanded with `#expand_object`.
 It is not part of checked LF elaboration: checked declarations should use the expanded expression.

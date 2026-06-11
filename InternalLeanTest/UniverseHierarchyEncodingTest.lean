@@ -30,6 +30,16 @@ def lift : Nat := 0
 
 end UniverseHierarchyMacroLabelTokenSmoke
 
+namespace UniverseHierarchyNotationTokenSmoke
+
+-- The bracketed notation heads must not reserve plausible Lean identifiers.
+def 𝒰 : Nat := 0
+def El : Nat := 0
+def Level : Nat := 0
+def lmax : Nat := 0
+
+end UniverseHierarchyNotationTokenSmoke
+
 #check UniverseHierarchy.Model
 #check UniverseHierarchy.syntacticModel
 #check UniverseHierarchy.natModel
@@ -86,6 +96,49 @@ info: reflected LF term in type theory 'UniverseHierarchy':
 #guard_msgs (whitespace := lax) in
 #reflect_lf_quote UniverseHierarchy :
   Pi (i := zero) (j := zero) (UnitTy (i := zero)) fun _ => UnitTy (i := zero)
+
+/--
+info: "𝒰[" i "]" => Ty i
+"El[" A "]" => Tm A
+"Level.max[" i "," j "]" => lmax i j
+-/
+#guard_msgs in
+#print_object_notations UniverseHierarchy
+
+/--
+info: Ty (lmax zero (succ zero))
+-/
+#guard_msgs in
+#expand_object UniverseHierarchy 𝒰[ Level.max[ zero, succ zero ] ]
+
+/--
+info: Tm (Univ zero)
+-/
+#guard_msgs in
+#expand_object UniverseHierarchy El[ Univ zero ]
+
+run_cmd do
+  let uNotation ← elabObjExpr (← `(ttExpr| 𝒰[ Level.max[ zero, succ zero ] ]))
+  let uExpanded ← elabObjExpr (← `(ttExpr| Ty (lmax zero (succ zero))))
+  unless eraseObjExprScopes uNotation == eraseObjExprScopes uExpanded do
+    throwError "universe notation did not expand to the ordinary type-code expression"
+  let elNotation ← elabObjExpr (← `(ttExpr| El[ Univ zero ]))
+  let elExpanded ← elabObjExpr (← `(ttExpr| Tm (Univ zero)))
+  unless eraseObjExprScopes elNotation == eraseObjExprScopes elExpanded do
+    throwError "element notation did not expand to the ordinary element expression"
+  let maxNotation ← elabObjExpr (← `(ttExpr| Level.max[ zero, succ zero ]))
+  let maxExpanded ← elabObjExpr (← `(ttExpr| lmax zero (succ zero)))
+  unless eraseObjExprScopes maxNotation == eraseObjExprScopes maxExpanded do
+    throwError "level-maximum notation did not expand to the ordinary object expression"
+
+extend_type_theory UniverseHierarchy where
+  lf_def notationMaxZeroSucc : Level := Level.max[ zero, succ zero ]
+  lf_opaque notationUnit : 𝒰[ zero ]
+  lf_opaque notationElem : El[ notationUnit ]
+
+#check UniverseHierarchy.LFQuote.notationMaxZeroSucc
+#check UniverseHierarchy.LFQuote.notationUnit
+#check UniverseHierarchy.LFQuote.notationElem
 
 /--
 error: syntax_def 'Bad' in type theory 'BadUniverseHierarchySyntaxDef' has value in universe

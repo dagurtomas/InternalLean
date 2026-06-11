@@ -52,6 +52,16 @@ meta def objectNotationPatternKey (parts : Array ObjectNotationPart) : String :=
 meta def leanStringLiteralSyntax (s : String) : String :=
   toString (repr s)
 
+/-- Stable, module-independent hash for generated object-notation syntax names. -/
+meta def objectNotationPatternHash (parts : Array ObjectNotationPart) : Nat :=
+  let key := objectNotationPatternKey parts
+  key.foldl (fun acc c => (acc * 16777619 + c.toNat) % 4294967291) 2166136261
+
+/-- Generated syntax node name for one object notation. -/
+meta def objectNotationSyntaxName (theoryName : Name) (parts : Array ObjectNotationPart) : Name :=
+  let base := Lean.Name.append `InternalLean.ObjectNotation theoryName.eraseMacroScopes
+  Name.str base s!"n{objectNotationPatternHash parts}"
+
 /-- Generated parser command for one object notation. -/
 meta def objectNotationSyntaxCommand (syntaxName : Name) (parts : Array ObjectNotationPart) :
     String :=
@@ -125,8 +135,7 @@ elab_rules : command
         unless free.contains holeName do
           throwError "object_notation for type theory '{theory.getId}' declares hole \
             '{holeName}', but the expansion template does not use it"
-      let syntaxName := Name.str `InternalLean.ObjectNotation
-        s!"n{(getObjectNotationDecls (← getEnv)).size + 1}"
+      let syntaxName := objectNotationSyntaxName theory.getId parts
       let syntaxCommand := objectNotationSyntaxCommand syntaxName parts
       let commandStx ←
         match Lean.Parser.runParserCategory (← getEnv) `command syntaxCommand with

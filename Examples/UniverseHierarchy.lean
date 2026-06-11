@@ -51,6 +51,15 @@ declare_type_theory UniverseHierarchy{u} where
 
   judgment_theorem univ_zero_wf : IsTy (i := succ zero) (Univ zero) := univ_wf zero
 
+-- Type-code notation for the hierarchy's object-level universes.
+object_notation UniverseHierarchy "𝒰[" i "]" => Ty i
+
+-- Element notation for a hierarchy type code.
+object_notation UniverseHierarchy "El[" A "]" => Tm A
+
+-- Object-level maximum notation; this expands to the `lmax` constant.
+object_notation UniverseHierarchy "Level.max[" i "," j "]" => lmax i j
+
 namespace UniverseHierarchy
 
 /-- Native tactic mode proves an object-level cumulativity fact through LF replay. -/
