@@ -5579,7 +5579,14 @@ def admittedModelInterpretationSyntax (checked : CheckedSignature) (structureNam
 def theoryWorkflowSummaryString (sig : HLSignature) (checked : CheckedSignature)
     (admissions transports : Nat) : String :=
   let lfTheorems := checked.lfJudgmentTheorems.size
-  String.intercalate "\n" #[
+  let hierarchyRoles := checked.universeHierarchyRoleProfile
+  let hierarchyLine :=
+    if hierarchyRoles.hasAny then
+      let status := if hierarchyRoles.complete then "complete" else "partial"
+      #[s!"universe hierarchy roles: {status}"]
+    else
+      #[]
+  String.intercalate "\n" <| #[
     "type theory " ++ nameString sig.name ++ ": direct-LF signature",
     s!"Lean-visible anchor: {nameString (theoryAnchorName sig.name)}",
     "internal declarations: " ++
@@ -5590,12 +5597,12 @@ def theoryWorkflowSummaryString (sig : HLSignature) (checked : CheckedSignature)
       s!"{checked.lfSyntaxAbbrevs.size} syntax abbreviation(s), " ++
       s!"{checked.lfJudgmentAbbrevs.size} judgment abbreviation(s), " ++
       s!"{checked.lfJudgments.size} judgment(s), {checked.lfRules.size} rule(s), " ++
-      s!"{lfTheorems} checked judgment theorem(s)",
+      s!"{lfTheorems} checked judgment theorem(s)"] ++ hierarchyLine ++ #[
     s!"generated admitted transports recorded: {transports}",
     "user workflow: `#print_model_obligations`, `generate_model_interface`, \
       `#print_model_template`, `#print_model_transport_status`, `generate_model_transport`, \
         `generate_model_transports`"
-  ].toList
+  ] |>.toList
 
 /-- User-facing name for the model backend used by short UX commands. -/
 def uxModelBackendLabel : String := "generic LF-model backend"
@@ -5651,6 +5658,49 @@ def modelMetatheoryAccountingLines (checked : CheckedSignature) (admittedNames :
     s!"  admitted internal declarations: {admittedNames.toList.length}",
     s!"  blocked/omitted items: {omitted.size}"]
 
+/-- Render model-field names for declarations listed by a universe-hierarchy role. -/
+def modelFieldNamesForUniverseRole (obs : Array LFModelObligation) (names : Array Name) : String :=
+  let fields := obs.filterMap fun o =>
+    if o.generatedRole == .field && o.renderable && names.contains o.name.eraseMacroScopes then
+      some (nameString ((o.generatedName?).getD o.name))
+    else
+      none
+  if fields.isEmpty then "(none)" else String.intercalate ", " fields.toList
+
+/-- LF opaque constants returning recognized universe-code families. -/
+def universeCodeFormerNames (checked : CheckedSignature) : Array Name := Id.run do
+  let codes := checked.universeHierarchyRoleProfile.codeSorts
+  let mut names := #[]
+  for c in checked.lfOpaqueConsts do
+    match c.typeHead? with
+    | some head =>
+        if codes.contains head.name.eraseMacroScopes then
+          names := names.push c.name.eraseMacroScopes
+    | none => pure ()
+  return names
+
+/-- User-facing model-obligation lines grouped by object-universe role metadata. -/
+def modelUniverseHierarchyRoleLines (checked : CheckedSignature)
+    (obs : Array LFModelObligation) : Array String := Id.run do
+  let profile := checked.universeHierarchyRoleProfile
+  unless profile.hasAny do
+    return #[]
+  let status := if profile.complete then "complete" else "partial"
+  let mut lines := #[s!"universe hierarchy model fields ({status} role profile):"]
+  lines := lines.push s!"  levels: {modelFieldNamesForUniverseRole obs profile.levelSorts}"
+  lines := lines.push s!"  codes: {modelFieldNamesForUniverseRole obs profile.codeSorts}"
+  lines := lines.push s!"  elements: {modelFieldNamesForUniverseRole obs profile.elementSorts}"
+  lines := lines.push s!"  level order: {modelFieldNamesForUniverseRole obs profile.leqJudgments}"
+  let codeFormers := universeCodeFormerNames checked
+  lines := lines.push s!"  type-code formers returning recognized codes: \
+    {modelFieldNamesForUniverseRole obs codeFormers}"
+  let missing := profile.missingLabels
+  if missing.isEmpty then
+    lines := lines.push "  diagnostics: none"
+  else
+    lines := lines.push s!"  diagnostics: missing {String.intercalate ", " missing.toList}"
+  return lines
+
 /-- Concise user-facing model-obligation summary for the LF model backend. -/
 def modelObligationsUXString (checked : CheckedSignature) (admittedNames : NameSet := {})
     (mode : LFModelInterfaceMode := .full) : CommandElabM String := do
@@ -5694,6 +5744,7 @@ def modelObligationsUXString (checked : CheckedSignature) (admittedNames : NameS
   pure <| String.intercalate "\n" <|
     ([s!"model obligations for {nameString checked.name} ({modeText})", summary,
       s!"field breakdown: {lfModelFieldSourceBreakdown obs}", nextAction] ++ warningLines ++
+      (modelUniverseHierarchyRoleLines checked obs).toList ++
       (modelMetatheoryAccountingLines checked admittedNames obs).toList ++
       (group "fields to provide" fields).toList ++
       (group "derived declarations generated from replay" derived).toList ++

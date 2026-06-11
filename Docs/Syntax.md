@@ -148,9 +148,12 @@ syntax_sort_role S : role
 - `type_sort`
 - `term_sort`
 - `side_structure`
+- `universe_level`, `universe_code`, and `universe_element` for object-language universe
+  hierarchy diagnostics
 - theory-specific names such as `cube_sort`, `tope_sort`, or `shape_sort`
 
-Unknown role names are stored as metadata, but only recognized names affect generic automation.
+Unknown role names are stored as metadata, but only recognized names affect generic automation or
+role-aware diagnostics.
 
 ### Universe hierarchy shorthand
 
@@ -170,9 +173,20 @@ declare_type_theory UniverseHierarchy{u} where
 This expands before theory-block checking to ordinary declarations: `Level : Type u`,
 `Ty (i : Level) : Type (u+1)`, `Tm {i : Level} (A : Ty i) : Type u`, the level constructors,
 `Le` with `le_refl`/`le_succ`, an unguarded `lift`, `IsTy` with `lift_wf`, and `Univ` with
-`univ_wf`. Object-language levels remain object data; they do not determine Lean universe levels.
-Use the hand-written declarations when you need different field names, rule names, or framework
-universe parameters.
+`univ_wf`. The shorthand also emits diagnostic role metadata:
+
+```lean
+syntax_sort_role Level : universe_level
+syntax_sort_role Ty : universe_code
+syntax_sort_role Tm : universe_element
+judgment_role Le : universe_leq
+```
+
+`#print_type_theory`, `#print_logical_framework_roles`, and model-obligation output summarize
+these roles and flag partial role profiles. The roles are metadata for diagnostics; LF checking and
+replay still use the ordinary expanded declarations. Object-language levels remain object data and
+do not determine Lean universe levels. Use the hand-written declarations when you need different
+field names, rule names, or framework universe parameters.
 
 ### Syntax abbreviations and definitions
 

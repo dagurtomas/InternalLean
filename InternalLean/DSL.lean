@@ -1590,6 +1590,99 @@ def ruleRoleKindsOf (roles : Array RuleRoleDecl) (ruleName : Name) : Array Name 
     else
       kinds
 
+/-- Role tag for an object-language universe-level syntax family. -/
+def universeLevelRoleName : Name := `universe_level
+
+/-- Role tag for an object-language universe-code syntax family. -/
+def universeCodeRoleName : Name := `universe_code
+
+/-- Role tag for an object-language element syntax family indexed by universe codes. -/
+def universeElementRoleName : Name := `universe_element
+
+/-- Role tag for an object-language level-order/cumulativity judgment. -/
+def universeLeqRoleName : Name := `universe_leq
+
+/-- Role metadata summary for an object-language universe hierarchy. -/
+structure LFUniverseHierarchyRoleProfile where
+  /-- Syntax sorts tagged as object-language universe levels. -/
+  levelSorts : Array Name := #[]
+  /-- Syntax sorts tagged as object-language universe codes. -/
+  codeSorts : Array Name := #[]
+  /-- Syntax sorts tagged as object-language elements. -/
+  elementSorts : Array Name := #[]
+  /-- Judgments tagged as object-language level order/cumulativity evidence. -/
+  leqJudgments : Array Name := #[]
+  deriving Inhabited, Repr, BEq
+
+namespace LFUniverseHierarchyRoleProfile
+
+/-- Whether the profile contains any universe-hierarchy role metadata. -/
+def hasAny (p : LFUniverseHierarchyRoleProfile) : Bool :=
+  !p.levelSorts.isEmpty || !p.codeSorts.isEmpty || !p.elementSorts.isEmpty ||
+    !p.leqJudgments.isEmpty
+
+/-- Whether the profile has at least one declaration for every recognized hierarchy role. -/
+def complete (p : LFUniverseHierarchyRoleProfile) : Bool :=
+  !p.levelSorts.isEmpty && !p.codeSorts.isEmpty && !p.elementSorts.isEmpty &&
+    !p.leqJudgments.isEmpty
+
+/-- Render a compact list of names for hierarchy-role diagnostics. -/
+def nameList (names : Array Name) : String :=
+  if names.isEmpty then "(none)" else
+    String.intercalate ", " (names.toList.map fun n => toString n.eraseMacroScopes)
+
+/-- Names of missing recognized hierarchy roles. -/
+def missingLabels (p : LFUniverseHierarchyRoleProfile) : Array String := Id.run do
+  let mut labels := #[]
+  if p.levelSorts.isEmpty then labels := labels.push "universe_level syntax sort"
+  if p.codeSorts.isEmpty then labels := labels.push "universe_code syntax sort"
+  if p.elementSorts.isEmpty then labels := labels.push "universe_element syntax sort"
+  if p.leqJudgments.isEmpty then labels := labels.push "universe_leq judgment"
+  return labels
+
+/-- Diagnostic lines for hierarchy-role metadata. -/
+def summaryLines (p : LFUniverseHierarchyRoleProfile) : Array String := Id.run do
+  if !p.hasAny then
+    return #["universe hierarchy roles: none"]
+  let status := if p.complete then "complete" else "partial"
+  let mut lines := #[s!"universe hierarchy roles: {status}"]
+  lines := lines.push s!"  levels: {nameList p.levelSorts}"
+  lines := lines.push s!"  codes: {nameList p.codeSorts}"
+  lines := lines.push s!"  elements: {nameList p.elementSorts}"
+  lines := lines.push s!"  level order: {nameList p.leqJudgments}"
+  let missing := p.missingLabels
+  if missing.isEmpty then
+    lines := lines.push "  diagnostics: none"
+  else
+    lines := lines.push s!"  diagnostics: missing {String.intercalate ", " missing.toList}"
+  return lines
+
+/-- Multiline diagnostic summary for hierarchy-role metadata. -/
+def summaryString (p : LFUniverseHierarchyRoleProfile) : String :=
+  String.intercalate "\n" p.summaryLines.toList
+
+end LFUniverseHierarchyRoleProfile
+
+/-- Compute a universe-hierarchy role profile from syntax-sort and judgment role declarations. -/
+def universeHierarchyRoleProfileOf (syntaxRoles : Array SyntaxSortRoleDecl)
+    (judgmentRoles : Array JudgmentRoleDecl) : LFUniverseHierarchyRoleProfile := Id.run do
+  let mut profile : LFUniverseHierarchyRoleProfile := {}
+  for role in syntaxRoles do
+    let kind := role.kind.eraseMacroScopes
+    let sortName := role.sortName.eraseMacroScopes
+    if kind == universeLevelRoleName then
+      profile := { profile with levelSorts := pushIfMissing profile.levelSorts sortName }
+    else if kind == universeCodeRoleName then
+      profile := { profile with codeSorts := pushIfMissing profile.codeSorts sortName }
+    else if kind == universeElementRoleName then
+      profile := { profile with elementSorts := pushIfMissing profile.elementSorts sortName }
+  for role in judgmentRoles do
+    let kind := role.kind.eraseMacroScopes
+    let judgmentName := role.judgmentName.eraseMacroScopes
+    if kind == universeLeqRoleName then
+      profile := { profile with leqJudgments := pushIfMissing profile.leqJudgments judgmentName }
+  return profile
+
 /-- Classify role tags for one rule. -/
 def ruleAutomationClassesOfKinds (kinds : Array Name) : Array LFRuleAutomationClass :=
   kinds.foldl (init := #[]) fun classes kind =>
@@ -1677,6 +1770,10 @@ def rulesForClass (profile : LFRoleAutomationProfile) :
 end LFRoleAutomationProfile
 
 namespace CheckedSignature
+
+/-- Object-language universe-hierarchy role metadata for this checked signature. -/
+def universeHierarchyRoleProfile (checked : CheckedSignature) : LFUniverseHierarchyRoleProfile :=
+  universeHierarchyRoleProfileOf checked.lfSyntaxSortRoles checked.lfJudgmentRoles
 
 /-- Role tags attached to a checked syntax sort. -/
 def syntaxSortRoleKinds (checked : CheckedSignature) (sortName : Name) : Array Name :=
@@ -1903,6 +2000,10 @@ structure HLSignature where
   deriving Inhabited, Repr, BEq
 
 namespace HLSignature
+
+/-- Object-language universe-hierarchy role metadata for this high-level signature. -/
+def universeHierarchyRoleProfile (sig : HLSignature) : LFUniverseHierarchyRoleProfile :=
+  universeHierarchyRoleProfileOf sig.syntaxSortRoles sig.judgmentRoles
 
 /-- Role tags attached to a syntax sort in a high-level signature. -/
 def syntaxSortRoleKinds (sig : HLSignature) (sortName : Name) : Array Name :=
@@ -2339,6 +2440,10 @@ meta def expandUniverseHierarchyDecl? (decl : TSyntax `ttDecl) :
       let leSucc := mkIdentFrom leName.raw `le_succ
       let liftWf := mkIdentFrom liftName.raw `lift_wf
       let univWf := mkIdentFrom univName.raw `univ_wf
+      let universeLevelRole := mkIdentFrom level.raw `universe_level
+      let universeCodeRole := mkIdentFrom ty.raw `universe_code
+      let universeElementRole := mkIdentFrom tm.raw `universe_element
+      let universeLeqRole := mkIdentFrom leName.raw `universe_leq
       let uLevel ← `(ttLevel| $u:ident)
       let uSucc ← `(ttLevel| $uLevel:ttLevel+1)
       let levelExpr ← `(ttExpr| $level:ident)
@@ -2371,6 +2476,9 @@ meta def expandUniverseHierarchyDecl? (decl : TSyntax `ttDecl) :
           Type $uSucc:ttLevel),
         ← `(ttDecl| syntax_sort $tm:ident {$i:ident : $levelExpr:ttExpr}
           ($A:ident : $tyI:ttExpr) : Type $uLevel:ttLevel),
+        ← `(ttDecl| syntax_sort_role $level:ident : $universeLevelRole:ident),
+        ← `(ttDecl| syntax_sort_role $ty:ident : $universeCodeRole:ident),
+        ← `(ttDecl| syntax_sort_role $tm:ident : $universeElementRole:ident),
         ← `(ttDecl| lf_opaque $zero:ident : $levelExpr:ttExpr),
         ← `(ttDecl| lf_opaque $succ:ident ($i:ident : $levelExpr:ttExpr) :
           $levelExpr:ttExpr),
@@ -2378,6 +2486,7 @@ meta def expandUniverseHierarchyDecl? (decl : TSyntax `ttDecl) :
           ($j:ident : $levelExpr:ttExpr) : $levelExpr:ttExpr),
         ← `(ttDecl| judgment $leName:ident ($i:ident : $levelExpr:ttExpr)
           ($j:ident : $levelExpr:ttExpr)),
+        ← `(ttDecl| judgment_role $leName:ident : $universeLeqRole:ident),
         ← `(ttDecl| rule $leRefl:ident ($i:ident : $levelExpr:ttExpr) : $leII:ttExpr),
         ← `(ttDecl| rule $leSucc:ident ($i:ident : $levelExpr:ttExpr) : $leISuccI:ttExpr),
         ← `(ttDecl| lf_opaque $liftName:ident {$i:ident : $levelExpr:ttExpr}

@@ -176,6 +176,13 @@ run_cmd do
     throwError "macro hierarchy judgments differ from the hand-written baseline"
   unless hand.rules == macroSig.rules do
     throwError "macro hierarchy rules differ from the hand-written baseline"
+  let macroRoles := macroSig.universeHierarchyRoleProfile
+  unless macroRoles.complete do
+    throwError "macro hierarchy role profile is incomplete: {macroRoles.summaryString}"
+  unless macroRoles.levelSorts == #[`Level] && macroRoles.codeSorts == #[`Ty] &&
+      macroRoles.elementSorts == #[`Tm] && macroRoles.leqJudgments == #[`Le] do
+    throwError "macro hierarchy role profile has unexpected declarations: \
+      {macroRoles.summaryString}"
 
   let some handChecked ← liftCoreM <| getCheckedTheory?
       `HandWrittenUniverseHierarchyMacroBaseline
@@ -189,6 +196,18 @@ run_cmd do
   unless handFields == macroFields do
     throwError "macro hierarchy model field names differ: hand-written {handFields}, \
       macro-generated {macroFields}"
+  let roleLines := modelUniverseHierarchyRoleLines macroChecked macroObs
+  let expectedRoleLines := #[
+    "universe hierarchy model fields (complete role profile):",
+    "  levels: Level",
+    "  codes: Ty",
+    "  elements: Tm",
+    "  level order: Le",
+    "  type-code formers returning recognized codes: lift, Univ",
+    "  diagnostics: none"
+  ]
+  unless roleLines == expectedRoleLines do
+    throwError "unexpected macro hierarchy model-role lines: {roleLines}"
 
   let env ← getEnv
   for n in hierarchyDeclNames do
@@ -200,6 +219,87 @@ run_cmd do
       | throwError "missing macro hierarchy source anchor for '{n}'"
 
 end UniverseHierarchyMacroSmokeTest
+
+/--
+info: logical-framework roles for MacroUniverseHierarchySmoke (4 declarations, parents flattened)
+---
+info: universe hierarchy roles: complete
+  levels: Level
+  codes: Ty
+  elements: Tm
+  level order: Le
+  diagnostics: none
+---
+info: syntax_sort_role Level : universe_level
+---
+info: syntax_sort_role Ty : universe_code
+---
+info: syntax_sort_role Tm : universe_element
+---
+info: judgment_role Le : universe_leq
+-/
+#guard_msgs (whitespace := lax) in
+#print_logical_framework_roles MacroUniverseHierarchySmoke
+
+/-- Partial hierarchy roles are diagnostic metadata; the theory still checks normally. -/
+declare_type_theory PartialUniverseHierarchyRoleSmoke where
+  syntax_sort Obj
+  syntax_sort_role Obj : universe_level
+
+#check_theory PartialUniverseHierarchyRoleSmoke
+
+/--
+info: type theory PartialUniverseHierarchyRoleSmoke with 2 logical-framework declarations
+---
+info: universe hierarchy roles: partial
+  levels: Obj
+  codes: (none)
+  elements: (none)
+  level order: (none)
+  diagnostics: missing universe_code syntax sort, universe_element syntax sort,
+    universe_leq judgment
+---
+info: syntax_sort Obj
+---
+info: syntax_sort_role Obj : universe_level
+-/
+#guard_msgs (whitespace := lax) in
+#print_type_theory PartialUniverseHierarchyRoleSmoke
+
+/--
+info: model obligations for PartialUniverseHierarchyRoleSmoke (generic LF-model backend)
+LF model obligations for PartialUniverseHierarchyRoleSmoke: 1 obligation(s), 1 user field(s),
+  0 generated method/declaration(s), 0 theorem-local certificate parameter(s), 0 replay artifact(s),
+  0 metadata expansion(s), 0 blocked/omitted obligation(s)
+field breakdown: 1 syntax_sort
+next action: run `#print_model_interface PartialUniverseHierarchyRoleSmoke as <Name>`, then fill
+  the 1 user field(s); checked LF definitions/theorems can be generated afterward with
+  `#print_model_transports`.
+universe hierarchy model fields (partial role profile):
+  levels: Obj
+  codes: (none)
+  elements: (none)
+  level order: (none)
+  type-code formers returning recognized codes: (none)
+  diagnostics: missing universe_code syntax sort, universe_element syntax sort,
+    universe_leq judgment
+metatheory accounting:
+  primitive user fields: 1
+  checked derived declarations: 0
+  checked metadata expansions: 0
+  generated induction principles: 0 judgment family(ies), 0 rule case(s),
+    0 recursive premise(s); not model fields
+  generated congruence candidates: 0; not model fields unless declared as primitive rules
+  admitted internal declarations: 0
+  blocked/omitted items: 0
+fields to provide:
+  Obj ← syntax_sort Obj: ready
+derived declarations generated from replay: none
+theorem-local certificate parameters: none
+blocked/omitted: none
+-/
+#guard_msgs (whitespace := lax) in
+#print_model_obligations PartialUniverseHierarchyRoleSmoke
 
 /--
 error: duplicate judgment declaration 'Level' in type-theory block

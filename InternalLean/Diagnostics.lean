@@ -1376,6 +1376,9 @@ elab "#print_checked_type_theory " nm:ident : command => do
   let some checked ← liftCoreM <| getCheckedTheory? nm.getId
     | throwError "no checked artifact stored for type theory '{nm.getId}'"
   logInfo m!"checked type theory {checked.name}: {checked.summary}"
+  let hierarchyRoles := checked.universeHierarchyRoleProfile
+  if hierarchyRoles.hasAny then
+    logInfo m!"{hierarchyRoles.summaryString}"
   for s in checked.lfSyntaxSorts do
     let result := if LevelExpr.equal s.resultLevel .zero then "Type" else s!"Type {s.resultLevel}"
     logInfo m!"LF syntax_sort {s.name}: {s.arity} parameter(s), result {result}"
@@ -1952,6 +1955,9 @@ elab "#print_logical_framework_roles " nm:ident : command => do
   let sig ← liftCoreM <| flattenSignature sig
   let roleCount := sig.syntaxSortRoles.size + sig.judgmentRoles.size + sig.ruleRoles.size
   logInfo m!"logical-framework roles for {nm.getId} ({roleCount} declarations, parents flattened)"
+  let hierarchyRoles := sig.universeHierarchyRoleProfile
+  if hierarchyRoles.hasAny then
+    logInfo m!"{hierarchyRoles.summaryString}"
   for role in sig.syntaxSortRoles do
     logInfo role.summary
   for role in sig.judgmentRoles do
@@ -2118,6 +2124,9 @@ elab "#print_type_theory " nm:ident : command => do
     sig.lfJudgmentTheorems.size
   logInfo m!"type theory {sig.name}{levelText}{parentText} with {lfCount} \
     logical-framework declarations"
+  let hierarchyRoles := sig.universeHierarchyRoleProfile
+  if hierarchyRoles.hasAny then
+    logInfo m!"{hierarchyRoles.summaryString}"
   for s in sig.syntaxSorts do
     logInfo s.summary
   for a in sig.syntaxAbbrevs do
