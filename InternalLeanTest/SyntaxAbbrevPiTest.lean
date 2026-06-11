@@ -84,10 +84,10 @@ declare_type_theory SigmaAbbrevTest where
   lf_opaque mkFam (x : Obj) : Fam x
   lf_opaque takeWitness (w : Witness) : Obj
   lf_def witness : Witness := ⟨base, mkFam base⟩
-  lf_def projectObj : Witness ⇒ Obj := fun w => fst w
-  lf_def projectFam : (w : Witness) ⇒ Fam (fst w) := fun w => snd w
+  lf_def projectObj : Witness ⇒ Obj := fun w => π₁ w
+  lf_def projectFam : (w : Witness) ⇒ Fam (π₁ w) := fun w => π₂ w
   lf_def basePair : ObjPair := ⟨base, base⟩
-  lf_def firstBasePair : ObjPair ⇒ Obj := fun p => fst p
+  lf_def firstBasePair : ObjPair ⇒ Obj := fun p => π₁ p
 
 #check_model_obligations SigmaAbbrevTest
 #guard_model_field_count SigmaAbbrevTest 5
@@ -150,8 +150,8 @@ declare_type_theory OpaqueStructuralResultTest where
   lf_opaque mkFam (x : Obj) : Fam x
   lf_opaque opaquePi : PiWitness
   lf_opaque opaqueSigma : SigmaWitness
-  lf_def sigmaBase : Obj := fst opaqueSigma
-  lf_def sigmaFiber : Fam (fst opaqueSigma) := snd opaqueSigma
+  lf_def sigmaBase : Obj := π₁ opaqueSigma
+  lf_def sigmaFiber : Fam (π₁ opaqueSigma) := π₂ opaqueSigma
 
 #check_model_obligations OpaqueStructuralResultTest
 #guard_model_field_count OpaqueStructuralResultTest 6

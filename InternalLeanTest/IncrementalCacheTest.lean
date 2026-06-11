@@ -230,8 +230,7 @@ declare_type_theory IncrementalCacheSelfReferenceReject where
 namespace IncrementalCacheSelfReferenceReject
 
 /--
-error: judgment_theorem 'self_ref' in type theory 'IncrementalCacheSelfReferenceReject' uses
-premise theorem 'self_ref' before it is available
+error: Unknown identifier `self_ref`
 -/
 #guard_msgs (whitespace := lax) in
 internal theorem self_ref : J base := self_ref

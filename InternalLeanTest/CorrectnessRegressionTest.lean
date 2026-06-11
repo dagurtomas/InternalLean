@@ -11,7 +11,7 @@ public import InternalLean.Command
 # Correctness regression tests
 
 These tests keep recent performance/navigation refactors honest at the LF trust boundary.  They
-cover intra-block availability, fallback registration paths, syntax-abbreviation batches, and
+cover intra-block availability, source-order registration paths, syntax-abbreviation batches, and
 chunked model-interface generation.
 -/
 
@@ -19,7 +19,7 @@ chunked model-interface generation.
 
 open InternalLean
 
-/-- Object declarations cannot refer to later declarations in the same checked batch. -/
+/-- Object declarations cannot refer to later declarations in the same block. -/
 declare_type_theory ObjectForwardRefBatchReject where
   syntax_sort Obj
   lf_opaque base : Obj
@@ -27,9 +27,7 @@ declare_type_theory ObjectForwardRefBatchReject where
 namespace ObjectForwardRefBatchReject
 
 /--
-error: failed to check internal LF declaration 'ObjectForwardRefBatchReject.d1' in type theory
-'ObjectForwardRefBatchReject' as an LF object definition:
-unknown identifier 'd2' in value of lf_def 'd1' in type theory 'ObjectForwardRefBatchReject'
+error: Unknown identifier `d2`
 -/
 #guard_msgs (whitespace := lax) in
 internal_defs where
@@ -38,17 +36,14 @@ internal_defs where
 
 end ObjectForwardRefBatchReject
 
-/-- Object declarations cannot refer to themselves in a checked batch. -/
+/-- Object declarations cannot refer to themselves in an internal_defs block. -/
 declare_type_theory ObjectSelfRefBatchReject where
   syntax_sort Obj
 
 namespace ObjectSelfRefBatchReject
 
 /--
-error: failed to check internal LF declaration 'ObjectSelfRefBatchReject.d' in type theory
-'ObjectSelfRefBatchReject' as an LF object definition:
-lf_def 'd' in type theory 'ObjectSelfRefBatchReject' references LF definition 'd' before it is
-available in value
+error: Unknown identifier `d`
 -/
 #guard_msgs (whitespace := lax) in
 internal_defs where
@@ -56,7 +51,7 @@ internal_defs where
 
 end ObjectSelfRefBatchReject
 
-/-- The theorem-shaped fallback still rejects self-referential theorem proofs. -/
+/-- The theorem-shaped source-order path still rejects self-referential theorem proofs. -/
 declare_type_theory TheoremSelfRefFallbackReject where
   syntax_sort Obj
   judgment J (x : Obj)
@@ -66,10 +61,7 @@ declare_type_theory TheoremSelfRefFallbackReject where
 namespace TheoremSelfRefFallbackReject
 
 /--
-error: failed to check internal LF declaration 'TheoremSelfRefFallbackReject.t' in type theory
-'TheoremSelfRefFallbackReject' as an LF judgment theorem:
-judgment_theorem 't' in type theory 'TheoremSelfRefFallbackReject' uses premise theorem 't' before
-it is available
+error: Unknown identifier `t`
 -/
 #guard_msgs (whitespace := lax) in
 internal_defs where
@@ -87,7 +79,7 @@ declare_type_theory BadSyntaxSortArgumentRegression where
   syntax_sort Obj
   lf_def bad : Obj := Type
 
-/-- Mixed object/theorem blocks still fall back to sequential checking and register successfully. -/
+/-- Mixed object/theorem blocks still use sequential checking and register successfully. -/
 declare_type_theory MixedInternalDefsFallbackSmoke where
   syntax_sort Obj
   judgment J (x : Obj)
@@ -105,7 +97,7 @@ end MixedInternalDefsFallbackSmoke
 #check MixedInternalDefsFallbackSmoke.alias
 #check MixedInternalDefsFallbackSmoke.alias_ok
 
-/-- Direct terms with placeholders still fall back to checked placeholder elaboration. -/
+/-- Direct terms with placeholders still use checked placeholder elaboration. -/
 declare_type_theory PlaceholderFallbackSmoke where
   syntax_sort Obj
   judgment J (x : Obj)
@@ -121,7 +113,7 @@ end PlaceholderFallbackSmoke
 
 #check PlaceholderFallbackSmoke.viaPlaceholder
 
-/-- Syntax-abbreviation uses in batched checked object declarations remain accepted. -/
+/-- Syntax-abbreviation uses in legacy raw checked object declarations remain accepted. -/
 declare_type_theory SyntaxAbbrevBatchSmoke where
   syntax_sort Obj
   syntax_abbrev Endo := Obj → Obj
@@ -129,9 +121,8 @@ declare_type_theory SyntaxAbbrevBatchSmoke where
 
 namespace SyntaxAbbrevBatchSmoke
 
-internal_defs where
-  def idAlias : Endo := fun x => idObj x
-  def idAliasAgain : Endo := fun x => idAlias x
+internal_raw def idAlias : Endo := fun x => idObj x
+internal_raw def idAliasAgain : Endo := fun x => idAlias x
 
 end SyntaxAbbrevBatchSmoke
 

@@ -73,7 +73,7 @@ internal def chooseDep : (x : Obj) → Σ y : Obj, Fam y := sorry
 end SigmaAdmission
 
 extend_type_theory SigmaAdmission where
-  lf_def packObj : Obj := fst pack
+  lf_def packObj : Obj := π₁ pack
   syntax_abbrev Pack := Σ x : Obj, Fam x
   lf_def derivedBase : Obj := base
 

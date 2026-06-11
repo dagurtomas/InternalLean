@@ -1938,8 +1938,8 @@ syntax:50 "(" ident " : " ttExpr ")" " ⇒ " ttExpr:50 : ttExpr
 syntax:50 ttExpr:51 " × " ttExpr:50 : ttExpr
 syntax:50 "Σ " ident " : " ttExpr ", " ttExpr:50 : ttExpr
 syntax "⟨" ttExpr ", " ttExpr "⟩" : ttExpr
-syntax "fst " ttExpr:90 : ttExpr
-syntax "snd " ttExpr:90 : ttExpr
+syntax "π₁ " ttExpr:90 : ttExpr
+syntax "π₂ " ttExpr:90 : ttExpr
 syntax ident : ttLamBinder
 syntax "_" : ttLamBinder
 syntax:60 "fun " ttLamBinder+ " => " ttExpr:50 : ttExpr
@@ -2157,8 +2157,8 @@ meta partial def elabObjExpr (stx : TSyntax `ttExpr) : CommandElabM ObjExpr := d
       | `(ttExpr| Σ $x:ident : $a:ttExpr, $b:ttExpr) =>
           return .sigma (some x.getId) (← elabObjExpr a) (← elabObjExpr b)
       | `(ttExpr| ⟨$a:ttExpr, $b:ttExpr⟩) => return .pair (← elabObjExpr a) (← elabObjExpr b)
-      | `(ttExpr| fst $e:ttExpr) => return .fst (← elabObjExpr e)
-      | `(ttExpr| snd $e:ttExpr) => return .snd (← elabObjExpr e)
+      | `(ttExpr| π₁ $e:ttExpr) => return .fst (← elabObjExpr e)
+      | `(ttExpr| π₂ $e:ttExpr) => return .snd (← elabObjExpr e)
       | `(ttExpr| fun $xs:ttLamBinder* => $body:ttExpr) => do
           let xs ← xs.mapM elabLamBinder
           return .lam xs (← elabObjExpr body)

@@ -10,9 +10,9 @@ public import InternalLean.Command
 /-!
 # Lean-elaborated quoted LF frontend tests
 
-These tests cover the experimental `internal_lean def` frontend.  Lean elaborates the term body
-against generated `T.LFQuote` stubs; InternalLean reflects the elaborated expression back to LF and
-then runs the ordinary LF checker.
+These tests cover the Lean-quoted frontend internals and its compatibility `internal_lean`
+spelling. Canonical `internal def` uses the same Lean elaboration/reflection path before the
+ordinary LF checker runs.
 -/
 
 @[expose] public section
@@ -211,11 +211,8 @@ internal_lean theorem byApplyTheorem : IsObj o := by
 internal_lean theorem byExactLocal (x : Obj) (h : IsObj x) : IsObj x := by exact h
 internal_lean theorem byAssumptionLocal (x : Obj) (h : IsObj x) : IsObj x := by
   assumption
-set_option internalLean.preferLeanQuotedFrontend true in
 internal def canonicalQuotedObj : Obj := LFQuote.o
-set_option internalLean.preferLeanQuotedFrontend true in
 internal def canonicalQuotedBinder (x : Obj) : Obj := x
-set_option internalLean.preferLeanQuotedFrontend true in
 internal theorem canonicalQuotedTheorem : IsObj o := LFQuote.mkObj o
 internal_raw def rawObj : Obj := o
 internal_raw theorem rawObjOk : IsObj o := mkObj o

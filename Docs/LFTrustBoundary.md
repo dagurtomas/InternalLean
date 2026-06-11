@@ -168,10 +168,10 @@ trusted leaves unless backed by additional checked evidence.
 
 Internal `simp` currently uses registered executable `beta` plugin steps. These object-tactic
 plugin certificates lower endpoints to structural kernel terms before checking; user constants
-named `lam`, `_app`, or `pair` are ordinary LF heads and do not trigger structural beta/eta by
-name. Executable `eta` steps check the structural kernel's first-class function and Sigma
-constructors. The projection spellings `fst` and `snd` remain reserved as surface syntax. Other
-step classes remain part of the conversion-certificate vocabulary and future automation boundary.
+named `lam`, `_app`, `pair`, `fst`, or `snd` are ordinary LF heads and do not trigger structural
+beta/eta by name. Executable `eta` steps check the structural kernel's first-class function and
+Sigma constructors. Other step classes remain part of the conversion-certificate vocabulary and
+future automation boundary.
 
 ## Lean mirror compare diagnostics
 

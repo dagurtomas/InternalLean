@@ -30,7 +30,7 @@ declare_type_theory ImplicitVariablesSmoke where
   lf_opaque constObj {A : Obj} : Obj
   rule has_id {A : Obj} (x : El A) : Has A (id x)
   lf_def id_a : El A := id a
-  lf_def id_a_named : El A := id {A := A} a
+  lf_def id_a_named : El A := id (A := A) a
   lf_def id_a_explicit : El A := id A a
   judgment_theorem has_id_a : Has A (id a) := has_id a
 
@@ -73,7 +73,7 @@ declare_type_theory ImplicitNestedHeads where
       NatIso (CompFunctor G F) (IdFunctor B)
   syntax_abbrev NamedNatIso {A : Cat} {B : Cat}
     (F : Functor A B) (G : Functor A B) :=
-      NatIso {A := A} {B := B} F G
+      NatIso (A := A) (B := B) F G
 
 #check_type_theory_anchor ImplicitNestedHeads
 

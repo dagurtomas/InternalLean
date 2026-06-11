@@ -19,6 +19,10 @@ The LF checker remains authoritative; these commands only compare already checke
 open Lean InternalLean
 
 run_cmd do
+  unless ← preferLeanQuotedFrontend do
+    throwError "internalLean.preferLeanQuotedFrontend must default to true"
+  unless ← preferLeanQuotedTheoryBlocks do
+    throwError "internalLean.preferLeanQuotedTheoryBlocks must default to true"
   if ← getBoolOption `internalLean.mirrorBackend.checkTheoryBodies then
     throwError "internalLean.mirrorBackend.checkTheoryBodies must default to false"
 
@@ -35,7 +39,6 @@ declare_type_theory MirrorOracleMixedSmoke where
 
 namespace MirrorOracleMixedSmoke
 
-set_option internalLean.preferLeanQuotedFrontend true in
 set_option internalLean.frontend.compareLegacy true in
 internal def compare_mode_body : Obj := oAlias
 
@@ -43,7 +46,6 @@ end MirrorOracleMixedSmoke
 
 namespace TinyNat
 
-set_option internalLean.preferLeanQuotedFrontend true in
 set_option internalLean.frontend.compareLegacy true in
 internal def phase0_compare_zero : Nat := zero
 

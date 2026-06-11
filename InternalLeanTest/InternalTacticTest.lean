@@ -240,10 +240,10 @@ internal def rel_a_from_alias_premise : Rel a a := by
 internal def rel_alias_from_expanded_premise : Rel aliasA aliasA := by
   refine rel_copy aliasA aliasA rel_a
 
-internal def rel_alias_assumption (h : Rel a a) : Rel aliasA aliasA := by
+internal_raw def rel_alias_assumption (h : Rel a a) : Rel aliasA aliasA := by
   assumption
 
-internal def rel_shadow_alias_assumption
+internal_raw def rel_shadow_alias_assumption
     (aliasA : Obj) (h : Rel aliasA aliasA) : Rel aliasA aliasA := by
   assumption
 
@@ -275,7 +275,7 @@ Available object hypotheses:
   aliasA : Obj
   h : Rel a a -/
 #guard_msgs (whitespace := lax) in
-internal def badShadowAliasAssumption (aliasA : Obj) (h : Rel a a) : Rel aliasA aliasA := by
+internal_raw def badShadowAliasAssumption (aliasA : Obj) (h : Rel a a) : Rel aliasA aliasA := by
   assumption
 
 /-- error: object tactic `apply rel_a` failed: conclusion

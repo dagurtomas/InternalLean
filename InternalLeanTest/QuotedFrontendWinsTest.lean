@@ -28,8 +28,6 @@ declare_type_theory QuotedFrontendWinsSmoke where
 
 namespace QuotedFrontendWinsSmoke
 
-set_option internalLean.preferLeanQuotedFrontend true
-
 internal def nestedImplicit (f : Hom o o) : Hom o o := comp f (comp f f)
 internal def inferableUnderscore : Hom o o := idm _
 internal def betaRedex (f : Hom o o) : Hom o o := (fun g => comp g g) f
@@ -39,7 +37,7 @@ error: Lean-elaborated LF term uses Lean `sorry`. Lean `sorry` cannot become a c
 proof; use `:= sorry` for an explicit InternalLean admission.
 -/
 #guard_msgs (whitespace := lax) in
-internal_lean def smuggledSorry : Obj := (sorry : _)
+internal def smuggledSorry : Obj := (sorry : _)
 
 end QuotedFrontendWinsSmoke
 

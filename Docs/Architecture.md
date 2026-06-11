@@ -65,7 +65,10 @@ Main files:
 - `InternalLean/Diagnostics.lean`
 - `InternalLean/Command.lean`
 
-This layer implements the user-facing Lean commands and diagnostics. Its responsibilities include:
+This layer implements the user-facing Lean commands and diagnostics. Canonical `internal def` and
+`internal theorem` bodies are Lean terms elaborated against generated quote stubs, reflected back to
+LF, and checked by the LF layer; `internal_raw` is the legacy raw body escape hatch for tests and
+debugging. The layer's responsibilities include:
 
 - parsing `declare_type_theory` and `extend_type_theory` blocks;
 - storing persistent theory registries and Lean-visible anchors;

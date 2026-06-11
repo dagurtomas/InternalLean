@@ -2241,8 +2241,8 @@ mutual
       | `(ttExpr| ⟨$a:ttExpr, $b:ttExpr⟩) => do
           addObjExprNavigationInfo theoryName locals a
           addObjExprNavigationInfo theoryName locals b
-      | `(ttExpr| fst $e:ttExpr) => addObjExprNavigationInfo theoryName locals e
-      | `(ttExpr| snd $e:ttExpr) => addObjExprNavigationInfo theoryName locals e
+      | `(ttExpr| π₁ $e:ttExpr) => addObjExprNavigationInfo theoryName locals e
+      | `(ttExpr| π₂ $e:ttExpr) => addObjExprNavigationInfo theoryName locals e
       | `(ttExpr| fun $xs:ttLamBinder* => $body:ttExpr) => do
           let mut locals := locals
           for x in xs do

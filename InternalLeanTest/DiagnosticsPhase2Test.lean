@@ -36,18 +36,18 @@ Expected internal type:
   Hom o o
 -/
 #guard_msgs (whitespace := lax) in
-internal def tooManyArgs : Hom o o := idm _ _
+internal_raw def tooManyArgs : Hom o o := idm _ _
 
 end Phase2HoleSmoke
 
 /--
-error: LF opaque constant declaration 'fst' uses reserved name 'fst', which is reserved by
-InternalLean syntax. Reserved LF names: fst, snd, Type
+error: LF opaque constant declaration 'Type' uses reserved name 'Type', which is reserved by
+InternalLean syntax. Reserved LF names: Type
 -/
 #guard_msgs (whitespace := lax) in
 declare_type_theory Phase2FailedTheory where
   syntax_sort Obj
-  lf_opaque «fst» : Obj
+  lf_opaque «Type» : Obj
 
 /--
 error: type theory 'Phase2FailedTheory' failed to declare (see the earlier error at line 48,
@@ -149,7 +149,7 @@ error: failed to check internal LF declaration 'Phase2SinglePathSmoke.badObj' in
 unknown identifier 'missing' in value of lf_def 'badObj' in type theory 'Phase2SinglePathSmoke'
 -/
 #guard_msgs (whitespace := lax) in
-internal def badObj : Obj := missing
+internal_raw def badObj : Obj := missing
 
 /--
 error: failed to check internal LF declaration 'Phase2SinglePathSmoke.badThm' in type theory
@@ -158,19 +158,19 @@ unknown identifier 'missing' in proof of judgment_theorem 'badThm' in type theor
 'Phase2SinglePathSmoke'
 -/
 #guard_msgs (whitespace := lax) in
-internal def badThm : Good o := missing
+internal_raw def badThm : Good o := missing
 
 end Phase2SinglePathSmoke
 
 /--
-error: LF opaque constant declaration 'fst' uses reserved name 'fst', which is reserved by
-InternalLean syntax. Reserved LF names: fst, snd, Type
+error: LF opaque constant declaration 'Type' uses reserved name 'Type', which is reserved by
+InternalLean syntax. Reserved LF names: Type
 -/
 #guard_msgs (whitespace := lax) in
 set_option internalLean.requireLeanQuotedTheoryBlocks true in
 declare_type_theory Phase2StrictQuotedFailedTheory where
   syntax_sort Obj
-  lf_opaque «fst» : Obj
+  lf_opaque «Type» : Obj
 
 /--
 error: type theory 'Phase2StrictQuotedFailedTheory' failed to declare (see the earlier error at

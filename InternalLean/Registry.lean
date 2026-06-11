@@ -161,13 +161,20 @@ public def pair {fstTy sndTy : LFQuoteTerm} (_fst : LFQuoteOf fstTy) (_snd : LFQ
     LFQuoteOf (prod fstTy sndTy) :=
   LFQuoteOf.mk
 
-/-- Quoted first projection. -/
-public def projFst {fstTy sndTy : LFQuoteTerm} (_value : LFQuoteOf (prod fstTy sndTy)) :
+/-- Quoted first projection.
+
+The argument type is intentionally broad: LF syntax abbreviations and definitions may hide the
+Sigma shape from Lean's marker types, and the LF checker remains responsible for validating the
+projection after reflection. -/
+public def projFst {fstTy valueTy : LFQuoteTerm} (_value : LFQuoteOf valueTy) :
     LFQuoteOf fstTy :=
   LFQuoteOf.mk
 
-/-- Quoted second projection. -/
-public def projSnd {fstTy sndTy : LFQuoteTerm} (_value : LFQuoteOf (prod fstTy sndTy)) :
+/-- Quoted second projection.
+
+The argument type is intentionally broad for the same reason as `projFst`; the expected LF type
+selects the marker result type, and trusted checking happens after reflection. -/
+public def projSnd {sndTy valueTy : LFQuoteTerm} (_value : LFQuoteOf valueTy) :
     LFQuoteOf sndTy :=
   LFQuoteOf.mk
 

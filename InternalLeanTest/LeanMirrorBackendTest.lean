@@ -28,14 +28,14 @@ declare_type_theory LeanMirrorSigmaSmoke where
 #check_lf_mirror LeanMirrorSigmaSmoke : Obj := id o
 #check_lf_mirror LeanMirrorSigmaSmoke : Obj → Obj := fun x => x
 #check_lf_mirror LeanMirrorSigmaSmoke : Σ x : Obj, Obj := ⟨o, o⟩
-#check_lf_mirror LeanMirrorSigmaSmoke : Obj := fst ⟨o, o⟩
-#check_lf_mirror LeanMirrorSigmaSmoke : Obj := snd ⟨o, o⟩
+#check_lf_mirror LeanMirrorSigmaSmoke : Obj := π₁ ⟨o, o⟩
+#check_lf_mirror LeanMirrorSigmaSmoke : Obj := π₂ ⟨o, o⟩
 
 namespace LeanMirrorSigmaSmoke
 
 internal_mirror def package : Σ x : Obj, Obj := ⟨o, o⟩
-internal_mirror def packageFst : Obj := fst package
-internal_mirror def packageSnd : Obj := snd package
+internal_mirror def packageFst : Obj := π₁ package
+internal_mirror def packageSnd : Obj := π₂ package
 
 #check package
 #check packageFst
@@ -191,8 +191,8 @@ declare_type_theory LeanMirrorUniverseSmoke{u, v} where
 #check_lf_mirror LeanMirrorUniverseSmoke : Type u := Obj
 #check_lf_mirror LeanMirrorUniverseSmoke : Code Obj := codeObj
 #check_lf_mirror LeanMirrorUniverseSmoke : Σ x : Obj, Fiber x := ⟨o, witness⟩
-#check_lf_mirror LeanMirrorUniverseSmoke : Obj := fst ⟨o, witness⟩
-#check_lf_mirror LeanMirrorUniverseSmoke : Fiber o := snd ⟨o, witness⟩
+#check_lf_mirror LeanMirrorUniverseSmoke : Obj := π₁ ⟨o, witness⟩
+#check_lf_mirror LeanMirrorUniverseSmoke : Fiber o := π₂ ⟨o, witness⟩
 
 universe u v
 #check (LeanMirrorUniverseSmoke.LFMirror.Obj.{u, v} : Type u)
@@ -255,8 +255,8 @@ declare_type_theory LeanMirrorSigmaEtaPitfall where
   judgment GoodPack (q : Σ x : Obj, Obj)
   rule good_p : GoodPack p
 
-#check_lf_mirror LeanMirrorSigmaEtaPitfall : GoodPack ⟨fst p, snd p⟩ := good_p
-#compare_lf_mirror LeanMirrorSigmaEtaPitfall : GoodPack ⟨fst p, snd p⟩ := good_p
+#check_lf_mirror LeanMirrorSigmaEtaPitfall : GoodPack ⟨π₁ p, π₂ p⟩ := good_p
+#compare_lf_mirror LeanMirrorSigmaEtaPitfall : GoodPack ⟨π₁ p, π₂ p⟩ := good_p
 
 /-- Structural function eta is part of LF conversion, matching the Lean mirror. -/
 declare_type_theory LeanMirrorFunctionEtaPitfall where

@@ -314,9 +314,9 @@ extend_type_theory IncrementalExtendManyInternalsSmoke where
 extend_type_theory IncrementalExtendManyInternalsSmoke where
   syntax_sort Extra05
 
-#guard_internal_registration_profile_totals IncrementalExtendManyInternalsSmoke 7 17 0 0
+#guard_internal_registration_profile_totals IncrementalExtendManyInternalsSmoke 18 17 0 0
 #guard_internal_registration_profile_strategy IncrementalExtendManyInternalsSmoke
-  "incremental LF object definition batch"
+  "incremental LF object definition"
 
 declare_type_theory IncrementalModelMetadataSmoke where
   model_section Core

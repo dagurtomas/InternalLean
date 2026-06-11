@@ -35,9 +35,9 @@ artifacts, so model generation should not depend on raw parser traces.
 ## Status
 
 This is an active research prototype. The stable surface is the direct-LF declaration workflow,
-`internal def`, internal tactic scripts, LF certificate checking, and generated
-model-interface/transport commands. APIs may still change as the LF trust boundary, model backend,
-and internal tactics are hardened.
+canonical `internal def`/`internal theorem` bodies reflected from Lean terms, internal tactic
+scripts, LF certificate checking, and generated model-interface/transport commands. APIs may still
+change as the LF trust boundary, model backend, and internal tactics are hardened.
 
 ## Build
 
@@ -140,7 +140,8 @@ syntax families; an admitted `syntax_def ... := sorry` is lint-visible debt rath
 field.
 
 After a theory has been declared, internal definitions and theorems live in its namespace and use
-`internal def`:
+`internal def`. Body terms are elaborated as Lean terms against generated LF quote stubs, reflected
+back to LF, and checked by the LF checker:
 
 ```lean
 namespace T
@@ -168,11 +169,10 @@ The generic LF frontend lowers this syntax to an explicit internal function type
 lambda. It still relies on the declared theory having suitable function/lambda LF structure for the
 result to check. Large files can group declarations with `internal_defs where`; standalone
 declarations and supported batches use incremental registration instead of rechecking all previous
-internal definitions. All-direct checked object-definition blocks are checked as one batch, and
-consecutive object admissions are appended through the opaque-cache path. Tactic, theorem-shaped,
-placeholder, or mixed blocks still follow source-order paths. Use
-`internal theorem name : J := sorry` for theorem-shaped admissions that remain lint-visible without
-becoming model fields.
+internal definitions. Consecutive object admissions are appended through the opaque-cache path;
+checked term bodies, tactic entries, theorem-shaped entries, placeholder-heavy entries, and mixed
+blocks follow source-order paths. Use `internal theorem name : J := sorry` for theorem-shaped
+admissions that remain lint-visible without becoming model fields.
 
 ## Common commands
 
@@ -257,10 +257,15 @@ replay APIs use structural-kernel checked wrappers such as
 
 Model interpretation should consume checked LF artifacts, not parser traces alone.
 
-## Deprecated compatibility commands
+## Compatibility commands and migration notes
 
 `object_def` and `object_theorem` are deprecated compatibility shims. New code should use
 `internal def`.
+
+`internal_raw def` and `internal_raw theorem` keep the previous raw body grammar for framework
+regression tests and debugging. New code should use canonical `internal def` and
+`internal theorem`. When migrating old raw bodies, replace `{x := t}` with Lean named arguments
+`(x := t)` and replace old projection tokens `fst p`/`snd p` with `π₁ p`/`π₂ p`.
 
 ## License
 

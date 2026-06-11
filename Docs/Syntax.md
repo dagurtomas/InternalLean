@@ -71,12 +71,13 @@ A ⇒ B
 A × B
 Σ x : A, B
 ⟨a, b⟩
-fst p
-snd p
+π₁ p
+π₂ p
 fun x => body
 fun x y => body
 lhs ≡ rhs
-{x := value}
+{x := value}   -- legacy raw/theory-field syntax
+(x := value)   -- Lean-term internal-body syntax
 ```
 
 Notes:
@@ -89,13 +90,15 @@ Notes:
   parameters. Use it when you want to avoid suggesting an internal function former.
 - `fun x => body` builds an internal lambda.
 - `A × B` and `Σ x : A, B` are structural product/record type expressions.
-- `⟨a, b⟩`, `fst p`, and `snd p` build and project structural record values. The tokens
-  `fst`, `snd`, and `Type` are surface syntax, so they cannot be used as declaration names unless
-  Lean accepts an escaped identifier and InternalLean then rejects it. Former raw-kernel names such
-  as `lam`, `_app`, `pair`, `arrow`, `sigma`, and `jeq` are ordinary LF head names after the
-  structural-kernel cutover.
+- `⟨a, b⟩`, `π₁ p`, and `π₂ p` build and project structural record values. Former raw-kernel
+  names such as `lam`, `_app`, `pair`, `fst`, `snd`, `arrow`, `sigma`, and `jeq` are ordinary LF
+  head names after the structural-kernel and frontend cutovers. Only `Type` remains reserved by
+  the shared LF declaration validator.
 - `lhs ≡ rhs` is internal syntax for judgmental-equality-shaped expressions.
-- `{x := value}` is an explicit implicit-argument marker used by the LF elaborator.
+- `{x := value}` is the legacy raw grammar's explicit implicit-argument marker. Canonical
+  `internal def`/`internal theorem` term bodies are Lean terms, so write Lean named arguments as
+  `(x := value)`. Theory-block expression fields still accept the raw marker through their
+  fallback path while the quoted theory-block frontend soaks.
 
 Binders in declaration telescopes use:
 
@@ -105,10 +108,11 @@ Binders in declaration telescopes use:
 ```
 
 The second form marks an implicit LF binder. Applications may omit ordinary implicit binders when
-later explicit arguments or the expected result determine them. Named implicit arguments use the
-source binder name, for example `{A := A}`. Generated model interfaces may print applications as
-`@head ...` internally so that the fully explicit LF spine is accepted by Lean after some source
-binders render as Lean implicit binders.
+later explicit arguments or the expected result determine them. In canonical internal term bodies,
+named implicit arguments use Lean named-argument syntax such as `(A := A)`. In `internal_raw` and
+legacy theory-field fallback syntax, the old marker is `{A := A}`. Generated model interfaces may
+print applications as `@head ...` internally so that the fully explicit LF spine is accepted by
+Lean after some source binders render as Lean implicit binders.
 
 ## Declarations inside a theory block
 
@@ -449,7 +453,9 @@ judgment_theorem thm (x : A) {y : B} : J x y := proof
 
 ## Internal declarations
 
-After a theory exists, internal declarations use `internal def`. Put unqualified declarations
+After a theory exists, internal declarations use `internal def`. The body position of a canonical
+`internal def` or `internal theorem` is a Lean term elaborated against generated LF quote stubs,
+then reflected back to LF and checked by the ordinary LF checker. Put unqualified declarations
 inside the theory namespace:
 
 ```lean
@@ -491,17 +497,14 @@ end T
 ```
 
 Declarations in the batch are registered in source order; later declarations may refer to earlier
-ones, but earlier declarations cannot refer to later declarations in the same block. Direct checked
-object definitions in an all-object block are checked as one incremental batch. Consecutive object
-admissions are appended through the opaque-cache path. Theorem-shaped, tactic, placeholder, or
-mixed blocks fall back to the ordinary source-order paths. `internal theorem ... := sorry` records
-theorem-shaped formalization debt without adding a model field.
+ones, but earlier declarations cannot refer to later declarations in the same block. Consecutive
+object admissions are appended through the opaque-cache path. Checked term bodies, theorem-shaped
+entries, tactic entries, placeholder-heavy entries, and mixed blocks follow the ordinary
+source-order paths. `internal theorem ... := sorry` records theorem-shaped formalization debt
+without adding a model field.
 
-Declaration-local universe parameters are supported:
-
-```lean
-internal def f{u, v} : J := value
-```
+Declaration-local universe parameters are not supported for checked internal declarations; use
+universe parameters on the surrounding type theory instead.
 
 Binder-style declarations are supported by the generic LF frontend:
 
@@ -517,6 +520,20 @@ internal def admitted (x : A) : B x := sorry
 Binder-style declarations lower to an explicit internal function type and internal lambda. The
 binder syntax still depends on the theory having suitable function/lambda LF structure for the body
 to check.
+
+### Legacy raw internal bodies
+
+Framework regression tests and low-level debugging can opt into the previous raw body grammar:
+
+```lean
+internal_raw def f : J := rawValue
+internal_raw theorem th : J := rawProof
+```
+
+Use `internal_raw` only when a test needs legacy `ttExpr` body parsing, for example the old
+`{x := value}` named-implicit marker. New code should use canonical `internal def` and
+`internal theorem`, with Lean named arguments such as `(x := value)`. The old prefix projection
+tokens `fst p` and `snd p` were removed from the raw grammar; use `π₁ p` and `π₂ p`.
 
 ## Internal tactic syntax
 

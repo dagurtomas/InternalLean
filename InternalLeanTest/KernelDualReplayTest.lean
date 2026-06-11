@@ -310,11 +310,9 @@ declare_type_theory KernelDualReplayIndexedImplicitSmoke where
   rule good_A : Good A
   rule good_el (X : Obj) (t : El X) : GoodEl t
   judgment_theorem a_good : GoodEl a := good_el A a
-  judgment_theorem idf_a_good : GoodEl (idf {X := A} a) := good_el A (idf {X := A} a)
+  judgment_theorem idf_a_good : GoodEl (idf (X := A) a) := good_el A (idf (X := A) a)
 
 namespace KernelDualReplayIndexedImplicitSmoke
-
-set_option internalLean.preferLeanQuotedFrontend true
 
 internal def viaQuoted (f : Hom A A) : Hom A A := comp f (comp f f)
 internal def withUnderscore : Hom A A := idm _

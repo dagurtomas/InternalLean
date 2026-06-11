@@ -33,8 +33,7 @@ declare_type_theory FrontendFallbackCanonicalSmoke where
 
 namespace FrontendFallbackCanonicalSmoke
 
-set_option internalLean.preferLeanQuotedFrontend true in
-internal def viaLegacy : El A := idf {X := A} a
+internal def viaQuoted : El A := idf (X := A) a
 
 end FrontendFallbackCanonicalSmoke
 
@@ -48,11 +47,9 @@ declare_type_theory FrontendFallbackCompareSmoke where
 
 namespace FrontendFallbackCompareSmoke
 
-set_option internalLean.preferLeanQuotedFrontend true in
 set_option internalLean.frontend.compareLegacy true in
 internal def quotedOnly (f : Hom o o) : Hom o o := comp f (comp f f)
 
-set_option internalLean.preferLeanQuotedFrontend true in
 set_option internalLean.frontend.compareLegacy true in
 internal def bothAgree : Hom o o := idm o
 
@@ -61,7 +58,6 @@ end FrontendFallbackCompareSmoke
 /--
 info: internal frontend fallback profile for current file:
   theoryObjExpr: 1
-  internalDef: 1
   compareLegacyInternalDef: 1
 -/
 #guard_msgs (whitespace := lax) in

@@ -143,7 +143,7 @@ end LevelExpr
 
 /-- LF head names that still collide with surface grammar tokens after the structural cutover. -/
 public def lfKernelReservedNameList : List Name :=
-  [`fst, `snd, `Type]
+  [`Type]
 
 /-- Set of LF head names that still collide with surface grammar tokens. -/
 public def lfKernelReservedNames : NameSet :=

@@ -70,9 +70,9 @@ syntax (name := internalTacticIdentArg) ident ident : internalTactic
 syntax (name := internalTacticSorry) "sorry" : internalTactic
 
 syntax (name := internalDef)
-  docComment ? "internal " "def " ident " : " ttExpr " := " ttExpr : command
+  docComment ? "internal " "def " ident " : " ttExpr " := " term : command
 syntax (name := internalDefLevel)
-  docComment ? "internal " "def " ident "{" ident,* "}" " : " ttExpr " := " ttExpr : command
+  docComment ? "internal " "def " ident "{" ident,* "}" " : " ttExpr " := " term : command
 syntax (name := internalDefBy)
   docComment ? "internal " "def " ident " : " ttExpr " := " "by" ppLine internalTactic* : command
 syntax (name := internalDefLevelBy)
@@ -89,13 +89,13 @@ syntax (name := internalDefLevelBinderBy)
   docComment ? "internal " "def " ident "{" ident,* "}" ttBinder+ " : " ttExpr " := " "by"
     ppLine internalTactic* : command
 syntax (name := internalDefBinderUnsupported)
-  docComment ? "internal " "def " ident ttBinder+ " : " ttExpr " := " ttExpr : command
+  docComment ? "internal " "def " ident ttBinder+ " : " ttExpr " := " term : command
 syntax (name := internalTheorem)
-  docComment ? "internal " "theorem " ident " : " ttExpr " := " ttExpr : command
+  docComment ? "internal " "theorem " ident " : " ttExpr " := " term : command
 syntax (name := internalTheoremSorry)
   docComment ? "internal " "theorem " ident " : " ttExpr " := " "sorry" : command
 syntax (name := internalTheoremBinder)
-  docComment ? "internal " "theorem " ident ttBinder+ " : " ttExpr " := " ttExpr : command
+  docComment ? "internal " "theorem " ident ttBinder+ " : " ttExpr " := " term : command
 syntax (name := internalTheoremBinderSorry)
   docComment ? "internal " "theorem " ident ttBinder+ " : " ttExpr " := " "sorry" : command
 syntax (name := internalRawDef)
@@ -121,16 +121,16 @@ syntax (name := internalRawTheoremBinder)
 syntax (name := internalRawTheoremBinderSorry)
   docComment ? "internal_raw " "theorem " ident ttBinder+ " : " ttExpr " := " "sorry" : command
 syntax (name := internalDefLevelBinderUnsupported)
-  docComment ? "internal " "def " ident "{" ident,* "}" ttBinder+ " : " ttExpr " := " ttExpr :
+  docComment ? "internal " "def " ident "{" ident,* "}" ttBinder+ " : " ttExpr " := " term :
     command
 
 declare_syntax_cat internalDefsDecl
 syntax (name := internalDefsDeclChecked)
-  docComment ? "def " ident " : " ttExpr " := " ttExpr : internalDefsDecl
+  docComment ? "def " ident " : " ttExpr " := " term : internalDefsDecl
 syntax (name := internalDefsDeclSorry)
   docComment ? "def " ident " : " ttExpr " := " "sorry" : internalDefsDecl
 syntax (name := internalDefsDeclBinderChecked)
-  docComment ? "def " ident ttBinder+ " : " ttExpr " := " ttExpr : internalDefsDecl
+  docComment ? "def " ident ttBinder+ " : " ttExpr " := " term : internalDefsDecl
 syntax (name := internalDefsDeclBinderSorry)
   docComment ? "def " ident ttBinder+ " : " ttExpr " := " "sorry" : internalDefsDecl
 syntax (name := internalDefsDeclBy)
@@ -3767,13 +3767,13 @@ def elabInternalDefsSorryBatchItem? (decl : TSyntax `internalDefsDecl) :
       $typeStx:ttExpr := sorry) =>
       mkItem doc? declName declName.getId binders typeStx
   | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr :=
-      $valueStx:ttExpr) =>
+      $valueStx:term) =>
       if isSorryObjExprSyntax valueStx.raw then
         mkItem doc? declName declName.getId #[] typeStx
       else
         pure none
   | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :
-      $typeStx:ttExpr := $valueStx:ttExpr) =>
+      $typeStx:ttExpr := $valueStx:term) =>
       if isSorryObjExprSyntax valueStx.raw then
         mkItem doc? declName declName.getId binders typeStx
       else
@@ -3803,57 +3803,22 @@ structure InternalDefsCheckedObjectBatchItem where
 /-- Parse one checked direct object declaration in an `internal_defs where` batch. -/
 def elabInternalDefsCheckedObjectBatchItem? (decl : TSyntax `internalDefsDecl) :
     CommandElabM (Option InternalDefsCheckedObjectBatchItem) := do
-  let mkItem (doc? : Option (TSyntax ``Parser.Command.docComment)) (declNameStx : Syntax)
-      (declName : Name) (binders : TSyntaxArray `ttBinder) (typeStx valueStx : TSyntax `ttExpr) :=
-    do
-    if isSorryObjExprSyntax valueStx.raw then
-      return none
-    let target ← resolveInternalDefTarget declName
-    ensureInternalDeclarationNamesAvailable target
-    let sourceDoc? ← optDocCommentString? doc?
-    let params ← binders.mapM elabHLBinding
-    let typeExpr ← elabObjExpr typeStx
-    let valueExpr ← elabObjExpr valueStx
-    if internalObjExprMentionsName `_ valueExpr then
-      return none
-    let valueExpr := eraseObjExprScopes valueExpr
-    let fullType := mkInternalDefFunctionType params typeExpr
-    let fullValue := mkInternalDefLambda params valueExpr
-    pure (some {
-      declStx := decl.raw
-      declNameStx := declNameStx
-      target := target
-      sourceDoc? := sourceDoc?
-      params := params
-      anchorTypeExpr := fullType
-      resultTypeExpr := typeExpr
-      lfDef := { name := target.localName, typeExpr := fullType, value := fullValue } })
-  match decl with
-  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr :=
-      $valueStx:ttExpr) =>
-      mkItem doc? declName declName.getId #[] typeStx valueStx
-  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :
-      $typeStx:ttExpr := $valueStx:ttExpr) =>
-      mkItem doc? declName declName.getId binders typeStx valueStx
-  | _ => pure none
+  let _ := decl.raw
+  pure none
 
 /-- Add navigation info for one declaration inside an `internal_defs where` block. -/
 def addInternalDefsDeclNavigationInfo (theoryName : Name) (decl : Syntax) : CommandElabM Unit := do
   let decl : TSyntax `internalDefsDecl := ⟨decl⟩
   match decl with
   | `(internalDefsDecl| $[$doc?:docComment]? def $_:ident : $typeStx:ttExpr :=
-      $valueStx:ttExpr) =>
-      let _ := doc?.map (·.raw)
+      $valueStx:term) =>
+      let _ := doc?.map (·.raw); let _ := valueStx.raw
       addObjExprNavigationInfo theoryName {} typeStx
-      unless isSorryObjExprSyntax valueStx.raw do
-        addObjExprNavigationInfo theoryName {} valueStx
   | `(internalDefsDecl| $[$doc?:docComment]? def $_:ident $binders:ttBinder* :
-      $typeStx:ttExpr := $valueStx:ttExpr) =>
-      let _ := doc?.map (·.raw)
+      $typeStx:ttExpr := $valueStx:term) =>
+      let _ := doc?.map (·.raw); let _ := valueStx.raw
       let locals ← addBinderNavigationInfos theoryName {} binders
       addObjExprNavigationInfo theoryName locals typeStx
-      unless isSorryObjExprSyntax valueStx.raw do
-        addObjExprNavigationInfo theoryName locals valueStx
   | `(internalDefsDecl| $[$doc?:docComment]? def $_:ident : $typeStx:ttExpr := by
       $tactics:internalTactic*) =>
       let _ := doc?.map (·.raw); let _ := tactics.size
@@ -3979,18 +3944,10 @@ def elabInternalDefsDecl : TSyntax `internalDefsDecl → CommandElabM Unit
   | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :
       $typeStx:ttExpr := sorry) =>
       elabInternalDefSorryWithBinders doc? declName declName.getId #[] binders typeStx
-  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr :=
-      $valueStx:ttExpr) =>
-      if isSorryObjExprSyntax valueStx.raw then
-        elabInternalDefSorry doc? declName declName.getId #[] typeStx
-      else
-        elabInternalDefChecked doc? declName declName.getId #[] typeStx valueStx
-  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :
-      $typeStx:ttExpr := $valueStx:ttExpr) =>
-      if isSorryObjExprSyntax valueStx.raw then
-        elabInternalDefSorryWithBinders doc? declName declName.getId #[] binders typeStx
-      else
-        elabInternalDefCheckedWithBinders doc? declName declName.getId #[] binders typeStx valueStx
+  | `(internalDefsDecl| $[$doc?:docComment]? def $_:ident : $_:ttExpr := $_:term) =>
+      throwUnsupportedSyntax
+  | `(internalDefsDecl| $[$doc?:docComment]? def $_:ident $_:ttBinder* : $_:ttExpr := $_:term) =>
+      throwUnsupportedSyntax
   | stx => throwError "unsupported internal_defs declaration:{indentD stx}"
 
 /-- Elaborate an `internal_defs where` block, batching consecutive LF-opaque admissions. -/
@@ -4080,59 +4037,45 @@ elab_rules : command
         elabInternalDefSorryWithBinders doc? declName declName.getId #[] binders typeStx
       else
         elabInternalDefCheckedWithBinders doc? declName declName.getId #[] binders typeStx valueStx
+
+elab_rules (kind := internalTheoremSorry) : command
   | `($[$doc?:docComment]? internal theorem $declName:ident : $typeStx:ttExpr := sorry) =>
       elabInternalTheoremSorryWithBinders doc? declName declName.getId #[] #[] typeStx
+
+elab_rules (kind := internalTheoremBinderSorry) : command
   | `($[$doc?:docComment]? internal theorem $declName:ident $binders:ttBinder* :
       $typeStx:ttExpr := sorry) =>
       elabInternalTheoremSorryWithBinders doc? declName declName.getId #[] binders typeStx
-  | `($[$doc?:docComment]? internal theorem $declName:ident : $typeStx:ttExpr :=
-      $valueStx:ttExpr) =>
-      elabInternalTheoremCheckedWithBinders doc? declName declName.getId #[] #[] typeStx valueStx
-  | `($[$doc?:docComment]? internal theorem $declName:ident $binders:ttBinder* :
-      $typeStx:ttExpr := $valueStx:ttExpr) =>
-      if isSorryObjExprSyntax valueStx.raw then
-        elabInternalTheoremSorryWithBinders doc? declName declName.getId #[] binders typeStx
-      else
-        elabInternalTheoremCheckedWithBinders doc? declName declName.getId #[] binders typeStx
-          valueStx
+
+elab_rules (kind := internalDefSorry) : command
   | `($[$doc?:docComment]? internal def $declName:ident : $typeStx:ttExpr := sorry) =>
       elabInternalDefSorry doc? declName declName.getId #[] typeStx
+
+elab_rules (kind := internalDefLevelSorry) : command
   | `($[$doc?:docComment]? internal def $declName:ident {$levels:ident,*} : $typeStx:ttExpr :=
-    sorry) =>
+      sorry) =>
       elabInternalDefSorry doc? declName declName.getId (levels.getElems.map (·.getId)) typeStx
-  | `($[$doc?:docComment]? internal def $declName:ident : $typeStx:ttExpr :=
-    by $tactics:internalTactic*) =>
+
+elab_rules (kind := internalDefBy) : command
+  | `($[$doc?:docComment]? internal def $declName:ident : $typeStx:ttExpr := by
+      $tactics:internalTactic*) =>
       elabInternalDefBy doc? declName declName.getId #[] typeStx tactics
+
+elab_rules (kind := internalDefLevelBy) : command
   | `($[$doc?:docComment]? internal def $declName:ident {$levels:ident,*} : $typeStx:ttExpr :=
-    by $tactics:internalTactic*) =>
-      elabInternalDefBy doc? declName declName.getId (levels.getElems.map (·.getId)) typeStx tactics
+      by $tactics:internalTactic*) =>
+      elabInternalDefBy doc? declName declName.getId (levels.getElems.map (·.getId)) typeStx
+        tactics
+
+elab_rules (kind := internalDefBinderBy) : command
   | `($[$doc?:docComment]? internal def $declName:ident $binders:ttBinder* :
       $typeStx:ttExpr := by $tactics:internalTactic*) =>
       elabInternalDefByWithBinders doc? declName declName.getId #[] binders typeStx tactics
+
+elab_rules (kind := internalDefLevelBinderBy) : command
   | `($[$doc?:docComment]? internal def $declName:ident {$levels:ident,*}
       $binders:ttBinder* : $typeStx:ttExpr := by $tactics:internalTactic*) =>
       elabInternalDefByWithBinders doc? declName declName.getId
         (levels.getElems.map (·.getId)) binders typeStx tactics
-  | `($[$doc?:docComment]? internal def $declName:ident : $typeStx:ttExpr := $valueStx:ttExpr) =>
-      elabInternalDefChecked doc? declName declName.getId #[] typeStx valueStx
-  | `($[$doc?:docComment]? internal def $declName:ident {$levels:ident,*} : $typeStx:ttExpr :=
-    $valueStx:ttExpr) =>
-      elabInternalDefChecked doc? declName declName.getId (levels.getElems.map (·.getId)) typeStx
-        valueStx
-  | `($[$doc?:docComment]? internal def $declName:ident $binders:ttBinder* : $typeStx:ttExpr :=
-    $valueStx:ttExpr) =>
-      if isSorryObjExprSyntax valueStx.raw then
-        elabInternalDefSorryWithBinders doc? declName declName.getId #[] binders typeStx
-      else
-        elabInternalDefCheckedWithBinders doc? declName declName.getId #[] binders typeStx valueStx
-  | `($[$doc?:docComment]? internal def $declName:ident {$levels:ident,*} $binders:ttBinder* :
-    $typeStx:ttExpr := $valueStx:ttExpr) =>
-      if isSorryObjExprSyntax valueStx.raw then
-        elabInternalDefSorryWithBinders doc? declName declName.getId (levels.getElems.map
-          (·.getId)) binders typeStx
-      else
-        elabInternalDefCheckedWithBinders doc? declName declName.getId (levels.getElems.map
-          (·.getId)) binders typeStx valueStx
-
 
 end InternalLean

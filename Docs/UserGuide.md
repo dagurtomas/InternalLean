@@ -4,7 +4,8 @@ This guide introduces the public InternalLean workflow: declare a type theory, a
 declarations, inspect obligations, and generate model interfaces or transports.
 
 InternalLean is still an active research prototype, so this guide focuses on the stable direct-LF
-surface rather than every developer diagnostic command.
+surface rather than every developer diagnostic command. Canonical `internal def` and
+`internal theorem` bodies are Lean terms reflected to LF and then checked by the LF layer.
 
 ## Imports
 
@@ -165,7 +166,8 @@ rule_role succ_intro : introduction
 ## Internal declarations
 
 After a theory has been declared, internal definitions and theorems live in its Lean namespace and
-use `internal def`.
+use `internal def`. The body is parsed as a Lean term against generated quote stubs, reflected back
+to LF, and checked by the ordinary LF checker.
 
 ```lean
 namespace TinyNat
@@ -175,8 +177,10 @@ internal def myZero : wfNat zero := zero_intro
 end TinyNat
 ```
 
-The annotation after `:` is a judgment or type in the declared theory. The body is checked as an
-internal term or proof for that judgment.
+The annotation after `:` is a judgment or type in the declared theory. The reflected body is
+checked as an internal term or proof for that judgment. Use Lean named-argument syntax such as
+`(A := A)` in canonical internal bodies; the old raw marker `{A := A}` is only for `internal_raw`
+compatibility and theory-block fallback syntax.
 
 Binder-style declarations are also supported:
 
@@ -204,11 +208,10 @@ internal_defs where
 end T
 ```
 
-All-direct checked object-definition blocks are checked as one batch, and consecutive object
-admissions are appended through the opaque-cache path. Tactic, theorem-shaped, placeholder, or
-mixed blocks still follow source-order paths. Use `internal theorem th : J := sorry` for
-theorem-shaped formalization debt that should be reported by `#lint_type_theory_sorries` without
-becoming a model field.
+Consecutive object admissions are appended through the opaque-cache path. Checked term bodies,
+tactic entries, theorem-shaped entries, placeholder-heavy entries, and mixed blocks follow
+source-order paths. Use `internal theorem th : J := sorry` for theorem-shaped formalization debt
+that should be reported by `#lint_type_theory_sorries` without becoming a model field.
 
 ## Internal tactic scripts
 
@@ -225,6 +228,12 @@ end TinyNat
 
 Internal tactic scripts compile to internal terms, then the resulting declaration goes through the
 same checked registration path as a term-style `internal def`.
+
+The previous raw body grammar is still available as `internal_raw def` and
+`internal_raw theorem` for framework regression tests and debugging. Prefer canonical
+`internal def`/`internal theorem` in new code. When migrating old raw bodies, replace `{x := t}`
+with Lean named arguments `(x := t)` and replace old projection tokens `fst p`/`snd p` with
+`π₁ p`/`π₂ p`.
 
 Common tactics include:
 
