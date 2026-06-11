@@ -432,12 +432,28 @@ structure ScopedInstantiation where
 
 namespace ScopedInstantiation
 
+/-- Convert scoped-instantiation entries to a finite metavariable map. -/
+def entriesAsInstantiation (entries : List ScopedInstantiationEntry) : KInstantiation :=
+  Id.run do
+    let mut out : KInstantiation := {}
+    for e in entries do
+      out := out.insert e.name e.value
+    return out
+
 /-- Convert a scoped instantiation to a finite metavariable map. -/
-def asInstantiation (σ : ScopedInstantiation) : KInstantiation := Id.run do
-  let mut out : KInstantiation := {}
-  for e in σ.entries do
-    out := out.insert e.name e.value
-  return out
+def asInstantiation (σ : ScopedInstantiation) : KInstantiation :=
+  entriesAsInstantiation σ.entries
+
+/-- Instantiate an optional structural term with a prefix metavariable map. -/
+def instantiateTermOption (σ : KInstantiation) : Option KTerm → Except String (Option KTerm)
+  | none => pure none
+  | some e => return some (← KTerm.instantiateMetas σ e)
+
+/-- Instantiate an optional structural judgment with a prefix metavariable map. -/
+def instantiateJudgmentOption (σ : KInstantiation) :
+    Option Judgment → Except String (Option Judgment)
+  | none => pure none
+  | some j => return some (← Judgment.instantiateMetas σ j)
 
 /-- Validate a scoped instantiation against a rule metavariable telescope. -/
 def validateAgainst (σ : ScopedInstantiation) (metavariables : List RuleMetaVar) :
@@ -445,6 +461,7 @@ def validateAgainst (σ : ScopedInstantiation) (metavariables : List RuleMetaVar
   if σ.entries.length != metavariables.length then
     throw s!"scoped instantiation has {σ.entries.length} entrie(s), expected \
       {metavariables.length}"
+  let mut processed : List ScopedInstantiationEntry := []
   for e in σ.entries, v in metavariables do
     if e.name != v.name then
       throw s!"scoped instantiation entry for '{e.name}' appears where metavariable \
@@ -455,7 +472,10 @@ def validateAgainst (σ : ScopedInstantiation) (metavariables : List RuleMetaVar
     if e.zone? != v.zone? then
       throw s!"scoped instantiation entry '{e.name}' has zone '{reprStr e.zone?}', expected \
         '{reprStr v.zone?}'"
-    match e.type?, v.type? with
+    unless e.value.isLocallyClosed do
+      throw s!"scoped instantiation entry '{e.name}' has a value with loose binders"
+    let expectedType? ← instantiateTermOption (entriesAsInstantiation processed) v.type?
+    match e.type?, expectedType? with
     | some actual, some expected =>
         unless actual.alphaEq expected do
           throw s!"scoped instantiation entry '{e.name}' has a type annotation that differs \
@@ -464,7 +484,9 @@ def validateAgainst (σ : ScopedInstantiation) (metavariables : List RuleMetaVar
     | _, _ =>
         throw s!"scoped instantiation entry '{e.name}' has a type annotation that differs from \
           the rule telescope"
-    match e.evidence?, v.evidence? with
+    let expectedEvidence? ←
+      instantiateJudgmentOption (entriesAsInstantiation (processed ++ [e])) v.evidence?
+    match e.evidence?, expectedEvidence? with
     | some actual, some expected =>
         unless actual.alphaEq expected do
           throw s!"scoped instantiation entry '{e.name}' has evidence that differs from the \
@@ -473,8 +495,7 @@ def validateAgainst (σ : ScopedInstantiation) (metavariables : List RuleMetaVar
     | _, _ =>
         throw s!"scoped instantiation entry '{e.name}' has evidence that differs from the rule \
           telescope"
-    unless e.value.isLocallyClosed do
-      throw s!"scoped instantiation entry '{e.name}' has a value with loose binders"
+    processed := processed ++ [e]
 
 end ScopedInstantiation
 

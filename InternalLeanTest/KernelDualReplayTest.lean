@@ -143,6 +143,37 @@ run_cmd do
         throwError "expected duplicate-metavariable diagnostic, got: {err}"
 
 run_cmd do
+  let kn (n : Name) := Kernel.KName.ofName n
+  let ident (n : Name) : Kernel.KTerm := .ident { name := kn n }
+  let X := kn `X
+  let t := kn `t
+  let elOf (arg : Kernel.KTerm) := Kernel.KTerm.mkApps (ident `El) [arg]
+  let goodEl (A t : Kernel.KTerm) : Kernel.Judgment := {
+    head := kn `GoodEl
+    args := [A, t] }
+  let metavariables : List Kernel.RuleMetaVar := [{
+    name := X
+    type? := some (ident `Obj)
+  }, {
+    name := t
+    type? := some (elOf (.mvar X .arg))
+    evidence? := some (goodEl (.mvar X .arg) (.mvar t .arg))
+  }]
+  let inst : Kernel.ScopedInstantiation := { entries := [{
+    name := X
+    type? := some (ident `Obj)
+    value := ident `A
+  }, {
+    name := t
+    type? := some (elOf (ident `A))
+    evidence? := some (goodEl (ident `A) (ident `a))
+    value := ident `a
+  }] }
+  match inst.validateAgainst metavariables with
+  | .ok _ => pure ()
+  | .error err => throwError "dependent scoped instantiation was rejected: {err}"
+
+run_cmd do
   let badStmt : Kernel.Judgment := {
     head := Kernel.KName.ofName `J
     args := [.bvar 0] }
@@ -172,3 +203,43 @@ declare_type_theory KernelDualReplaySmoke where
   judgment_theorem o_good : Good o := good_o
 
 #check_type_theory KernelDualReplaySmoke
+
+declare_type_theory KernelDualReplayIndexedExplicitSmoke where
+  syntax_sort Obj
+  syntax_sort El (A : Obj)
+  lf_opaque A : Obj
+  lf_opaque a : El A
+  judgment GoodEl (X : Obj) (t : El X)
+  rule good_el (X : Obj) (t : El X) : GoodEl X t
+  judgment_theorem a_good : GoodEl A a := good_el A a
+
+#check_type_theory KernelDualReplayIndexedExplicitSmoke
+
+declare_type_theory KernelDualReplayIndexedImplicitSmoke where
+  syntax_sort Obj
+  syntax_sort El (A : Obj)
+  syntax_sort Hom (x : Obj) (y : Obj)
+  lf_opaque A : Obj
+  lf_opaque a : El A
+  lf_opaque idf {X : Obj} (x : El X) : El X
+  lf_opaque idm (x : Obj) : Hom x x
+  lf_opaque comp {x : Obj} {y : Obj} {z : Obj}
+    (f : Hom x y) (g : Hom y z) : Hom x z
+  judgment Good (x : Obj)
+  judgment GoodEl {A : Obj} (t : El A)
+  rule good_A : Good A
+  rule good_el (X : Obj) (t : El X) : GoodEl t
+  judgment_theorem a_good : GoodEl a := good_el A a
+  judgment_theorem idf_a_good : GoodEl (idf {X := A} a) := good_el A (idf {X := A} a)
+
+namespace KernelDualReplayIndexedImplicitSmoke
+
+set_option internalLean.preferLeanQuotedFrontend true
+
+internal def viaQuoted (f : Hom A A) : Hom A A := comp f (comp f f)
+internal def withUnderscore : Hom A A := idm _
+internal theorem a_good_again : GoodEl a := good_el A a
+
+end KernelDualReplayIndexedImplicitSmoke
+
+#check_type_theory KernelDualReplayIndexedImplicitSmoke
