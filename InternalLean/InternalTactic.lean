@@ -799,6 +799,7 @@ structure LFObjectRewriteApplication where
   oldGoal : ObjExpr
   /-- Goal after rewriting. -/
   newGoal : ObjExpr
+  deriving Inhabited, Repr
 
 /-- Checked evidence that one direct-LF object rewrite changed a tactic goal. -/
 structure CheckedLFObjectRewrite where
@@ -1383,6 +1384,7 @@ structure ObjectSimpRewriteStep where
   app? : Option LFObjectRewriteApplication := none
   needsTransport : Bool := false
   pluginStep? : Option ConversionStepKind := none
+  deriving Inhabited, Repr
 
 /-- Configuration for object `simp`. -/
 structure ObjectSimpConfig where
@@ -2776,21 +2778,19 @@ inductive InternalPartialTerm where
   | app (fn arg : InternalPartialTerm)
   | lam (names : Array Name) (body : InternalPartialTerm)
   | substitute (name : Name) (value body : InternalPartialTerm)
+  | rwTransport (ctx : Array HLBinding) (rawName : Name)
+      (app : LFObjectRewriteApplication) (source : InternalPartialTerm)
+  | simpTransports (ctx : Array HLBinding) (steps : Array ObjectSimpRewriteStep)
+      (source : InternalPartialTerm)
   deriving Inhabited, Repr
 
 /-- Wrapper accumulated while a native tactic focuses a single LF proof hole. -/
 inductive InternalNativeFrame where
   | lam (name : Name)
   | substitute (name : Name) (value : ObjExpr)
+  | rwTransport (ctx : Array HLBinding) (rawName : Name) (app : LFObjectRewriteApplication)
+  | simpTransports (ctx : Array HLBinding) (steps : Array ObjectSimpRewriteStep)
   deriving Inhabited, Repr
-
-/-- Apply a native goal's accumulated wrappers to a solved proof term. -/
-def applyInternalNativeFrames (frames : Array InternalNativeFrame) (term : ObjExpr) : ObjExpr :=
-  frames.foldr (init := term) fun frame body =>
-    match frame with
-    | .lam name => .lam #[name] body
-    | .substitute name value =>
-        substObjectVars (({} : NameMap ObjExpr).insert name.eraseMacroScopes value) body
 
 /-- Apply a native goal's accumulated wrappers to a partial proof term. -/
 def applyInternalNativeFramesToPartial (frames : Array InternalNativeFrame)
@@ -2799,6 +2799,8 @@ def applyInternalNativeFramesToPartial (frames : Array InternalNativeFrame)
     match frame with
     | .lam name => .lam #[name] body
     | .substitute name value => .substitute name (.closed value) body
+    | .rwTransport ctx rawName app => .rwTransport ctx rawName app body
+    | .simpTransports ctx steps => .simpTransports ctx steps body
 
 /-- One argument in a native `apply`/`refine` plan. -/
 inductive InternalNativeApplyArg where
@@ -2893,6 +2895,10 @@ mutual
     | assumption
     | showGoal (target : ObjExpr)
     | changeGoal (target : ObjExpr)
+    | rwRule (rawName : Name) (symm : Bool)
+    | rwRules (items : Array (Name × Bool))
+    | simp
+    | simpRules (names : Array Name) (onlyMode : Bool)
     | haveTerm (name : Name) (typeExpr proof : ObjExpr)
     | haveStart (name : Name) (typeExpr : ObjExpr)
     | applyPlan (plan : InternalNativeApplyPlan)
@@ -3001,7 +3007,8 @@ def internalNativeUnsupportedTacticMessage (stx : Syntax) : MessageData :=
       (firstInternalNativeTacticToken? stx).getD kindLabel
   m!"tactic `{tacticName}` is not part of InternalLean native tactic mode yet; supported \
     native tactics in this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, \
-    `assumption`, `show`, `change`, term- and tactic-form `have`, focus bullets, and `skip`."
+    `assumption`, `show`, `change`, `rw`, `simp`, term- and tactic-form `have`, focus \
+    bullets, and `skip`."
 
 /-- Syntax kinds rejected before native tactic execution by the linear-script policy. -/
 def internalNativeRejectedTacticKinds : NameSet := Id.run do
@@ -3196,6 +3203,53 @@ def closeInternalNativeMainGoal (mvarId : MVarId) (goal : InternalNativeGoal)
   setInternalNativeTacticSessionInTactic session
   Tactic.replaceMainGoal []
 
+/-- Compute one native rewrite target update and any transport wrapper it needs. -/
+def nativeRewriteGoalUpdate (target : InternalDefTarget) (sig : HLSignature)
+    (levels : Array Name) (ctx : Array HLBinding) (goalTarget : ObjExpr) (rawName : Name)
+    (symm : Bool) : Except String (ObjExpr × Option InternalNativeFrame) := do
+  let app ← findObjectRewriteApplication target sig goalTarget rawName symm
+  match checkObjectGoalConversion sig levels ctx goalTarget app.newGoal with
+  | .ok _ => pure (app.newGoal, none)
+  | .error _ =>
+      discard <| buildObjectRewriteTransportTerm target sig levels ctx app rawName
+        (.ident (.str .anonymous "?rw_source"))
+      pure (app.newGoal, some (.rwTransport ctx rawName app))
+
+/-- Apply one or more native rewrite steps to the focused LF goal. -/
+def rewriteInternalNativeMainGoal (stx : Syntax) (mvarId : MVarId)
+    (goal : InternalNativeGoal) (items : Array (Name × Bool)) : Tactic.TacticM Unit := do
+  if items.isEmpty then
+    throwErrorAt stx "object tactic `rw []` failed: rewrite list is empty"
+  let session ← getInternalNativeTacticSessionInTactic
+  let mut targetExpr := goal.targetExpr
+  let mut frames := goal.frames
+  for (rawName, symm) in items do
+    let (newTarget, frame?) ←
+      match nativeRewriteGoalUpdate goal.target session.sig session.levels goal.ctx targetExpr
+          rawName symm with
+      | .ok out => pure out
+      | .error err => throwErrorAt stx err
+    targetExpr := newTarget
+    if let some frame := frame? then
+      frames := frames.push frame
+  replaceInternalNativeMainGoal mvarId { goal with targetExpr, frames }
+
+/-- Apply native object simplification to the focused LF goal. -/
+def simpInternalNativeMainGoal (stx : Syntax) (mvarId : MVarId)
+    (goal : InternalNativeGoal) (config : ObjectSimpConfig := {}) : Tactic.TacticM Unit := do
+  let session ← getInternalNativeTacticSessionInTactic
+  let result ←
+    match simpObjectGoalDetailed goal.target session.sig session.levels goal.ctx goal.targetExpr
+        config with
+    | .ok result => pure result
+    | .error err => throwErrorAt stx err
+  let frames :=
+    if result.rewrites.any (·.needsTransport) then
+      goal.frames.push (.simpTransports goal.ctx result.rewrites)
+    else
+      goal.frames
+  replaceInternalNativeMainGoal mvarId { goal with targetExpr := result.newGoal, frames }
+
 /-- Execute one pre-elaborated InternalLean native tactic action. -/
 def evalInternalNativeResolvedTacticStep (stx : Syntax) (step : InternalNativeTacticStep) :
     Tactic.TacticM Unit := do
@@ -3247,6 +3301,18 @@ def evalInternalNativeResolvedTacticStep (stx : Syntax) (step : InternalNativeTa
   | .showGoal targetExpr | .changeGoal targetExpr =>
       let (_, mvarId, goal) ← getInternalNativeMainGoal stx
       replaceInternalNativeMainGoal mvarId { goal with targetExpr }
+  | .rwRule rawName symm =>
+      let (_, mvarId, goal) ← getInternalNativeMainGoal stx
+      rewriteInternalNativeMainGoal stx mvarId goal #[(rawName, symm)]
+  | .rwRules items =>
+      let (_, mvarId, goal) ← getInternalNativeMainGoal stx
+      rewriteInternalNativeMainGoal stx mvarId goal items
+  | .simp =>
+      let (_, mvarId, goal) ← getInternalNativeMainGoal stx
+      simpInternalNativeMainGoal stx mvarId goal
+  | .simpRules names onlyMode =>
+      let (_, mvarId, goal) ← getInternalNativeMainGoal stx
+      simpInternalNativeMainGoal stx mvarId goal { names, onlyMode }
   | .haveTerm name typeExpr proof =>
       let (_, mvarId, goal) ← getInternalNativeMainGoal stx
       if internalObjectContextHasName goal.ctx name then
@@ -3428,20 +3494,27 @@ def runInternalNativeResolvedTactic (target : InternalDefTarget) (sig : HLSignat
   pure result
 
 /-- Finalize a native partial LF term, failing if any proof hole remains open. -/
-partial def finalizeInternalNativePartialTerm (holes : NameMap InternalPartialTerm)
-    (fuel : Nat) : InternalPartialTerm → Except String ObjExpr
+partial def finalizeInternalNativePartialTerm (target : InternalDefTarget) (sig : HLSignature)
+    (levels : Array Name) (holes : NameMap InternalPartialTerm) (fuel : Nat) :
+    InternalPartialTerm → Except String ObjExpr
   | .closed term => pure term
   | .app fn arg => do
-      let fn ← finalizeInternalNativePartialTerm holes fuel fn
-      let arg ← finalizeInternalNativePartialTerm holes fuel arg
+      let fn ← finalizeInternalNativePartialTerm target sig levels holes fuel fn
+      let arg ← finalizeInternalNativePartialTerm target sig levels holes fuel arg
       pure (.app fn arg)
   | .lam names body => do
-      let body ← finalizeInternalNativePartialTerm holes fuel body
+      let body ← finalizeInternalNativePartialTerm target sig levels holes fuel body
       pure (.lam names body)
   | .substitute name value body => do
-      let value ← finalizeInternalNativePartialTerm holes fuel value
-      let body ← finalizeInternalNativePartialTerm holes fuel body
+      let value ← finalizeInternalNativePartialTerm target sig levels holes fuel value
+      let body ← finalizeInternalNativePartialTerm target sig levels holes fuel body
       pure <| substObjectVars (({} : NameMap ObjExpr).insert name.eraseMacroScopes value) body
+  | .rwTransport ctx rawName app source => do
+      let source ← finalizeInternalNativePartialTerm target sig levels holes fuel source
+      buildObjectRewriteTransportTerm target sig levels ctx app rawName source
+  | .simpTransports ctx steps source => do
+      let source ← finalizeInternalNativePartialTerm target sig levels holes fuel source
+      wrapObjectSimpTransports target sig levels ctx steps source
   | .hole id => do
       if fuel == 0 then
         throw s!"native tactic partial proof appears cyclic at hole '{id.name}'"
@@ -3452,18 +3525,19 @@ partial def finalizeInternalNativePartialTerm (holes : NameMap InternalPartialTe
           if id'.name == id.name then
             throw s!"native tactic proof hole '{id.name}' is still open"
           else
-            finalizeInternalNativePartialTerm holes (fuel - 1) term
-      | _ => finalizeInternalNativePartialTerm holes (fuel - 1) term
+            finalizeInternalNativePartialTerm target sig levels holes (fuel - 1) term
+      | _ => finalizeInternalNativePartialTerm target sig levels holes (fuel - 1) term
 
 /-- Finalize the root native partial term after all live LF goals have closed. -/
-def finalizeInternalNativeTacticResult (stx : Syntax)
+def finalizeInternalNativeTacticResult (target : InternalDefTarget) (stx : Syntax)
     (result : InternalNativeTacticRunResult) : CommandElabM ObjExpr := do
   unless result.finalGoals.isEmpty && result.session.goals.isEmpty do
     throwErrorAt stx "InternalLean native tactic block left unsolved object goal(s)"
   let some root := result.session.holes.find? result.session.rootHole.name
     | throwErrorAt stx "InternalLean native tactic root proof term is missing"
   let fuel := result.session.holes.toList.length + 1
-  match finalizeInternalNativePartialTerm result.session.holes fuel root with
+  match finalizeInternalNativePartialTerm target result.session.sig result.session.levels
+      result.session.holes fuel root with
   | .ok term => pure term
   | .error err => throwErrorAt stx err
 

@@ -1401,6 +1401,10 @@ def parseInternalNativeLeanTacticFromSource (stx : Syntax) : CommandElabM (TSynt
   let source :=
     if trimmedSource.startsWith "have " && trimmedSource.endsWith "end" then
       (trimmedSource.dropEnd 3).toString
+    else if trimmedSource.startsWith "rw ← " then
+      "rw [← " ++ (trimmedSource.drop 5).toString ++ "]"
+    else if trimmedSource.startsWith "rw " && !trimmedSource.startsWith "rw [" then
+      "rw [" ++ (trimmedSource.drop 3).toString ++ "]"
     else
       source
   /- The Lean parser in this environment accepts named synthetic holes but not anonymous `?_` in
@@ -1684,6 +1688,90 @@ def mkInternalNativeRefinePlan (target : InternalDefTarget) (sig : HLSignature)
     mkInternalNativeRefinePlanParts target sig levels goal rawName args true "refine" ref
   pure ({ rawName, candidateName, args := planArgs }, newGoals)
 
+/-- Whether a syntax node contains no source payload. -/
+partial def internalNativeSyntaxIsEmpty : Syntax → Bool
+  | .missing => true
+  | .node _ kind args =>
+      (kind == nullKind && args.isEmpty) || args.all internalNativeSyntaxIsEmpty
+  | _ => false
+
+/-- Whether a syntax node contains the given atom text. -/
+partial def internalNativeSyntaxContainsAtom (value : String) : Syntax → Bool
+  | .atom _ atomValue => atomValue == value
+  | .node _ _ args => args.any (internalNativeSyntaxContainsAtom value)
+  | _ => false
+
+/-- Extract one Lean `rw` rule, limited to named direct-LF rewrite candidates. -/
+def internalNativeRwRule? (stx : Syntax) : Option (Name × Bool) :=
+  if !stx.isOfKind `Lean.Parser.Tactic.rwRule then
+    none
+  else
+    match stx.getArg 1 with
+    | .ident _ _ rawName _ => some (rawName, internalNativeSyntaxContainsAtom "←" stx)
+    | _ => none
+
+/-- Extract a supported Lean `rw [...]` sequence. -/
+def internalNativeRwItems? (stx : Syntax) : Option (Array (Name × Bool)) :=
+  if !stx.isOfKind `Lean.Parser.Tactic.rwSeq then
+    none
+  else if !internalNativeSyntaxIsEmpty (stx.getArg 1) ||
+      !internalNativeSyntaxIsEmpty (stx.getArg 3) then
+    none
+  else
+    let seq := stx.getArg 2
+    if !seq.isOfKind `Lean.Parser.Tactic.rwRuleSeq then
+      none
+    else Id.run do
+      let list := seq.getArg 1
+      let mut out := #[]
+      let mut ok := true
+      for child in list.getArgs do
+        if child.isOfKind `Lean.Parser.Tactic.rwRule then
+          match internalNativeRwRule? child with
+          | some item => out := out.push item
+          | none => ok := false
+      if ok then some out else none
+
+/-- Extract an identifier from a supported Lean `simp` lemma. -/
+def internalNativeSimpLemmaName? (stx : Syntax) : Option Name :=
+  if !stx.isOfKind `Lean.Parser.Tactic.simpLemma then
+    none
+  else if !internalNativeSyntaxIsEmpty (stx.getArg 0) ||
+      !internalNativeSyntaxIsEmpty (stx.getArg 1) then
+    none
+  else
+    match stx.getArg 2 with
+    | .ident _ _ rawName _ => some rawName
+    | _ => none
+
+/-- Extract all supported Lean `simp` lemma names below a syntax node. -/
+partial def internalNativeSimpLemmaNames? (stx : Syntax) : Option (Array Name) :=
+  if stx.isOfKind `Lean.Parser.Tactic.simpLemma then
+    match internalNativeSimpLemmaName? stx with
+    | some name => some #[name]
+    | none => none
+  else Id.run do
+    let mut names := #[]
+    let mut ok := true
+    for child in stx.getArgs do
+      match internalNativeSimpLemmaNames? child with
+      | some childNames => names := names ++ childNames
+      | none => ok := false
+    if ok then some names else none
+
+/-- Extract a supported Lean `simp`/`simp only` configuration. -/
+def internalNativeSimpConfig? (stx : Syntax) : Option ObjectSimpConfig :=
+  if !stx.isOfKind `Lean.Parser.Tactic.simp then
+    none
+  else if !internalNativeSyntaxIsEmpty (stx.getArg 1) ||
+      !internalNativeSyntaxIsEmpty (stx.getArg 2) ||
+      !internalNativeSyntaxIsEmpty (stx.getArg 5) then
+    none
+  else do
+    let onlyMode := internalNativeSyntaxContainsAtom "only" (stx.getArg 3)
+    let names ← internalNativeSimpLemmaNames? (stx.getArg 4)
+    some { names, onlyMode }
+
 /-- Check and normalize a native `exact`/`have` proof term against an LF target. -/
 def checkInternalNativeProofTerm (target : InternalDefTarget) (sig : HLSignature)
     (ctx : Array HLBinding) (expected proof : ObjExpr) (tacticName : String) (ref : Syntax) :
@@ -1714,6 +1802,23 @@ mutual
       let (body, _) ← elabInternalNativeResolvedStepsForGoals target sig levels
         [{ ctx := goal.ctx, target := goal.target }] bodySteps
       return (#[{ stx, step := .focus body }], #[])
+    if let some items := internalNativeRwItems? stx then
+      let newTarget ← throwInternalNativeObjectTacticErrorAt stx <|
+        rewriteObjectGoalSeqForTactic target sig levels goal.ctx goal.target items
+      let step :=
+        match items[0]?, items.size with
+        | some (rawName, symm), 1 => .rwRule rawName symm
+        | _, _ => .rwRules items
+      return (#[{ stx, step }], #[{ goal with target := newTarget }])
+    if let some config := internalNativeSimpConfig? stx then
+      let result ← throwInternalNativeObjectTacticErrorAt stx <|
+        simpObjectGoalDetailed target sig levels goal.ctx goal.target config
+      let step :=
+        if config.names.isEmpty && !config.onlyMode then
+          .simp
+        else
+          .simpRules config.names config.onlyMode
+      return (#[{ stx, step }], #[{ goal with target := result.newGoal }])
     match (⟨stx⟩ : TSyntax `tactic) with
     | `(tactic| skip) => pure (#[{ stx, step := .skip }], #[goal])
     | `(tactic| intro $name:ident) =>
@@ -1860,7 +1965,7 @@ def elabInternalNativeByTerm (target : InternalDefTarget) (sig : HLSignature)
     (steps : Array Syntax) : CommandElabM ObjExpr := do
   let resolved ← elabInternalNativeResolvedSteps target sig levels ctx targetExpr steps
   let result ← runInternalNativeResolvedTactic target sig levels ctx targetExpr resolved
-  finalizeInternalNativeTacticResult bodyStx result
+  finalizeInternalNativeTacticResult target bodyStx result
 
 /-- Elaborate a canonical checked `internal def` Lean-term body through the quoted frontend. -/
 def elabCanonicalLeanQuotedDefChecked (doc? : Option (TSyntax ``Parser.Command.docComment))
