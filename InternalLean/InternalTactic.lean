@@ -456,67 +456,78 @@ def objectTacticLFDefinitionValues (sig : HLSignature) : LFDefinitionValueMap :=
 def internalObjectLocalNames (ctx : Array HLBinding) : NameSet :=
   ctx.foldl (init := {}) fun locals b => locals.insert b.name.eraseMacroScopes
 
-/-- Convert high-level conversion-plugin metadata to the kernel-facing schema. -/
-def conversionPluginDeclToKernelSchema (p : ConversionPluginDecl) : ConversionPluginSchema :=
-  { name := p.name.eraseMacroScopes, trust := p.trust,
+/-- Convert high-level conversion-plugin metadata to the structural kernel schema. -/
+def conversionPluginDeclToStructuralKernelSchema (p : ConversionPluginDecl) :
+    Kernel.ConversionPluginSchema :=
+  { name := Kernel.KName.ofName p.name, trust := p.trust,
     supportedSteps := p.supportedSteps.toList }
 
-/-- Kernel-facing plugin signature used by object-tactic conversion checks. -/
-def objectConversionPluginSignature (sig : HLSignature) : Signature :=
-  { name := sig.name.eraseMacroScopes,
-    conversionPlugins := sig.conversionPlugins.toList.map conversionPluginDeclToKernelSchema }
+/-- Structural plugin signature used by object-tactic conversion checks. -/
+def objectConversionPluginSignatureToK (sig : HLSignature) : Kernel.Signature :=
+  { name := Kernel.KName.ofName sig.name,
+    conversionPlugins := sig.conversionPlugins.toList.map
+      conversionPluginDeclToStructuralKernelSchema }
 
-/-- Raw conversion view of an object expression for generic plugin-step checking. -/
-partial def objectExprToConversionRaw (sig : HLSignature) (locals : NameSet) : ObjExpr → Raw
-  | .ident n =>
-      let n := n.eraseMacroScopes
-      if locals.contains n then
-        .leanParam n
-      else if sig.syntaxSorts.any (fun s => sameObjectName s.name n) then
-        .tyConst n
-      else
-        .tmConst n
-  | .sort => .tyConst `Type
-  | .univ u => .tyApp `Type [.leanParam (.str .anonymous u.toString)]
-  | e@(.app ..) =>
-      let (head, args) := splitObjApp e
-      let rawArgs := args.toList.map (objectExprToConversionRaw sig locals)
-      match head with
-      | .ident n =>
+/-- Lower an object expression to a structural conversion term. -/
+partial def objectExprToConversionKTermWithContext (locals : NameSet)
+    (binders : Array (Option Name)) : ObjExpr → Except String Kernel.KTerm
+  | .ident n => do
+      match ← findKTermLoweringBinder? binders n with
+      | some i => pure (.bvar i)
+      | none =>
           let n := n.eraseMacroScopes
-          if sig.syntaxSorts.any (fun s => sameObjectName s.name n) then
-            .tyApp n rawArgs
+          if locals.contains n then
+            pure (.fvar (Kernel.KLocalName.ofName n))
           else
-            .tmApp n rawArgs
-      | other => .tmApp `_app (objectExprToConversionRaw sig locals other :: rawArgs)
-  | .arrow _ A B =>
-      .tyApp `arrow [objectExprToConversionRaw sig locals A, objectExprToConversionRaw sig locals B]
-  | .funArrow _ A B =>
-      .tyApp `arrow [objectExprToConversionRaw sig locals A, objectExprToConversionRaw sig locals B]
-  | .sigma _ A B =>
-      .tyApp `sigma [objectExprToConversionRaw sig locals A, objectExprToConversionRaw sig locals B]
-  | .pair a b =>
-      .tmApp `pair [objectExprToConversionRaw sig locals a, objectExprToConversionRaw sig locals b]
-  | .fst e => .tmApp `fst [objectExprToConversionRaw sig locals e]
-  | .snd e => .tmApp `snd [objectExprToConversionRaw sig locals e]
-  | .lam xs body =>
-      let locals := xs.foldl (fun acc x => acc.insert x.eraseMacroScopes) locals
-      .tmApp `lam ((xs.toList.map fun x => Raw.leanParam x.eraseMacroScopes) ++
-        [objectExprToConversionRaw sig locals body])
-  | .jeq lhs rhs =>
-      .tmApp `jeq [objectExprToConversionRaw sig locals lhs,
-        objectExprToConversionRaw sig locals rhs]
+            pure (.ident { name := Kernel.KName.ofName n })
+  | .sort => pure (.univ .zero)
+  | .univ u => pure (.univ (LevelExpr.normalize u))
+  | .app f a => do
+      let f ← objectExprToConversionKTermWithContext locals binders f
+      let a ← objectExprToConversionKTermWithContext locals binders a
+      pure (.app f a)
+  | .arrow x? A B | .funArrow x? A B => do
+      let A ← objectExprToConversionKTermWithContext locals binders A
+      let B ← objectExprToConversionKTermWithContext locals (binders.push x?) B
+      pure (.arrow A B)
+  | .sigma x? A B => do
+      let A ← objectExprToConversionKTermWithContext locals binders A
+      let B ← objectExprToConversionKTermWithContext locals (binders.push x?) B
+      pure (.sigma A B)
+  | .pair a b => do
+      let a ← objectExprToConversionKTermWithContext locals binders a
+      let b ← objectExprToConversionKTermWithContext locals binders b
+      pure (.pair a b)
+  | .fst e => do
+      let e ← objectExprToConversionKTermWithContext locals binders e
+      pure (.fst e)
+  | .snd e => do
+      let e ← objectExprToConversionKTermWithContext locals binders e
+      pure (.snd e)
+  | .lam xs body => do
+      let body ← objectExprToConversionKTermWithContext locals
+        (xs.foldl (fun binders x => binders.push (some x)) binders) body
+      pure <| xs.toList.foldr (fun _ acc => .lam acc) body
+  | .jeq lhs rhs => do
+      let lhs ← objectExprToConversionKTermWithContext locals binders lhs
+      let rhs ← objectExprToConversionKTermWithContext locals binders rhs
+      pure (.jeq lhs rhs)
 
-/-- Validate one object conversion plugin step through the kernel-facing checker. -/
+/-- Lower an object expression to a locally nameless structural conversion term. -/
+def objectExprToConversionKTerm (locals : NameSet) (e : ObjExpr) : Except String Kernel.KTerm :=
+  objectExprToConversionKTermWithContext locals #[] e
+
+/-- Validate one object conversion plugin step through the structural kernel checker. -/
 def checkObjectConversionPluginStep (sig : HLSignature) (ctx : Array HLBinding)
     (pluginName : Name) (kind : ConversionStepKind) (lhs rhs : ObjExpr) : Except String Unit := do
   let locals := internalObjectLocalNames ctx
-  let stmt : ConversionStatement := {
-    plugin := pluginName.eraseMacroScopes,
-    lhs := objectExprToConversionRaw sig locals lhs,
-    rhs := objectExprToConversionRaw sig locals rhs }
-  let cert := KernelLFConversionCertificate.pluginStep stmt kind none [] "object tactic simp"
-  KernelLFConversionCertificate.check (objectConversionPluginSignature sig) cert stmt
+  let stmt : Kernel.ConversionStatement := {
+    plugin := Kernel.KName.ofName pluginName,
+    lhs := (← objectExprToConversionKTerm locals lhs),
+    rhs := (← objectExprToConversionKTerm locals rhs) }
+  let cert := Kernel.KernelLFConversionCertificate.pluginStep stmt kind none [] "object tactic simp"
+  discard <| Kernel.CheckedKernelLFConversionCertificate.check
+    (objectConversionPluginSignatureToK sig) {} stmt cert
 
 /-- Checked object-conversion step kind used by direct-LF tactics. -/
 inductive LFObjectConversionStepKind where

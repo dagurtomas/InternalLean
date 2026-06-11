@@ -489,7 +489,9 @@ declare_type_theory InternalTacticSimpPluginSmoke where
   syntax_sort Obj
   judgment Rel (x : Obj) (y : Obj)
   lf_opaque a : Obj
+  lf_opaque lam (x : Obj) (y : Obj) : Obj
   rule rel_a : Rel a a
+  rule rel_lam : Rel (lam a a) (lam a a)
   conversion_plugin beta_step executable [beta]
 
 namespace InternalTacticSimpPluginSmoke
@@ -502,8 +504,13 @@ internal def beta_plugin_simp_default : Rel ((fun x => x) a) a := by
   simp
   exact rel_a
 
+internal def beta_plugin_simp_lam_head : Rel ((fun x => lam x a) a) (lam a a) := by
+  simp only [beta_step]
+  exact rel_lam
+
 #check beta_plugin_simp
 #check beta_plugin_simp_default
+#check beta_plugin_simp_lam_head
 
 end InternalTacticSimpPluginSmoke
 

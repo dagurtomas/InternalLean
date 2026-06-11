@@ -166,11 +166,12 @@ A plugin declaration records the trust mode and supported generic step classes. 
 steps can be checked by the framework when support exists. External-certificate and opaque modes are
 trusted leaves unless backed by additional checked evidence.
 
-Internal `simp` currently uses registered executable `beta` plugin steps. Executable `eta` steps
-check the structural kernel's first-class function and Sigma constructors; user constants named
-`lam`, `_app`, or `pair` are ordinary LF heads and do not trigger structural beta/eta by name. The
-projection spellings `fst` and `snd` remain reserved as surface syntax. Other step classes remain
-part of the conversion-certificate vocabulary and future automation boundary.
+Internal `simp` currently uses registered executable `beta` plugin steps. These object-tactic
+plugin certificates lower endpoints to structural kernel terms before checking; user constants
+named `lam`, `_app`, or `pair` are ordinary LF heads and do not trigger structural beta/eta by
+name. Executable `eta` steps check the structural kernel's first-class function and Sigma
+constructors. The projection spellings `fst` and `snd` remain reserved as surface syntax. Other
+step classes remain part of the conversion-certificate vocabulary and future automation boundary.
 
 ## Lean mirror compare diagnostics
 

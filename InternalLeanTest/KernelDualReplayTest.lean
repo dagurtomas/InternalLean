@@ -192,6 +192,70 @@ run_cmd do
 #check Kernel.CheckedKernelLFDerivation.toContextDeriv?
 #check Kernel.KernelLFDerivation.ContextDeriv.interp
 
+run_cmd do
+  let kn (n : Name) := Kernel.KName.ofName n
+  let ident (n : Name) : Kernel.KTerm := .ident { name := kn n }
+  let plugin : Kernel.ConversionPluginSchema := {
+    name := kn `conv
+    trust := .executableChecked
+    supportedSteps := [.beta, .eta] }
+  let sig : Kernel.Signature := {
+    name := kn `StructuralConversionSmoke
+    conversionPlugins := [plugin] }
+  let checkStep (stmt : Kernel.ConversionStatement) (kind : ConversionStepKind) :=
+    Kernel.CheckedKernelLFConversionCertificate.check sig {} stmt
+      (.pluginStep stmt kind none [] "structural conversion test")
+  let userLam := ident `lam
+  let lamBody := Kernel.KTerm.mkApps userLam [.bvar 0, ident `a]
+  let betaLhs := .app (.lam lamBody) (ident `a)
+  let betaRhs := Kernel.KTerm.mkApps userLam [ident `a, ident `a]
+  let betaStmt : Kernel.ConversionStatement := {
+    plugin := kn `conv
+    lhs := betaLhs
+    rhs := betaRhs }
+  match checkStep betaStmt .beta with
+  | .ok _ => pure ()
+  | .error err => throwError "structural beta conversion rejected user constant 'lam': {err}"
+  let nestedBetaStmt : Kernel.ConversionStatement := {
+    plugin := kn `conv
+    lhs := .app (.lam (.lam (.bvar 1))) (ident `y)
+    rhs := .lam (ident `y) }
+  match checkStep nestedBetaStmt .beta with
+  | .ok _ => pure ()
+  | .error err => throwError "structural beta conversion captured a nested binder: {err}"
+  let etaStmt : Kernel.ConversionStatement := {
+    plugin := kn `conv
+    lhs := .lam (.app (ident `f) (.bvar 0))
+    rhs := ident `f }
+  match checkStep etaStmt .eta with
+  | .ok _ => pure ()
+  | .error err => throwError "structural function eta conversion was rejected: {err}"
+  let badEtaStmt : Kernel.ConversionStatement := {
+    plugin := kn `conv
+    lhs := .lam (.app (.app (ident `f) (.bvar 0)) (.bvar 0))
+    rhs := ident `f }
+  match checkStep badEtaStmt .eta with
+  | .ok _ => throwError "structural function eta accepted a capturing redex"
+  | .error err =>
+      unless err.contains "eta step expected" do
+        throwError "expected structural eta rejection, got: {err}"
+  let pairStmt : Kernel.ConversionStatement := {
+    plugin := kn `conv
+    lhs := .pair (.fst (ident `p)) (.snd (ident `p))
+    rhs := ident `p }
+  match checkStep pairStmt .eta with
+  | .ok _ => pure ()
+  | .error err => throwError "structural sigma eta conversion was rejected: {err}"
+  let badStmt : Kernel.ConversionStatement := {
+    plugin := kn `conv
+    lhs := betaLhs
+    rhs := ident `a }
+  match checkStep badStmt .beta with
+  | .ok _ => throwError "structural beta conversion accepted the wrong reduct"
+  | .error err =>
+      unless err.contains "beta step reduces lhs" do
+        throwError "expected structural beta mismatch diagnostic, got: {err}"
+
 set_option internalLean.kernel.dualReplay true
 
 run_cmd do
