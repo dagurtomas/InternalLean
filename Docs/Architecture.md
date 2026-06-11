@@ -36,9 +36,9 @@ Main files:
 
 This layer contains the low-level representation of LF syntax, judgments, signatures, derivations,
 and certificate checking. The checked replay boundary now uses first-class structural kernel terms
-for binders, products, functions, universes, and equality-shaped expressions, so former raw-kernel
-constructor names are ordinary LF heads. It is responsible for generic trust-boundary concerns such
-as:
+for binders, products, functions, universes, and equality-shaped expressions. Most former
+raw-kernel constructor names are ordinary LF heads; `lam` remains reserved until legacy raw replay
+no longer gates acceptance. This layer is responsible for generic trust-boundary concerns such as:
 
 - structural LF terms and checked judgments;
 - rule schemas and derivations;

@@ -169,7 +169,8 @@ trusted leaves unless backed by additional checked evidence.
 Internal `simp` currently uses registered executable `beta` plugin steps. Executable `eta` steps
 check the structural kernel's first-class function and Sigma constructors; user constants named
 `_app` or `pair` are ordinary LF heads and do not trigger structural eta by name. The projection
-spellings `fst` and `snd` remain reserved as surface syntax. Other step classes remain part of the
+spellings `fst` and `snd` remain reserved as surface syntax, and `lam` remains reserved while
+legacy raw replay still gates acceptance. Other step classes remain part of the
 conversion-certificate vocabulary and future automation boundary.
 
 ## Lean mirror compare diagnostics
