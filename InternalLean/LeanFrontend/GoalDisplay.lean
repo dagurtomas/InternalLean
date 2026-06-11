@@ -226,6 +226,24 @@ def mkFallbackInternalGoalMVar (target : InternalDefTarget) (goal : InternalGoal
     .syntheticOpaque `object
   pure mvar.mvarId!
 
+/-- Create one live display metavariable with the same mirror/fallback policy as isolated
+snapshots.  This is used by native tactic mode so Lean can attach ordinary `TacticInfo`; the
+metavariable is still display-only and must not be trusted as LF evidence. -/
+def mkLiveInternalGoalDisplayMVarWithContext (target : InternalDefTarget)
+    (displayCtx : InternalGoalDisplayContext) (goal : InternalGoalDisplayGoal) :
+    TermElabM (MVarId × Array InternalGoalDisplayFallback) := do
+  match displayCtx.mirrorError? with
+  | some message =>
+      let mvarId ← mkFallbackInternalGoalMVar target goal
+      pure (mvarId, #[{ kind := `mirrorUnavailable, message }])
+  | none =>
+      try
+        let mvarId ← mkMirrorInternalGoalMVar displayCtx goal
+        pure (mvarId, #[])
+      catch ex =>
+        let mvarId ← mkFallbackInternalGoalMVar target goal
+        pure (mvarId, #[{ kind := `goalTranslation, message := ex.toMessageData }])
+
 /-- Create display goals in an isolated metavariable context.  The returned metavariable ids are
 valid only in the returned `mctx`; the surrounding elaboration state is restored before this
 function returns. -/

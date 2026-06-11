@@ -1389,6 +1389,13 @@ def elabCanonicalLeanQuotedDefChecked (doc? : Option (TSyntax ``Parser.Command.d
   let target ← resolveInternalDefTarget declName
   let typeExpr ← elabObjExpr typeStx
   let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
+  if (← liftCoreM internalNativeTacticModeEnabled) then
+    if let some steps := internalNativeLeanBySteps? bodyStx.raw then
+      let some sig ← liftCoreM <| getTheory? target.theoryName
+        | throwError "unknown type theory '{target.theoryName}'"
+      let flatSig ← liftCoreM <| flattenSignature sig
+      elabInternalDefNativeTacticSkeleton target flatSig #[] params typeExpr bodyStx.raw steps
+      return ()
   let valueExpr ← elabLeanQuotedLFBody target params typeExpr bodyStx
   compareLeanQuotedBodyWithLegacyIfEnabled .objectDef `compareLegacyInternalDef declName target
     params typeExpr valueExpr bodyStx
@@ -1411,6 +1418,13 @@ def elabCanonicalLeanQuotedTheoremChecked (doc? : Option (TSyntax ``Parser.Comma
   let target ← resolveInternalDefTarget declName
   let typeExpr ← elabObjExpr typeStx
   let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
+  if (← liftCoreM internalNativeTacticModeEnabled) then
+    if let some steps := internalNativeLeanBySteps? bodyStx.raw then
+      let some sig ← liftCoreM <| getTheory? target.theoryName
+        | throwError "unknown type theory '{target.theoryName}'"
+      let flatSig ← liftCoreM <| flattenSignature sig
+      elabInternalDefNativeTacticSkeleton target flatSig #[] params typeExpr bodyStx.raw steps
+      return ()
   let valueExpr ← elabLeanQuotedLFBody target params typeExpr bodyStx
   compareLeanQuotedBodyWithLegacyIfEnabled .judgmentTheorem `compareLegacyInternalTheorem
     declName target params typeExpr valueExpr bodyStx

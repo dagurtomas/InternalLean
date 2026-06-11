@@ -7,6 +7,7 @@ module
 
 public meta import InternalLean.Registration
 public meta import InternalLean.LeanFrontend.GoalDisplay
+public import Lean.Elab.Tactic
 public meta import Lean.PrettyPrinter
 
 /-!
@@ -33,6 +34,12 @@ def profileInternalLeanCommandPhase (label : MessageData) (x : CommandElabM α) 
     pure result
   else
     x
+
+register_option internalLean.nativeTacticMode : Bool := {
+  defValue := false
+  descr := "opt-in Phase 9 native tactic-mode skeleton for `internal def ... := by`; LF checking \
+    remains authoritative"
+}
 
 declare_syntax_cat internalTactic
 declare_syntax_cat internalTacticArg
@@ -2756,6 +2763,312 @@ def refreshLFMirrorAfterInternalRegistration (theoryName : Name) : CommandElabM 
   catch _ =>
     pure ()
 
+/-- Identifier for a hole in the Phase 9 native tactic partial-term tree. -/
+structure InternalProofHoleId where
+  /-- Stable hole name, independent of the display metavariable id. -/
+  name : Name
+  deriving Inhabited, Repr, BEq
+
+/-- Partial LF proof/object term built by native tactic mode.  Milestone 9a only allocates holes;
+closing constructors are populated by later milestones. -/
+inductive InternalPartialTerm where
+  | hole (id : InternalProofHoleId)
+  | closed (term : ObjExpr)
+  | app (fn arg : InternalPartialTerm)
+  | lam (names : Array Name) (body : InternalPartialTerm)
+  | substitute (name : Name) (value body : InternalPartialTerm)
+  deriving Inhabited, Repr
+
+/-- LF goal state associated to a live display metavariable in native tactic mode. -/
+structure InternalNativeGoal where
+  /-- Owning internal declaration. -/
+  target : InternalDefTarget
+  /-- Object-theory local context. -/
+  ctx : Array HLBinding := #[]
+  /-- Object-theory target expression. -/
+  targetExpr : ObjExpr
+  /-- Partial-term hole solved by this goal. -/
+  hole : InternalProofHoleId
+  /-- Native mode should not produce stale goals; this is reserved for future diagnostics. -/
+  stale : Bool := false
+  deriving Inhabited, Repr
+
+/-- Native tactic-mode session keyed by live display metavariable ids. -/
+structure InternalNativeTacticSession where
+  /-- Root partial-term hole. -/
+  rootHole : InternalProofHoleId
+  /-- Live display goals keyed by `MVarId.name`. -/
+  goals : NameMap InternalNativeGoal := {}
+  /-- Partial-term nodes keyed by hole name. -/
+  holes : NameMap InternalPartialTerm := {}
+  /-- Prepared display context shared by goals in this tactic block. -/
+  displayCtx : InternalGoalDisplayContext
+  /-- Flattened LF signature for the owning theory. -/
+  sig : HLSignature
+  /-- Declaration-local universe parameters. -/
+  levels : Array Name := #[]
+  /-- Counter for fresh native holes. -/
+  nextHole : Nat := 1
+
+/-- Per-step authorization data checked by the post-step assignment audit. -/
+structure InternalNativeTacticTransaction where
+  /-- Display mvars the InternalLean handler intentionally closed during the step. -/
+  closed : NameSet := {}
+  /-- Display mvars the InternalLean handler intentionally removed/replaced during the step. -/
+  replaced : NameSet := {}
+  deriving Inhabited
+
+/-- Result of running the Phase 9a native tactic skeleton. -/
+structure InternalNativeTacticRunResult where
+  /-- Initial live display goal. -/
+  initialGoal : MVarId
+  /-- Lean goal list after the last executed step. -/
+  finalGoals : List MVarId
+  /-- Metavariable context after the last executed step. -/
+  mctx : MetavarContext
+  /-- Native session after the last executed step. -/
+  session : InternalNativeTacticSession
+
+initialize internalNativeTacticSessionStack : IO.Ref (Array InternalNativeTacticSession) ←
+  IO.mkRef #[]
+
+initialize internalNativeTacticTransaction : IO.Ref InternalNativeTacticTransaction ←
+  IO.mkRef {}
+
+/-- Whether Phase 9 native tactic mode is enabled in the current option set. -/
+def internalNativeTacticModeEnabled : CoreM Bool := do
+  pure <| (← getOptions).getBool `internalLean.nativeTacticMode false
+
+/-- Fetch the currently active native tactic session, if any. -/
+def currentInternalNativeTacticSession? : CoreM (Option InternalNativeTacticSession) := do
+  pure (← internalNativeTacticSessionStack.get).back?
+
+/-- Replace the top native tactic session. -/
+def setCurrentInternalNativeTacticSession (session : InternalNativeTacticSession) : CoreM Unit := do
+  let stack ← internalNativeTacticSessionStack.get
+  match stack.back? with
+  | none => internalNativeTacticSessionStack.set #[session]
+  | some _ => internalNativeTacticSessionStack.set (stack.pop.push session)
+
+/-- Run a term elaboration action with one active native tactic session. -/
+def withInternalNativeTacticSession (session : InternalNativeTacticSession)
+    (x : Term.TermElabM α) : Term.TermElabM (α × InternalNativeTacticSession) := do
+  let oldStack ← internalNativeTacticSessionStack.get
+  internalNativeTacticSessionStack.set (oldStack.push session)
+  try
+    let result ← x
+    let some session ← currentInternalNativeTacticSession?
+      | throwError "internal native tactic session disappeared"
+    pure (result, session)
+  finally
+    internalNativeTacticSessionStack.set oldStack
+
+/-- First user-facing token in a tactic syntax tree, used for Phase 9a diagnostics. -/
+partial def firstInternalNativeTacticToken? : Syntax → Option String
+  | .missing => none
+  | .atom _ value => if value.isEmpty then none else some value
+  | .ident _ _ value _ => some (toString (Name.eraseMacroScopes value))
+  | .node _ _ args =>
+      args.foldl (init := none) fun acc child =>
+        match acc with
+        | some _ => acc
+        | none => firstInternalNativeTacticToken? child
+
+/-- Fallback user-facing name for a tactic syntax kind. -/
+def internalNativeTacticKindLabel (kind : Name) : String :=
+  let kind := Name.eraseMacroScopes kind
+  let last := kind.getString!
+  match last with
+  | "tacticTry_" => "try"
+  | "tacticRepeat_" => "repeat"
+  | "tactic_<;>_" => "<;>"
+  | "seq1" => ";"
+  | other => other
+
+/-- Unsupported-tactic diagnostic used by the native skeleton. -/
+def internalNativeUnsupportedTacticMessage (stx : Syntax) : MessageData :=
+  let kindLabel := internalNativeTacticKindLabel stx.getKind
+  let tacticName :=
+    if kindLabel == ";" || kindLabel == "<;>" then
+      kindLabel
+    else
+      (firstInternalNativeTacticToken? stx).getD kindLabel
+  m!"tactic `{tacticName}` is not part of InternalLean native tactic mode yet; supported \
+    Phase 9a skeleton tactic: `skip`. Core object tactics are enabled in later Phase 9 \
+    milestones."
+
+/-- Syntax kinds rejected before native tactic execution in milestone 9a. -/
+def internalNativeRejectedTacticKinds : NameSet := Id.run do
+  let mut out : NameSet := {}
+  for n in [
+      ``Lean.Parser.Tactic.first,
+      ``Lean.Parser.Tactic.firstPar,
+      ``Lean.Parser.Tactic.intro,
+      ``Lean.Parser.Tactic.apply,
+      ``Lean.Parser.Tactic.exact,
+      ``Lean.Parser.Tactic.assumption,
+      ``Lean.Parser.Tactic.show,
+      ``Lean.Parser.Tactic.change,
+      ``Lean.Parser.Tactic.tacticTry_,
+      ``Lean.Parser.Tactic.tacticRepeat_,
+      ``Lean.Parser.Tactic.repeat',
+      ``Lean.Parser.Tactic.repeat1',
+      ``Lean.Parser.Tactic.allGoals,
+      ``Lean.Parser.Tactic.anyGoals,
+      ``Lean.Parser.Tactic.seq1,
+      ``Lean.Parser.Tactic.«tactic_<;>_»,
+      ``Lean.Parser.Tactic.constructor,
+      ``Lean.Parser.Tactic.decide,
+      ``Lean.Parser.Tactic.omega] do
+    out := out.insert n
+  out
+
+/-- Return true for tactic syntax rejected by the Phase 9a linear-script policy. -/
+def internalNativeRejectsTacticSyntax (stx : Syntax) : Bool :=
+  internalNativeRejectedTacticKinds.contains stx.getKind
+
+/-- Syntax kinds deliberately executable in the Phase 9a skeleton. -/
+def internalNativeAllowedSkeletonTacticKinds : NameSet := Id.run do
+  let mut out : NameSet := {}
+  for n in [``Lean.Parser.Tactic.skip] do
+    out := out.insert n
+  out
+
+/-- Return true when a tactic is one of the Phase 9a skeleton-only executable forms. -/
+def internalNativeAllowsSkeletonTacticSyntax (stx : Syntax) : Bool :=
+  internalNativeAllowedSkeletonTacticKinds.contains stx.getKind
+
+/-- Extract Lean tactic steps from a `by` term or tactic-sequence syntax. -/
+partial def collectInternalNativeLeanTacticSteps (stx : Syntax) : Array Syntax :=
+  match stx with
+  | .node _ `Lean.Parser.Term.byTactic args =>
+      match args[1]? with
+      | some seq => collectInternalNativeLeanTacticSteps seq
+      | none => #[]
+  | .node _ `Lean.Parser.Tactic.tacticSeq args =>
+      args.foldl (fun acc arg => acc ++ collectInternalNativeLeanTacticSteps arg) #[]
+  | .node _ `Lean.Parser.Tactic.tacticSeq1Indented args =>
+      args.foldl (fun acc arg =>
+        if arg.isMissing then acc
+        else if arg.isOfKind nullKind then acc ++ collectInternalNativeLeanTacticSteps arg
+        else acc.push arg) #[]
+  | .node _ `Lean.Parser.Tactic.tacticSeqBracketed args =>
+      args.foldl (fun acc arg => acc ++ collectInternalNativeLeanTacticSteps arg) #[]
+  | .node _ k args =>
+      if k == nullKind then
+        args.foldl (fun acc arg =>
+          if arg.isMissing then acc
+          else if arg.isOfKind nullKind then acc ++ collectInternalNativeLeanTacticSteps arg
+          else acc.push arg) #[]
+      else
+        #[stx]
+  | _ => #[]
+
+/-- Recognize a Lean `by` term and return its top-level tactic steps. -/
+def internalNativeLeanBySteps? (stx : Syntax) : Option (Array Syntax) :=
+  if stx.isOfKind `Lean.Parser.Term.byTactic then
+    some (collectInternalNativeLeanTacticSteps stx)
+  else
+    none
+
+/-- Run the Phase 9a post-step assignment audit. -/
+def auditInternalNativeTacticStep (stx : Syntax) (sessionBefore sessionAfter :
+    InternalNativeTacticSession) (tx : InternalNativeTacticTransaction)
+    (goalsAfter : List MVarId) : Term.TermElabM Unit := do
+  let goalSet := goalsAfter.foldl (fun acc g => acc.insert g.name) ({} : NameSet)
+  for (name, _) in sessionBefore.goals.toList do
+    let assigned ← (MVarId.mk name).isAssigned
+    if assigned && !tx.closed.contains name && !tx.replaced.contains name then
+      throwErrorAt stx (internalNativeUnsupportedTacticMessage stx)
+  for mvarId in goalsAfter do
+    unless (sessionAfter.goals.find? mvarId.name).isSome do
+      throwErrorAt stx (internalNativeUnsupportedTacticMessage stx)
+  for (name, _) in sessionAfter.goals.toList do
+    unless goalSet.contains name || tx.closed.contains name || tx.replaced.contains name do
+      throwErrorAt stx (internalNativeUnsupportedTacticMessage stx)
+
+/-- Run one top-level native tactic step transactionally. -/
+def runInternalNativeTacticStep (goal : MVarId) (stx : Syntax) :
+    Term.TermElabM (List MVarId) := do
+  if internalNativeRejectsTacticSyntax stx then
+    throwErrorAt stx (internalNativeUnsupportedTacticMessage stx)
+  let some sessionBefore ← currentInternalNativeTacticSession?
+    | throwErrorAt stx "internal native tactic step executed without an active session"
+  let saved ← Term.saveState
+  let txBefore ← internalNativeTacticTransaction.get
+  internalNativeTacticTransaction.set {}
+  try
+    let goalsAfter ← Tactic.run goal (Tactic.evalTactic stx)
+    let tx ← internalNativeTacticTransaction.get
+    let some sessionAfter ← currentInternalNativeTacticSession?
+      | throwErrorAt stx "internal native tactic session disappeared"
+    auditInternalNativeTacticStep stx sessionBefore sessionAfter tx goalsAfter
+    unless internalNativeAllowsSkeletonTacticSyntax stx do
+      throwErrorAt stx (internalNativeUnsupportedTacticMessage stx)
+    pure goalsAfter
+  catch ex =>
+    saved.restore (restoreInfo := true)
+    setCurrentInternalNativeTacticSession sessionBefore
+    throw ex
+  finally
+    internalNativeTacticTransaction.set txBefore
+
+/-- Build the initial Phase 9a native tactic session and live display mvar. -/
+def mkInitialInternalNativeTacticSession (target : InternalDefTarget) (sig : HLSignature)
+    (levels : Array Name) (ctx : Array HLBinding) (targetExpr : ObjExpr) :
+    Term.TermElabM (InternalNativeTacticSession × MVarId × Array InternalGoalDisplayFallback) := do
+  let displayCtx ← prepareInternalGoalDisplayContext target
+  let displayGoal := mkInternalGoalDisplayGoal ctx targetExpr
+  let (mvarId, fallbacks) ← mkLiveInternalGoalDisplayMVarWithContext target displayCtx displayGoal
+  let rootHole : InternalProofHoleId := { name := `root }
+  let nativeGoal : InternalNativeGoal := { target, ctx, targetExpr, hole := rootHole }
+  let session : InternalNativeTacticSession := {
+    rootHole
+    goals := ({} : NameMap InternalNativeGoal).insert mvarId.name nativeGoal
+    holes := ({} : NameMap InternalPartialTerm).insert rootHole.name (.hole rootHole)
+    displayCtx
+    sig
+    levels }
+  pure (session, mvarId, fallbacks)
+
+/-- Run the Phase 9a native tactic skeleton without finalizing the partial term. -/
+def runInternalNativeTacticSkeleton (target : InternalDefTarget) (sig : HLSignature)
+    (levels : Array Name) (ctx : Array HLBinding) (targetExpr : ObjExpr)
+    (steps : Array Syntax) : CommandElabM InternalNativeTacticRunResult := do
+  let (result, fallbacks) ← liftTermElabM do
+    let (session, initialGoal, fallbacks) ←
+      mkInitialInternalNativeTacticSession target sig levels ctx targetExpr
+    let ((finalGoals, initialGoal), session) ← withInternalNativeTacticSession session do
+      let mut goals := [initialGoal]
+      for step in steps do
+        let some goal := goals.head? | throwErrorAt step "no remaining InternalLean native goals"
+        goals ← runInternalNativeTacticStep goal step
+      pure (goals, initialGoal)
+    let mctx ← getMCtx
+    pure ({ initialGoal, finalGoals, mctx, session }, fallbacks)
+  recordInternalGoalDisplayFallbacks (← getRef) fallbacks
+  pure result
+
+/-- User-facing finalization error for milestone 9a's skeleton implementation. -/
+def throwInternalNativeTacticSkeletonIncomplete (stx : Syntax)
+    (result : InternalNativeTacticRunResult) : CommandElabM α := do
+  if result.finalGoals.isEmpty && result.session.goals.isEmpty then
+    throwErrorAt stx "InternalLean native tactic mode reached a closed skeleton state, but \
+      Phase 9a does not yet finalize LF proof terms"
+  else
+    throwErrorAt stx "InternalLean native tactic mode is enabled, but Phase 9a only installs the \
+      live-goal skeleton; the tactic block left unsolved InternalLean native goal(s). Core object \
+      tactics are enabled in later Phase 9 milestones."
+
+/-- Run native tactic mode for a canonical internal declaration body.  Milestone 9a never accepts a
+checked declaration through this path; it either reports an unsupported step or the skeleton
+incomplete error after producing live tactic info. -/
+def elabInternalDefNativeTacticSkeleton (target : InternalDefTarget) (sig : HLSignature)
+    (levels : Array Name) (ctx : Array HLBinding) (targetExpr : ObjExpr) (bodyStx : Syntax)
+    (steps : Array Syntax) : CommandElabM Unit := do
+  let result ← runInternalNativeTacticSkeleton target sig levels ctx targetExpr steps
+  throwInternalNativeTacticSkeletonIncomplete bodyStx result
+
 /-- Structured object-tactic compilation errors, optionally tagged with a source step index. -/
 inductive InternalObjectTacticCompileError where
   /-- A plain diagnostic not yet associated with an outer source tactic step. -/
@@ -3685,6 +3998,12 @@ def elabInternalDefBy (doc? : Option (TSyntax ``Parser.Command.docComment))
     (declNameStx : Syntax) (declName : Name) (levels : Array Name)
     (typeStx : TSyntax `ttExpr) (tactics : TSyntaxArray `internalTactic) : CommandElabM Unit := do
   let steps ← tactics.mapM fun tac => withRef tac.raw <| elabInternalTacticStep tac
+  if (← liftCoreM internalNativeTacticModeEnabled) && !internalTacticStepsContainSorry steps then
+    let refStx := match tactics[0]? with | some tac => tac.raw | none => declNameStx
+    throwErrorAt refStx
+      "this `by` block parsed as the legacy InternalLean object-tactic language; Phase 9a \
+      native tactic mode only accepts Lean tactic syntax through the quoted body path. Disable \
+      `internalLean.nativeTacticMode` to use the legacy object-tactic compiler."
   let target ← resolveInternalDefTarget declName
   let some sig ← liftCoreM <| getTheory? target.theoryName
     | throwError "unknown type theory '{target.theoryName}'"
@@ -3708,6 +4027,12 @@ def elabInternalDefByWithBinders (doc? : Option (TSyntax ``Parser.Command.docCom
     (binders : TSyntaxArray `ttBinder) (typeStx : TSyntax `ttExpr)
     (tactics : TSyntaxArray `internalTactic) : CommandElabM Unit := do
   let steps ← tactics.mapM fun tac => withRef tac.raw <| elabInternalTacticStep tac
+  if (← liftCoreM internalNativeTacticModeEnabled) && !internalTacticStepsContainSorry steps then
+    let refStx := match tactics[0]? with | some tac => tac.raw | none => declNameStx
+    throwErrorAt refStx
+      "this `by` block parsed as the legacy InternalLean object-tactic language; Phase 9a \
+      native tactic mode only accepts Lean tactic syntax through the quoted body path. Disable \
+      `internalLean.nativeTacticMode` to use the legacy object-tactic compiler."
   let target ← resolveInternalDefTarget declName
   let some sig ← liftCoreM <| getTheory? target.theoryName
     | throwError "unknown type theory '{target.theoryName}'"

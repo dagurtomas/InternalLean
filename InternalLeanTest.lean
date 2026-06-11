@@ -33,6 +33,7 @@ import InternalLeanTest.ModelWorkflowUXTest
 import InternalLeanTest.ModelRenderingNormalizationTest
 import InternalLeanTest.MirrorOracleTest
 import InternalLeanTest.NaturalNumbersTest
+import InternalLeanTest.NativeTacticModeTest
 import InternalLeanTest.NavigationTest
 import InternalLeanTest.ObjectNotationTest
 import InternalLeanTest.QuotedFrontendWinsTest
