@@ -606,6 +606,20 @@ structure CompiledLFCheckCache where
   stamp : CompiledLFCheckCacheStamp
   /-- Flattened checked high-level signature used by incremental checking. -/
   checkedHL : HLSignature
+  /-- Checked syntax definitions used to build structural replay signatures on demand. -/
+  lfSyntaxDefs : Array CheckedLFSyntaxDef := #[]
+  /-- Checked LF opaque constants used to build structural replay signatures on demand. -/
+  lfOpaqueConsts : Array CheckedLFOpaqueConst := #[]
+  /-- Checked context zones used to build structural replay signatures on demand. -/
+  lfContextZones : Array CheckedLFContextZone := #[]
+  /-- Checked binder classes used to build structural replay signatures on demand. -/
+  lfBinderClasses : Array CheckedLFBinderClass := #[]
+  /-- Checked conversion plugins used to build structural replay signatures on demand. -/
+  lfConversionPlugins : Array CheckedLFConversionPlugin := #[]
+  /-- Checked LF object definitions used to build structural replay signatures on demand. -/
+  lfObjectDefs : Array CheckedLFObjectDef := #[]
+  /-- Checked LF judgment theorems used to build structural replay signatures on demand. -/
+  lfJudgmentTheorems : Array CheckedLFJudgmentTheorem := #[]
   /-- Known LF global names. -/
   lfGlobals : NameSet
   /-- Declared LF opaque arities. -/
@@ -636,10 +650,6 @@ structure CompiledLFCheckCache where
   availableLFTheoremStatements : NameMap ObjExpr := {}
   /-- Available LF theorem names. -/
   availableLFTheoremNames : NameSet := {}
-  /-- Structural replay signature built from checked artifacts for compact replay. -/
-  structuralKernelSig : Kernel.Signature := default
-  /-- Structural replay signature built from checked artifacts for expanded replay. -/
-  structuralKernelSigExpanded : Kernel.Signature := default
   /-- Structural replay context containing prior theorem/certificate entries. -/
   structuralKernelReplayBase : Kernel.KernelLFCheckContext := {}
   deriving Inhabited

@@ -597,6 +597,13 @@ def checkedSignatureToKSignature (theoryName : Name) (lfSyntaxDefs : Array Check
     conversionPlugins := lfConversionPlugins.toList.map checkedLFConversionPluginToK
     rules := (rules ++ theoremRules).toList }
 
+/-- Build a structural replay signature from a compiled cache's retained checked artifacts. -/
+def compiledLFCheckCacheStructuralSignature (cache : CompiledLFCheckCache)
+    (normalizeRules? : Bool := false) : Except String Kernel.Signature :=
+  checkedSignatureToKSignature cache.theoryName cache.lfSyntaxDefs cache.lfOpaqueConsts
+    cache.lfContextZones cache.lfBinderClasses cache.lfConversionPlugins cache.checkedRuleSchemas
+    cache.lfObjectDefs cache.lfJudgmentTheorems normalizeRules?
+
 /-- Lift structural-kernel construction failures into command elaboration errors. -/
 def liftStructuralKernelExcept (label : String) : Except String α → CoreM α
   | .ok value => pure value
@@ -818,7 +825,9 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
     for (n, value) in cache.knownLFSyntaxDefValues.toList do
       values := values.insert n value
     return values
-  let structuralSig := cache.structuralKernelSig
+  let structuralSig ← liftStructuralKernelExcept
+    s!"judgment_theorem '{t.name}' cached compact signature" <|
+      compiledLFCheckCacheStructuralSignature cache
   let structuralReplayCtx := cache.structuralKernelReplayBase
   let structuralAssumptions ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' compact cached local assumptions" <|
@@ -837,7 +846,9 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
         structuralLocalReplayCtx structuralStmt structuralDeriv
       pure (structuralDeriv, structuralStmt, checkedStructuralReplay)
     catch _ =>
-      let structuralSigExpanded := cache.structuralKernelSigExpanded
+      let structuralSigExpanded ← liftStructuralKernelExcept
+        s!"judgment_theorem '{t.name}' cached expanded signature" <|
+          compiledLFCheckCacheStructuralSignature cache true
       let structuralExpandedAssumptions ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' expanded cached local assumptions" <|
           kernelLFLocalAssumptionEntriesOfTheoremToK true cache.checkedLFDefValues t
@@ -1025,16 +1036,6 @@ def checkedHLSignatureForCompiledCache (theoryName : Name) (checked : CheckedSig
 def mkCompiledLFCheckCacheFromHL (checkedHL : HLSignature) (checked : CheckedSignature) :
     CoreM CompiledLFCheckCache := do
   let checkedLFDefValues := checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs
-  let structuralKernelSig ← liftStructuralKernelExcept
-    s!"compiled cache for '{checked.name}' compact structural signature" <|
-      checkedSignatureToKSignature checked.name checked.lfSyntaxDefs checked.lfOpaqueConsts
-        checked.lfContextZones checked.lfBinderClasses checked.lfConversionPlugins
-        checked.lfRuleSchemas checked.lfObjectDefs checked.lfJudgmentTheorems
-  let structuralKernelSigExpanded ← liftStructuralKernelExcept
-    s!"compiled cache for '{checked.name}' expanded structural signature" <|
-      checkedSignatureToKSignature checked.name checked.lfSyntaxDefs checked.lfOpaqueConsts
-        checked.lfContextZones checked.lfBinderClasses checked.lfConversionPlugins
-        checked.lfRuleSchemas checked.lfObjectDefs checked.lfJudgmentTheorems true
   let structuralKernelReplayBase ← liftStructuralKernelExcept
     s!"compiled cache for '{checked.name}' structural replay context" <|
       kernelLFReplayContextOfTheoremsToK checked.lfJudgmentTheorems
@@ -1042,6 +1043,13 @@ def mkCompiledLFCheckCacheFromHL (checkedHL : HLSignature) (checked : CheckedSig
     theoryName := checked.name.eraseMacroScopes
     stamp := CompiledLFCheckCacheStamp.ofCheckedSignature checked
     checkedHL := checkedHL
+    lfSyntaxDefs := checked.lfSyntaxDefs
+    lfOpaqueConsts := checked.lfOpaqueConsts
+    lfContextZones := checked.lfContextZones
+    lfBinderClasses := checked.lfBinderClasses
+    lfConversionPlugins := checked.lfConversionPlugins
+    lfObjectDefs := checked.lfObjectDefs
+    lfJudgmentTheorems := checked.lfJudgmentTheorems
     lfGlobals := lfKnownGlobalNames checkedHL
     opaqueArities := lfOpaqueArities checkedHL
     globalHeads := lfGlobalHeadInfo checkedHL
@@ -1061,8 +1069,6 @@ def mkCompiledLFCheckCacheFromHL (checkedHL : HLSignature) (checked : CheckedSig
     availableLFTheoremStatements :=
       availableLFTheoremStatementsFromChecked checked.lfJudgmentTheorems
     availableLFTheoremNames := availableLFTheoremNamesFromChecked checked.lfJudgmentTheorems
-    structuralKernelSig := structuralKernelSig
-    structuralKernelSigExpanded := structuralKernelSigExpanded
     structuralKernelReplayBase := structuralKernelReplayBase }
 
 /-- Build a compiled LF checking cache from the current checked-HL registry when available. -/

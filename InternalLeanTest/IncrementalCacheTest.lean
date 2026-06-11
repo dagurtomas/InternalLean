@@ -94,22 +94,28 @@ elab "#guard_compiled_cache_matches_rebuild " theory:ident : command => do
     throwError "compiled cache stamp for '{theory.getId}' differs from a full rebuild"
   unless checkedHLSignatureMatchesChecked cache.checkedHL checked do
     throwError "compiled cache checked-HL signature for '{theory.getId}' does not match"
-  unless cache.structuralKernelSig.constants.length ==
-      rebuilt.structuralKernelSig.constants.length do
-    throwError "compiled cache constants for '{theory.getId}' differ from a full rebuild"
-  unless cache.structuralKernelSig.rules.length == rebuilt.structuralKernelSig.rules.length do
-    throwError "compiled cache rules for '{theory.getId}' differ from a full rebuild"
-  unless cache.structuralKernelSig.contextZones.length ==
-      rebuilt.structuralKernelSig.contextZones.length do
+  unless cache.lfSyntaxDefs.size == rebuilt.lfSyntaxDefs.size do
+    throwError "compiled cache syntax definitions for '{theory.getId}' differ from a full rebuild"
+  unless cache.lfOpaqueConsts.size == rebuilt.lfOpaqueConsts.size do
+    throwError "compiled cache opaque constants for '{theory.getId}' differ from a full rebuild"
+  unless cache.lfContextZones.size == rebuilt.lfContextZones.size do
     throwError "compiled cache context zones for '{theory.getId}' differ from a full rebuild"
-  unless cache.structuralKernelSig.binderClasses.length ==
-      rebuilt.structuralKernelSig.binderClasses.length do
+  unless cache.lfBinderClasses.size == rebuilt.lfBinderClasses.size do
     throwError "compiled cache binder classes for '{theory.getId}' differ from a full rebuild"
-  unless cache.structuralKernelSig.conversionPlugins.length ==
-      rebuilt.structuralKernelSig.conversionPlugins.length do
+  unless cache.lfConversionPlugins.size == rebuilt.lfConversionPlugins.size do
     throwError "compiled cache conversion plugins for '{theory.getId}' differ from a full rebuild"
-  unless cache.structuralKernelSig == rebuilt.structuralKernelSig do
-    throwError "compiled cache kernel signature for '{theory.getId}' differs from a full rebuild"
+  unless cache.lfObjectDefs.size == rebuilt.lfObjectDefs.size do
+    throwError "compiled cache object definitions for '{theory.getId}' differ from a full rebuild"
+  unless cache.lfJudgmentTheorems.size == rebuilt.lfJudgmentTheorems.size do
+    throwError "compiled cache judgment theorems for '{theory.getId}' differ from a full rebuild"
+  let cacheSig ← liftCoreM <| liftStructuralKernelExcept
+    s!"compiled cache '{theory.getId}' structural signature" <|
+      compiledLFCheckCacheStructuralSignature cache
+  let rebuiltSig ← liftCoreM <| liftStructuralKernelExcept
+    s!"rebuilt cache '{theory.getId}' structural signature" <|
+      compiledLFCheckCacheStructuralSignature rebuilt
+  unless cacheSig == rebuiltSig do
+    throwError "compiled cache structural signature for '{theory.getId}' differs from a rebuild"
 
 declare_type_theory IncrementalCacheSmoke where
   syntax_sort Obj
