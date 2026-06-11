@@ -2083,6 +2083,19 @@ syntax (name := ttLFObjectDefDeclStx)
   atomic((docComment)? "lf_def") ident " : " ttExpr " := " ttExpr : ttDecl
 syntax (name := ttLFJudgmentTheoremDeclStx)
   atomic((docComment)? "judgment_theorem") ident ttBinder* " : " ttExpr " := " ttExpr : ttDecl
+/-- Shorthand for the common extrinsic object-language universe hierarchy prelude.
+
+It expands inside the theory block to ordinary `syntax_sort`, `lf_opaque`, `judgment`, and `rule`
+declarations. The generated framework-universe annotations use a theory level parameter named
+`u`, matching the reusable hierarchy examples.
+-/
+syntax (name := ttUniverseHierarchyDeclStx)
+  "universe_hierarchy" ident ident ident " where" ppLine
+    ident ident ident ident ppLine
+    ident ident ppLine
+    ident ident ppLine
+    ident ident ppLine
+    "universe" ident : ttDecl
 
 /-- Parse an object universe expression. -/
 meta partial def elabLevelExpr : TSyntax `ttLevel → CommandElabM LevelExpr
@@ -2296,6 +2309,100 @@ meta def elabConversionStepKind (stx : TSyntax `ident) : CommandElabM Conversion
 meta def elabConversionStepKinds (steps : TSyntaxArray `ident) :
     CommandElabM (Array ConversionStepKind) :=
   steps.mapM elabConversionStepKind
+
+/-- Check one field label in a `universe_hierarchy` declaration. -/
+meta def checkUniverseHierarchyLabel (label : Ident) (expected : Name) : CommandElabM Unit := do
+  unless label.getId.eraseMacroScopes == expected do
+    throwErrorAt label.raw "expected universe_hierarchy field '{expected}', got '{label.getId}'"
+
+/-- Expand one `universe_hierarchy` shorthand declaration, if present. -/
+meta def expandUniverseHierarchyDecl? (decl : TSyntax `ttDecl) :
+    CommandElabM (Option (Array (TSyntax `ttDecl))) := do
+  match decl with
+  | `(ttDecl| universe_hierarchy $level:ident $ty:ident $tm:ident where
+        $levelsLabel:ident $zero:ident $succ:ident $lmax:ident
+        $leLabel:ident $leName:ident
+        $wfLabel:ident $wfName:ident
+        $liftLabel:ident $liftName:ident
+        universe $univName:ident) => do
+      checkUniverseHierarchyLabel levelsLabel `levels
+      checkUniverseHierarchyLabel leLabel `le
+      checkUniverseHierarchyLabel wfLabel `wf
+      checkUniverseHierarchyLabel liftLabel `lift
+      let u := mkIdentFrom level.raw `u
+      let i := mkIdentFrom level.raw `i
+      let j := mkIdentFrom level.raw `j
+      let A := mkIdentFrom ty.raw `A
+      let lePremise := mkIdentFrom leName.raw `le
+      let wfPremise := mkIdentFrom wfName.raw `wf
+      let leRefl := mkIdentFrom leName.raw `le_refl
+      let leSucc := mkIdentFrom leName.raw `le_succ
+      let liftWf := mkIdentFrom liftName.raw `lift_wf
+      let univWf := mkIdentFrom univName.raw `univ_wf
+      let uLevel ← `(ttLevel| $u:ident)
+      let uSucc ← `(ttLevel| $uLevel:ttLevel+1)
+      let levelExpr ← `(ttExpr| $level:ident)
+      let tyExpr ← `(ttExpr| $ty:ident)
+      let iExpr ← `(ttExpr| $i:ident)
+      let jExpr ← `(ttExpr| $j:ident)
+      let AExpr ← `(ttExpr| $A:ident)
+      let succExpr ← `(ttExpr| $succ:ident)
+      let leExpr ← `(ttExpr| $leName:ident)
+      let wfExpr ← `(ttExpr| $wfName:ident)
+      let liftExpr ← `(ttExpr| $liftName:ident)
+      let univExpr ← `(ttExpr| $univName:ident)
+      let tyI ← `(ttExpr| $tyExpr:ttExpr $iExpr:ttExpr)
+      let tyJ ← `(ttExpr| $tyExpr:ttExpr $jExpr:ttExpr)
+      let succI ← `(ttExpr| $succExpr:ttExpr $iExpr:ttExpr)
+      let leII ← `(ttExpr| $leExpr:ttExpr $iExpr:ttExpr $iExpr:ttExpr)
+      let leISuccI ← `(ttExpr| $leExpr:ttExpr $iExpr:ttExpr $succI:ttExpr)
+      let leIJ ← `(ttExpr| $leExpr:ttExpr $iExpr:ttExpr $jExpr:ttExpr)
+      let isTyIA ← `(ttExpr| $wfExpr:ttExpr ($i:ident := $iExpr:ttExpr) $AExpr:ttExpr)
+      let liftIA ← `(ttExpr|
+        $liftExpr:ttExpr ($i:ident := $iExpr:ttExpr) ($j:ident := $jExpr:ttExpr) $AExpr:ttExpr)
+      let isTyJLift ← `(ttExpr| $wfExpr:ttExpr ($i:ident := $jExpr:ttExpr) $liftIA:ttExpr)
+      let succLevel ← `(ttExpr| $succExpr:ttExpr $iExpr:ttExpr)
+      let tySucc ← `(ttExpr| $tyExpr:ttExpr $succLevel:ttExpr)
+      let univI ← `(ttExpr| $univExpr:ttExpr $iExpr:ttExpr)
+      let isTySuccUniv ← `(ttExpr| $wfExpr:ttExpr ($i:ident := $succLevel:ttExpr) $univI:ttExpr)
+      pure <| some #[
+        ← `(ttDecl| syntax_sort $level:ident : Type $uLevel:ttLevel),
+        ← `(ttDecl| syntax_sort $ty:ident ($i:ident : $levelExpr:ttExpr) :
+          Type $uSucc:ttLevel),
+        ← `(ttDecl| syntax_sort $tm:ident {$i:ident : $levelExpr:ttExpr}
+          ($A:ident : $tyI:ttExpr) : Type $uLevel:ttLevel),
+        ← `(ttDecl| lf_opaque $zero:ident : $levelExpr:ttExpr),
+        ← `(ttDecl| lf_opaque $succ:ident ($i:ident : $levelExpr:ttExpr) :
+          $levelExpr:ttExpr),
+        ← `(ttDecl| lf_opaque $lmax:ident ($i:ident : $levelExpr:ttExpr)
+          ($j:ident : $levelExpr:ttExpr) : $levelExpr:ttExpr),
+        ← `(ttDecl| judgment $leName:ident ($i:ident : $levelExpr:ttExpr)
+          ($j:ident : $levelExpr:ttExpr)),
+        ← `(ttDecl| rule $leRefl:ident ($i:ident : $levelExpr:ttExpr) : $leII:ttExpr),
+        ← `(ttDecl| rule $leSucc:ident ($i:ident : $levelExpr:ttExpr) : $leISuccI:ttExpr),
+        ← `(ttDecl| lf_opaque $liftName:ident {$i:ident : $levelExpr:ttExpr}
+          {$j:ident : $levelExpr:ttExpr} ($A:ident : $tyI:ttExpr) : $tyJ:ttExpr),
+        ← `(ttDecl| judgment $wfName:ident {$i:ident : $levelExpr:ttExpr}
+          ($A:ident : $tyI:ttExpr)),
+        ← `(ttDecl| rule $liftWf:ident {$i:ident : $levelExpr:ttExpr}
+          {$j:ident : $levelExpr:ttExpr} ($A:ident : $tyI:ttExpr) where
+            premise $lePremise:ident : $leIJ:ttExpr
+            premise $wfPremise:ident : $isTyIA:ttExpr
+            conclusion : $isTyJLift:ttExpr),
+        ← `(ttDecl| lf_opaque $univName:ident ($i:ident : $levelExpr:ttExpr) : $tySucc:ttExpr),
+        ← `(ttDecl| rule $univWf:ident ($i:ident : $levelExpr:ttExpr) : $isTySuccUniv:ttExpr)
+      ]
+  | _ => pure none
+
+/-- Expand theory-block shorthands to ordinary declarations in source order. -/
+meta def expandUniverseHierarchyDecls (decls : TSyntaxArray `ttDecl) :
+    CommandElabM (TSyntaxArray `ttDecl) := do
+  let mut out : TSyntaxArray `ttDecl := #[]
+  for decl in decls do
+    match ← expandUniverseHierarchyDecl? decl with
+    | some expanded => out := out ++ expanded
+    | none => out := out.push decl
+  pure out
 
 /-- Parse a full item in a type-theory declaration block. -/
 meta def elabHLTheoryItem : TSyntax `ttDecl → CommandElabM HLTheoryItem
@@ -2656,6 +2763,7 @@ meta def HLTheoryBlock.ofItems (items : Array HLTheoryItem) : HLTheoryBlock := I
 
 /-- Parse a type-theory declaration block into class-indexed metadata. -/
 meta def elabHLTheoryBlock (decls : TSyntaxArray `ttDecl) : CommandElabM HLTheoryBlock := do
+  let decls ← expandUniverseHierarchyDecls decls
   return HLTheoryBlock.ofItems (← decls.mapM elabHLTheoryItem)
 
 namespace HLBinding

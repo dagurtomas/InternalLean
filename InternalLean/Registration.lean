@@ -2485,6 +2485,7 @@ def elabDeclareInternalLeanWithBlock (doc? : Option (TSyntax ``Parser.Command.do
 def elabDeclareInternalLean (doc? : Option (TSyntax ``Parser.Command.docComment)) (nm : Ident)
     (levelParams parents : Array Name) (decls : TSyntaxArray `ttDecl) : CommandElabM Unit := do
   try
+    let decls ← expandUniverseHierarchyDecls decls
     let block ← elabHLTheoryBlock decls
     elabDeclareInternalLeanWithBlock doc? nm levelParams parents decls block
   catch ex =>
@@ -2522,22 +2523,23 @@ def elabExtendInternalLeanWithBlock (doc? : Option (TSyntax ``Parser.Command.doc
 theory anchor while registration uses the incremental checker or a full fallback. -/
 def elabExtendInternalLean (doc? : Option (TSyntax ``Parser.Command.docComment)) (nm : Ident)
     (decls : TSyntaxArray `ttDecl) : CommandElabM Unit := do
+  let decls ← expandUniverseHierarchyDecls decls
   let block ← elabHLTheoryBlock decls
   elabExtendInternalLeanWithBlock doc? nm decls block
 
 elab_rules : command
   | `($[$doc?:docComment]? declare_type_theory $nm:ident where $decls:ttDecl*) => do
       elabDeclareInternalLean doc? nm #[] #[] decls
-  | `($[$doc?:docComment]? declare_type_theory $nm:ident {$levels:ident,*} where $decls:ttDecl*) =>
-    do
-      elabDeclareInternalLean doc? nm (levels.getElems.map (·.getId)) #[] decls
+  | `($[$doc?:docComment]? declare_type_theory $nm:ident { $[$levels:ident],* } where
+      $decls:ttDecl*) => do
+      elabDeclareInternalLean doc? nm (levels.map (·.getId)) #[] decls
   | `($[$doc?:docComment]? declare_type_theory $nm:ident extends $parents:ident,* where
     $decls:ttDecl*) => do
       elabDeclareInternalLean doc? nm #[] (parents.getElems.map (·.getId)) decls
-  | `($[$doc?:docComment]? declare_type_theory $nm:ident {$levels:ident,*} extends $parents:ident,*
-    where $decls:ttDecl*) => do
-      elabDeclareInternalLean doc? nm (levels.getElems.map (·.getId)) (
-        parents.getElems.map (·.getId)) decls
+  | `($[$doc?:docComment]? declare_type_theory $nm:ident { $[$levels:ident],* } extends
+      $parents:ident,* where $decls:ttDecl*) => do
+      elabDeclareInternalLean doc? nm (levels.map (·.getId))
+        (parents.getElems.map (·.getId)) decls
   | `($[$doc?:docComment]? extend_type_theory $nm:ident where $decls:ttDecl*) => do
       elabExtendInternalLean doc? nm decls
 

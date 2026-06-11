@@ -152,6 +152,28 @@ syntax_sort_role S : role
 
 Unknown role names are stored as metadata, but only recognized names affect generic automation.
 
+### Universe hierarchy shorthand
+
+Inside a theory with a framework universe parameter named `u`, the common extrinsic
+object-language universe hierarchy prelude can be generated with:
+
+```lean
+declare_type_theory UniverseHierarchy{u} where
+  universe_hierarchy Level Ty Tm where
+    levels zero succ lmax
+    le Le
+    wf IsTy
+    lift lift
+    universe Univ
+```
+
+This expands before theory-block checking to ordinary declarations: `Level : Type u`,
+`Ty (i : Level) : Type (u+1)`, `Tm {i : Level} (A : Ty i) : Type u`, the level constructors,
+`Le` with `le_refl`/`le_succ`, an unguarded `lift`, `IsTy` with `lift_wf`, and `Univ` with
+`univ_wf`. Object-language levels remain object data; they do not determine Lean universe levels.
+Use the hand-written declarations when you need different field names, rule names, or framework
+universe parameters.
+
 ### Syntax abbreviations and definitions
 
 ```lean

@@ -1106,6 +1106,7 @@ def elabLeanQuotedTheoryItem (theoryName : Name) (sigPrefix : HLSignature)
 /-- Elaborate a whole theory block in source order with staged same-block quote stubs. -/
 def elabLeanQuotedTheoryBlock (theoryName : Name) (basePrefix : HLSignature)
     (decls : TSyntaxArray `ttDecl) (strict : Bool) : CommandElabM HLTheoryBlock := do
+  let decls ← expandUniverseHierarchyDecls decls
   let env ← getEnv
   let stagedEnv ←
     liftCoreM <| addLFQuoteStubsForHLSignatureToEnvIfMissing env theoryName basePrefix
@@ -1254,6 +1255,7 @@ def ensureLeanQuotedTheoryBlockFrontendEnabled : CommandElabM Bool := do
 def elabDeclareInternalLeanQuoted (doc? : Option (TSyntax ``Parser.Command.docComment))
     (nm : Ident) (levelParams parents : Array Name) (decls : TSyntaxArray `ttDecl) :
     CommandElabM Unit := do
+  let decls ← expandUniverseHierarchyDecls decls
   let strict ← ensureLeanQuotedTheoryBlockFrontendEnabled
   if strict then
     try
@@ -1276,6 +1278,7 @@ def elabDeclareInternalLeanQuoted (doc? : Option (TSyntax ``Parser.Command.docCo
 /-- Try the Lean-quoted frontend for one `extend_type_theory` command. -/
 def elabExtendInternalLeanQuoted (doc? : Option (TSyntax ``Parser.Command.docComment))
     (nm : Ident) (decls : TSyntaxArray `ttDecl) : CommandElabM Unit := do
+  let decls ← expandUniverseHierarchyDecls decls
   let strict ← ensureLeanQuotedTheoryBlockFrontendEnabled
   if strict then
     let some basePrefix ← liftCoreM <| getCheckedHLSignature? nm.getId
@@ -2145,9 +2148,9 @@ elab_rules (kind := declareInternalLeanWhere) : command
       elabDeclareInternalLeanQuoted doc? nm #[] #[] decls
 
 elab_rules (kind := declareInternalLeanLevelWhere) : command
-  | `($[$doc?:docComment]? declare_type_theory $nm:ident {$levels:ident,*} where
+  | `($[$doc?:docComment]? declare_type_theory $nm:ident { $[$levels:ident],* } where
       $decls:ttDecl*) => do
-      elabDeclareInternalLeanQuoted doc? nm (levels.getElems.map (·.getId)) #[] decls
+      elabDeclareInternalLeanQuoted doc? nm (levels.map (·.getId)) #[] decls
 
 elab_rules (kind := declareInternalLeanExtendsWhere) : command
   | `($[$doc?:docComment]? declare_type_theory $nm:ident extends $parents:ident,* where
@@ -2155,9 +2158,9 @@ elab_rules (kind := declareInternalLeanExtendsWhere) : command
       elabDeclareInternalLeanQuoted doc? nm #[] (parents.getElems.map (·.getId)) decls
 
 elab_rules (kind := declareInternalLeanLevelExtendsWhere) : command
-  | `($[$doc?:docComment]? declare_type_theory $nm:ident {$levels:ident,*} extends
+  | `($[$doc?:docComment]? declare_type_theory $nm:ident { $[$levels:ident],* } extends
       $parents:ident,* where $decls:ttDecl*) => do
-      elabDeclareInternalLeanQuoted doc? nm (levels.getElems.map (·.getId))
+      elabDeclareInternalLeanQuoted doc? nm (levels.map (·.getId))
         (parents.getElems.map (·.getId)) decls
 
 elab_rules (kind := extendInternalLeanWhere) : command

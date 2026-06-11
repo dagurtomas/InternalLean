@@ -137,7 +137,8 @@ Syntax-sort carriers are small by default in generated model interfaces. Use a t
 parameter and a result annotation, such as `syntax_sort Obj : Type u`, when the intended semantic
 carrier lives in a higher Lean universe. Use `syntax_def P ... : Type u := rhs` for named derived
 syntax families; an admitted `syntax_def ... := sorry` is lint-visible debt rather than a model
-field.
+field. For object-language universe hierarchies, `universe_hierarchy Level Ty Tm where ...`
+expands to the ordinary extrinsic prelude described in `Docs/Syntax.md`.
 
 After a theory has been declared, internal definitions and theorems live in its namespace and use
 `internal def`. Body terms are elaborated as Lean terms against generated LF quote stubs, reflected
