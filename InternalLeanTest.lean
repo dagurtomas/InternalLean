@@ -48,3 +48,4 @@ import InternalLeanTest.SyntaxDefTest
 import InternalLeanTest.TheoryAnchorTest
 import InternalLeanTest.TinyNatModel
 import InternalLeanTest.TransportPlanTest
+import InternalLeanTest.UniverseHierarchyEncodingTest

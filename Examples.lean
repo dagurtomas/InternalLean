@@ -8,3 +8,4 @@ module
 public import Examples.IntroExercises
 public import Examples.IntroExercisesHints
 public import Examples.IntroExercisesSolutions
+public import Examples.UniverseHierarchy
