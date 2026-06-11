@@ -1208,11 +1208,24 @@ def collectLFDefinitionUnfolds (defs : LFDefinitionValueMap) (locals : NameSet)
   collectLFDefinitionUnfoldsCore defs locals (lfDefinitionUnfoldFuel defs) acc e
 
 /-- Equality modulo macro scopes, checked LF-definition unfolding, and structural eta under
-local binders. -/
+local binders.
+
+This keeps LF-definition unfolding lazy: first try literal alpha-equivalence and beta/eta-only
+compact normalization, and unfold definitions only if the compact comparison fails. -/
 def lfExprEqModuloDefinitionsWithLocals (defs : LFDefinitionValueMap) (locals : NameSet)
     (a b : ObjExpr) : Bool :=
-  lfExprAlphaEq (normalizeLFExprForConversionWithLocals defs locals a)
-    (normalizeLFExprForConversionWithLocals defs locals b)
+  let a := eraseObjExprScopes a
+  let b := eraseObjExprScopes b
+  if lfExprAlphaEq a b then
+    true
+  else
+    let aCheap := normalizeLFExprForConversionWithLocals {} locals a
+    let bCheap := normalizeLFExprForConversionWithLocals {} locals b
+    if lfExprAlphaEq aCheap bCheap then
+      true
+    else
+      lfExprAlphaEq (normalizeLFExprForConversionWithLocals defs locals a)
+        (normalizeLFExprForConversionWithLocals defs locals b)
 
 /-- Equality modulo macro scopes, checked LF-definition unfolding, and structural eta. -/
 def lfExprEqModuloDefinitions (defs : LFDefinitionValueMap) (a b : ObjExpr) : Bool :=

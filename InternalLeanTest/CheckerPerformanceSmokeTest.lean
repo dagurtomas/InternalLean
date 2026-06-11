@@ -34,13 +34,13 @@ elab "#guard_kernel_rule_conclusion_first_arg_head " theory:ident ruleName:ident
   let some schema := sig.rules.find? (fun r =>
       r.name.raw.eraseMacroScopes == ruleName.getId.eraseMacroScopes)
     | throwError "no structural rule schema '{ruleName.getId}' for type theory '{theory.getId}'"
+  let rec head? : Kernel.KTerm → Option Name
+    | .ident h => some h.name.raw.eraseMacroScopes
+    | .app f _ => head? f
+    | _ => none
   let some actualHead :=
       match schema.conclusionStmt.args with
-      | arg :: _ =>
-          match arg with
-          | .ident h => some h.name.raw.eraseMacroScopes
-          | .app (.ident h) _ => some h.name.raw.eraseMacroScopes
-          | _ => none
+      | arg :: _ => head? arg
       | _ => none
     | throwError "structural rule schema '{ruleName.getId}' has no headed first conclusion argument"
   unless actualHead == expected.getId.eraseMacroScopes do
@@ -172,14 +172,15 @@ declare_type_theory CheckerPerfLazyLFDefKernelSchemaSmoke where
 
 #guard_kernel_rule_conclusion_first_arg_head CheckerPerfLazyLFDefKernelSchemaSmoke usesAlias alias
 
-/-- Synthetic version of the HoTT/MLTT rule-extension cliff.  Rebuilding an expanded structural
-signature for the child rule eagerly would unfold `d24` into a large duplicated `pairObj` tree, even
-though the rule-only extension does not need theorem replay. -/
+/-- Synthetic version of the HoTT/MLTT lazy-unfolding cliffs. Rebuilding an expanded structural
+signature eagerly, or eagerly normalizing theorem statements before checking compact equality,
+would unfold `d24` into a large duplicated `pairObj` tree. -/
 declare_type_theory CheckerPerfLazyStructuralBase where
   syntax_sort Obj
   judgment J (x : Obj)
   lf_opaque base : Obj
   lf_opaque pairObj (x : Obj) (y : Obj) : Obj
+  lf_opaque hugeTarget (x : Obj) (y : Obj) : Obj
   lf_def d00 : Obj := base
   lf_def d01 : Obj := pairObj d00 d00
   lf_def d02 : Obj := pairObj d01 d01
@@ -207,9 +208,10 @@ declare_type_theory CheckerPerfLazyStructuralBase where
   lf_def d24 : Obj := pairObj d23 d23
 
 declare_type_theory CheckerPerfLazyStructuralChild extends CheckerPerfLazyStructuralBase where
-  rule introHuge : J d24
+  rule introHuge : J (hugeTarget d24 d24)
+  judgment_theorem hugeTheorem : J (hugeTarget d24 d24) := introHuge
 
-#guard_kernel_rule_conclusion_first_arg_head CheckerPerfLazyStructuralChild introHuge d24
+#guard_kernel_rule_conclusion_first_arg_head CheckerPerfLazyStructuralChild introHuge hugeTarget
 
 declare_type_theory CheckerPerfLazyLFDefConversionFallbackSmoke where
   syntax_sort Ty
