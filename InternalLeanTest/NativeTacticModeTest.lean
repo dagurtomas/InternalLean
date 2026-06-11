@@ -203,6 +203,28 @@ internal def direct_sorry_admitted : Good o := by
   sorry
 
 /--
+warning: internal declaration 'NativeTacticModeSmoke.exact_sorry_admitted' was admitted by
+`sorry`; the annotation was checked in theory 'NativeTacticModeSmoke', but the body was not checked.
+Use `#lint_type_theory_sorries NativeTacticModeSmoke` to list current admissions.
+-/
+#guard_msgs (whitespace := lax) in
+internal def exact_sorry_admitted : Good o := by
+  exact sorry
+
+/-- error: Lean-elaborated LF term uses Lean `sorry`. Lean `sorry` cannot become a checked internal
+proof; use `:= sorry` for an explicit InternalLean admission. -/
+#guard_msgs (whitespace := lax) in
+internal def exact_embedded_sorry_rejected : Good o := by
+  exact (sorry : _)
+
+/-- error: Lean-elaborated LF term uses Lean `sorry`. Lean `sorry` cannot become a checked internal
+proof; use `:= sorry` for an explicit InternalLean admission. -/
+#guard_msgs (whitespace := lax) in
+internal def have_embedded_sorry_rejected : Good o := by
+  have h : Good o := sorry
+  exact h
+
+/--
 error: tactic `decide` is not part of InternalLean native tactic mode yet; supported native tactics
 in this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, `show`,
 `change`, `rw`, `simp`, term- and tactic-form `have`, focus bullets, and `skip`.

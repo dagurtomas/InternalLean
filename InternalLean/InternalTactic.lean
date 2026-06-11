@@ -2531,15 +2531,17 @@ partial def internalNativeLeanBySteps? (stx : Syntax) : Option (Array Syntax) :=
         | none => none
     | _ => none
 
-/-- True when syntax contains a direct source `sorry`, before user macro expansion. -/
-partial def internalNativeSyntaxContainsDirectSorry (stx : Syntax) : Bool :=
+/-- True when a source tactic step is an explicit declaration-wide native `sorry`. -/
+def internalNativeStepIsDirectSorryAdmission (stx : Syntax) : Bool :=
   stx.isOfKind `Lean.Parser.Tactic.tacticSorry ||
-    stx.isOfKind `Lean.Parser.Term.sorry ||
-      stx.getArgs.any internalNativeSyntaxContainsDirectSorry
+    (stx.isOfKind `Lean.Parser.Tactic.exact &&
+      match stx[1]? with
+      | some arg => arg.isOfKind `Lean.Parser.Term.sorry
+      | none => false)
 
 /-- True when a native Lean tactic block contains a direct declaration-wide `sorry`. -/
 def internalNativeStepsContainDirectSorry (steps : Array Syntax) : Bool :=
-  steps.any internalNativeSyntaxContainsDirectSorry
+  steps.any internalNativeStepIsDirectSorryAdmission
 
 /-- Run the native post-step assignment audit. -/
 def auditInternalNativeTacticStep (stx : Syntax) (sessionBefore sessionAfter :
