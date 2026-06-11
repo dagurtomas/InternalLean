@@ -35,7 +35,7 @@ artifacts, so model generation should not depend on raw parser traces.
 ## Status
 
 This is an active research prototype. The stable surface is the direct-LF declaration workflow,
-canonical `internal def`/`internal theorem` bodies reflected from Lean terms, internal tactic
+canonical `internal def`/`internal theorem` bodies reflected from Lean terms or Lean-native tactic
 scripts, LF certificate checking, and generated model-interface/transport commands. APIs may still
 change as the LF trust boundary, model backend, and internal tactics are hardened.
 
@@ -265,10 +265,10 @@ Model interpretation should consume checked LF artifacts, not parser traces alon
 `object_def` and `object_theorem` are deprecated compatibility shims. New code should use
 `internal def`.
 
-`internal_raw def` and `internal_raw theorem` keep the previous raw body grammar for framework
-regression tests and debugging. New code should use canonical `internal def` and
-`internal theorem`. When migrating old raw bodies, replace `{x := t}` with Lean named arguments
-`(x := t)` and replace old projection tokens `fst p`/`snd p` with `π₁ p`/`π₂ p`.
+`internal_raw def` and `internal_raw theorem` keep the previous raw body grammar and the legacy
+object-tactic compiler for framework regression tests and debugging. New code should use canonical
+`internal def` and `internal theorem`. When migrating old raw bodies, replace `{x := t}` with Lean
+named arguments `(x := t)` and replace old projection tokens `fst p`/`snd p` with `π₁ p`/`π₂ p`.
 
 ## License
 

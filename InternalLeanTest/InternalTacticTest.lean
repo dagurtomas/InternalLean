@@ -262,7 +262,7 @@ internal def badIntroDuplicate : (x : Obj) → (y : Obj) → Obj := by
 
 /-- error: object tactic `have h` failed: local name 'h' is already in the object context -/
 #guard_msgs (whitespace := lax) in
-internal def badHaveDuplicate (h : Rel a a) : Rel a a := by
+internal_raw def badHaveDuplicate (h : Rel a a) : Rel a a := by
   have h : Rel a a := by
     exact rel_a
   end
@@ -288,7 +288,7 @@ normalized expected: Rel b b
 LF definitions mentioned before unfolding: aliasB
 LF definitions unfolded: aliasB -/
 #guard_msgs (whitespace := lax) in
-internal def badAliasApplyRejected : Rel aliasB aliasB := by
+internal_raw def badAliasApplyRejected : Rel aliasB aliasB := by
   apply rel_a
 
 /-- error: object tactic `refine rel_pair ...` supplied 3 argument(s)/hole(s), but 4 explicit
@@ -304,13 +304,13 @@ internal def badRefineOmittedHole : Rel a a := by
 /-- error: object tactic `exact rel_pair` does not accept refinement hole `?_`; use `refine` or
 provide a complete argument -/
 #guard_msgs (whitespace := lax) in
-internal def badExactHole : Rel a a := by
+internal_raw def badExactHole : Rel a a := by
   exact rel_pair _ _ ?_ (rel_refl a)
 
 /-- error: object tactic `exact` does not accept nested refinement hole `?_` in application
 `rel_twice`; use `refine` or provide a complete argument -/
 #guard_msgs (whitespace := lax) in
-internal def badExactNestedHole : Rel a a := by
+internal_raw def badExactNestedHole : Rel a a := by
   exact rel_pair _ _ (rel_twice _ ?_ (rel_refl _)) (rel_refl a)
 
 /-- error: object tactic `refine rel_pair ...` supplied 5 argument(s)/hole(s), but rule or
@@ -328,7 +328,7 @@ internal def badRefineOverApplied : Rel a a := by
 /-- error: object tactic `refine rel_pair` expected focus bullet `·` before the next refinement hole
 for rule or declaration 'rel_pair' -/
 #guard_msgs (whitespace := lax) in
-internal def badRefineMissingFocusBullet : Rel a a := by
+internal_raw def badRefineMissingFocusBullet : Rel a a := by
   refine rel_pair _ _ ?_ ?_
   · apply rel_refl
   apply rel_refl
@@ -538,7 +538,7 @@ No declared proof/evidence transport could justify this rewrite either.
 object tactic `rw eq_a_to_b` found rewrite evidence for 'EqObj'
 but no `transport_rule` metadata is declared for that relation -/
 #guard_msgs (whitespace := lax) in
-internal def bad_rw_missing_transport : Rel a b := by
+internal_raw def bad_rw_missing_transport : Rel a b := by
   rw eq_a_to_b
   exact rel_refl b
 
@@ -578,7 +578,7 @@ No declared proof/evidence transport could justify this rewrite either.
 object tactic `rw ← eq_a_to_b` needs reverse evidence for 'EqObj'
 but no `rewrite_symmetry` metadata is declared for that relation -/
 #guard_msgs (whitespace := lax) in
-internal def bad_rw_reverse_missing_symmetry : Rel b b := by
+internal_raw def bad_rw_reverse_missing_symmetry : Rel b b := by
   rw ← eq_a_to_b
   exact rel_ab_via_transport
 
@@ -622,7 +622,7 @@ whose evidence premise matches the oriented rewrite evidence, and whose
 source premise matches the rewritten goal.
 For nested rewrites, declare rewrite_congruence metadata for each lifted head. -/
 #guard_msgs (whitespace := lax) in
-internal def bad_rw_nested_missing_congruence : Rel (f a) b := by
+internal_raw def bad_rw_nested_missing_congruence : Rel (f a) b := by
   rw eq_a_to_b
   exact rel_fb
 

@@ -226,11 +226,11 @@ internal def myZeroTac : wfNat zero := by
 end TinyNat
 ```
 
-Internal tactic scripts compile to internal terms, then the resulting declaration goes through the
-same checked registration path as a term-style `internal def`.
+Internal tactic scripts use Lean's tactic syntax, compile to internal terms, then the resulting
+declaration goes through the same checked registration path as a term-style `internal def`.
 
-The previous raw body grammar is still available as `internal_raw def` and
-`internal_raw theorem` for framework regression tests and debugging. Prefer canonical
+The previous raw body grammar and object-tactic compiler are still available as `internal_raw def`
+and `internal_raw theorem` for framework regression tests and debugging. Prefer canonical
 `internal def`/`internal theorem` in new code. When migrating old raw bodies, replace `{x := t}`
 with Lean named arguments `(x := t)` and replace old projection tokens `fst p`/`snd p` with
 `π₁ p`/`π₂ p`.

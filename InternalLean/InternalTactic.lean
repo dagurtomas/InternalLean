@@ -35,12 +35,6 @@ def profileInternalLeanCommandPhase (label : MessageData) (x : CommandElabM α) 
   else
     x
 
-register_option internalLean.nativeTacticMode : Bool := {
-  defValue := false
-  descr := "opt-in Phase 9 native tactic-mode skeleton for `internal def ... := by`; LF checking \
-    remains authoritative"
-}
-
 declare_syntax_cat internalTactic
 declare_syntax_cat internalTacticArg
 declare_syntax_cat internalRwItem
@@ -1835,15 +1829,6 @@ def checkInternalPremiseProofExpr (target : InternalDefTarget) (sig : HLSignatur
         pure ()
   | _ => pure ()
 
-/-- One infoview snapshot for a source object-tactic step. -/
-structure InternalObjectTacticInfo where
-  stx : Syntax
-  goalsBefore : Array InternalObjectGoal
-  goalsAfter : Array InternalObjectGoal
-  /-- True when the after-goals are a stale display-only simulation snapshot. -/
-  goalsAfterStale : Bool := false
-  deriving Inhabited
-
 /-- Placeholder object term used in infoview-only dependent subgoals created by `apply`. -/
 def internalObjectGoalPlaceholder (n : Name) : ObjExpr :=
   .ident (.str .anonymous s!"?{n.eraseMacroScopes}")
@@ -2094,545 +2079,6 @@ def elaborateInternalHaveTermProof (target : InternalDefTarget) (sig : HLSignatu
         pure proof
   | _ => pure proof
 
-mutual
-  /-- Diagnostic elaboration of a nested tactic argument, replacing each `?_` by a stable
-  placeholder and returning the object subgoals that the real `refine` compiler will consume. -/
-  partial def diagnoseInternalTacticArgWithHoles (target : InternalDefTarget) (sig : HLSignature)
-      (goal : InternalObjectGoal) (arg : InternalTacticArg) (allowHoles : Bool) (tacticName :
-        String) :
-      Except String (ObjExpr × Array InternalObjectGoal) := do
-    match arg with
-    | .expr e => pure (e, #[])
-    | .inferPlaceholder =>
-        throw s!"object tactic `{tacticName}` cannot infer nested placeholder `_` without a \
-          candidate head.\n\n{internalObjectTacticPlaceholderAdvice tacticName}"
-    | .refineHole =>
-        unless allowHoles do
-          throw s!"object tactic `exact` does not accept nested refinement hole `?_`; provide a \
-            complete argument"
-        pure (internalObjectGoalPlaceholder `_nested, #[goal])
-    | .app rawName args =>
-        diagnoseInternalCandidateArgWithHoles target sig goal rawName args allowHoles tacticName
-
-  /-- Diagnostic elaboration of a nested head application with possible nested `?_` holes. -/
-  partial def diagnoseInternalCandidateArgWithHoles (target : InternalDefTarget) (sig : HLSignature)
-      (goal : InternalObjectGoal) (rawName : Name) (suppliedArgs : Array InternalTacticArg)
-      (allowHoles : Bool) (tacticName : String) :
-        Except String (ObjExpr × Array InternalObjectGoal) := do
-    let some cand := findInternalApplyCandidate? target sig rawName
-      | throw s!"object tactic `{tacticName}` failed to elaborate nested application `{rawName}`: \
-        unknown rule or internal declaration '{rawName}' in type theory '{target.theoryName}'"
-    checkInternalCandidateAppArity tacticName rawName suppliedArgs.size cand
-    let some subst0 := matchInternalCandidateConclusion? sig goal.ctx cand.params
-        cand.conclusionExpr goal.target
-      | throw <| s!"object tactic `{tacticName}` failed to elaborate nested application " ++
-          s!"`{rawName}`: " ++
-          internalCandidateConclusionMismatchMessage sig goal.ctx cand.conclusionExpr goal.target
-    let mut outArgs : Array ObjExpr := #[]
-    let mut newGoals : Array InternalObjectGoal := #[]
-    let mut subst := subst0
-    let useFullExplicit := internalCandidateUsesFullExplicit cand suppliedArgs.size
-    let mut argIdx := 0
-    for param in cand.params do
-      let key := param.name.eraseMacroScopes
-      let paramTy := substObjectVars subst param.typeExpr
-      let argSpec? :=
-        if useFullExplicit || param.visibility == .explicit then
-          suppliedArgs[argIdx]?
-        else
-          none
-      match argSpec? with
-      | none =>
-          match subst.find? key with
-          | some inferred => outArgs := outArgs.push inferred
-          | none =>
-              throw <| internalCannotInferParameterMessage tacticName rawName param.name paramTy
-                false true
-      | some argSpec =>
-          argIdx := argIdx + 1
-          match argSpec with
-          | .inferPlaceholder =>
-              match subst.find? key with
-              | some inferred => outArgs := outArgs.push inferred
-              | none =>
-                  throw <| internalCannotInferParameterMessage tacticName rawName param.name paramTy
-                    true true
-          | .refineHole =>
-              unless allowHoles do
-                throw s!"object tactic `exact` does not accept nested refinement hole `?_`; \
-                  provide a complete argument"
-              newGoals := newGoals.push { ctx := goal.ctx, target := paramTy }
-              let hole := internalObjectGoalPlaceholder param.name
-              subst := subst.insert key hole
-              outArgs := outArgs.push hole
-          | .expr e =>
-              match subst.find? key with
-              | some inferred =>
-                  unless objectGoalsConvertible sig #[] goal.ctx e inferred do
-                    throw <| internalArgumentMismatchMessage tacticName rawName param.name e
-                      inferred
-              | none => subst := subst.insert key e
-              outArgs := outArgs.push e
-          | .app _ _ =>
-              let (arg, nestedGoals) ←
-                diagnoseInternalTacticArgWithHoles target sig { goal with target := paramTy }
-                argSpec allowHoles tacticName
-              newGoals := newGoals ++ nestedGoals
-              match subst.find? key with
-              | some inferred =>
-                  unless objectGoalsConvertible sig #[] goal.ctx arg inferred do
-                    throw <| internalArgumentMismatchMessage tacticName rawName param.name arg
-                      inferred true
-              | none => subst := subst.insert key arg
-              outArgs := outArgs.push arg
-    for premiseTarget in cand.subgoalTargets do
-      let some argSpec := suppliedArgs[argIdx]?
-        | throw s!"internal error: missing checked object tactic argument"
-      argIdx := argIdx + 1
-      let premiseGoal := substObjectVars subst premiseTarget
-      match argSpec with
-      | .inferPlaceholder =>
-          throw s!"object tactic `{tacticName}` cannot infer nested placeholder `_` for a premise \
-            in application `{rawName}`; write an explicit proof term or \
-              `?_`.\n\n{internalObjectTacticPlaceholderAdvice tacticName}"
-      | .refineHole =>
-          unless allowHoles do
-            throw s!"object tactic `exact` does not accept nested refinement hole `?_`; provide a \
-              complete argument"
-          newGoals := newGoals.push { ctx := goal.ctx, target := premiseGoal }
-          outArgs :=
-            outArgs.push (internalObjectGoalPlaceholder (.str rawName.eraseMacroScopes
-              s!"premise{argIdx}"))
-      | .expr e => outArgs := outArgs.push e
-      | .app _ _ =>
-          let (arg, nestedGoals) ←
-            diagnoseInternalTacticArgWithHoles target sig { goal with target := premiseGoal }
-            argSpec allowHoles tacticName
-          newGoals := newGoals ++ nestedGoals
-          outArgs := outArgs.push arg
-    for sc in cand.sideConditions do
-      let scInput := substObjectVars subst sc.input
-      match classifySideConditionHook sc.solver with
-      | .builtinTrivial => pure ()
-      | .opaque =>
-          throw <| internalOpaqueSideConditionMessage tacticName rawName rawName sc.name
-            sc.solver scInput
-    pure (mkObjectApps (.ident cand.name) outArgs, newGoals)
-end
-
-/-- Compute diagnostic subgoals created by `refine head ... ?_ ...`.
-This mirrors the argument/placeholder discipline of the real compiler but uses placeholders for
-hole solutions so later dependent diagnostic targets remain stable before compilation. -/
-def internalObjectRefineDiagnosticSubgoals (target : InternalDefTarget) (sig : HLSignature)
-    (goal : InternalObjectGoal) (rawName : Name) (args : Array InternalTacticArg)
-    (allowHoles : Bool) (tacticName : String) : Except String (Array InternalObjectGoal) := do
-  let (_, innerGoal) := autoIntroGoal goal
-  let some cand := findInternalApplyCandidate? target sig rawName
-    | throw s!"object tactic `{tacticName} {rawName}` failed: unknown rule or internal \
-      declaration '{rawName}' in type theory '{target.theoryName}'"
-  checkInternalCandidateAppArity tacticName rawName args.size cand
-  let some subst0 := matchInternalCandidateConclusion? sig innerGoal.ctx cand.params
-      cand.conclusionExpr innerGoal.target
-    | throw <| s!"object tactic `{tacticName} {rawName}` failed: " ++
-        internalCandidateConclusionMismatchMessage
-          sig innerGoal.ctx cand.conclusionExpr innerGoal.target
-  let mut subst := subst0
-  let mut newGoals : Array InternalObjectGoal := #[]
-  let useFullExplicit := internalCandidateUsesFullExplicit cand args.size
-  let mut argIdx := 0
-  for param in cand.params do
-    let key := param.name.eraseMacroScopes
-    let paramTy := substObjectVars subst param.typeExpr
-    let argSpec? :=
-      if useFullExplicit || param.visibility == .explicit then
-        args[argIdx]?
-      else
-        none
-    match argSpec? with
-    | none =>
-        unless (subst.find? key).isSome do
-          throw s!"object tactic `{tacticName} {rawName}` could not infer implicit parameter \
-            '{param.name}'\n\n{internalObjectTacticPlaceholderAdvice tacticName}"
-    | some argSpec =>
-        argIdx := argIdx + 1
-        match argSpec with
-        | .inferPlaceholder =>
-            match subst.find? key with
-            | some _ => pure ()
-            | none =>
-              throw s!"object tactic `{tacticName} {rawName}` could not infer placeholder `_` for \
-                parameter '{param.name}'\n\n{internalObjectTacticPlaceholderAdvice tacticName}"
-        | .expr e =>
-            match subst.find? key with
-            | some inferred =>
-                unless objectGoalsConvertible sig #[] goal.ctx e inferred do
-                  throw <| internalArgumentMismatchMessage tacticName rawName param.name e
-                      inferred
-            | none => subst := subst.insert key e
-        | .app _ _ =>
-            let (e, nestedGoals) ←
-              diagnoseInternalTacticArgWithHoles target sig { innerGoal with target := paramTy }
-              argSpec allowHoles tacticName
-            newGoals := newGoals ++ nestedGoals
-            match subst.find? key with
-            | some inferred =>
-                unless objectGoalsConvertible sig #[] goal.ctx e inferred do
-                  throw <| internalArgumentMismatchMessage tacticName rawName param.name e
-                      inferred true
-            | none => subst := subst.insert key e
-        | .refineHole =>
-            unless allowHoles do
-              throw s!"object tactic `exact {rawName}` does not accept refinement hole `?_`; use \
-                `refine` or provide a complete argument"
-            newGoals := newGoals.push { ctx := innerGoal.ctx, target := paramTy }
-            subst := subst.insert key (internalObjectGoalPlaceholder param.name)
-  for premiseTarget in cand.subgoalTargets do
-    let some argSpec := args[argIdx]?
-      | throw s!"internal error: missing checked object tactic argument"
-    argIdx := argIdx + 1
-    let premiseGoal := substObjectVars subst premiseTarget
-    match argSpec with
-    | .inferPlaceholder =>
-        throw s!"object tactic `{tacticName} {rawName}` cannot infer placeholder `_` for a \
-          premise; write an explicit proof term or \
-            `?_`.\n\n{internalObjectTacticPlaceholderAdvice tacticName}"
-    | .expr _ => pure ()
-    | .app _ _ =>
-        let (_, nestedGoals) ←
-          diagnoseInternalTacticArgWithHoles target sig { innerGoal with target := premiseGoal }
-          argSpec allowHoles tacticName
-        newGoals := newGoals ++ nestedGoals
-    | .refineHole =>
-        unless allowHoles do
-          throw s!"object tactic `exact {rawName}` does not accept refinement hole `?_`; use \
-            `refine` or provide a complete argument"
-        newGoals := newGoals.push { ctx := innerGoal.ctx, target := premiseGoal }
-  for sc in cand.sideConditions do
-    match classifySideConditionHook sc.solver with
-    | .builtinTrivial => pure ()
-    | .opaque =>
-      throw s!"object tactic `{tacticName} {rawName}` cannot synthesize side-condition \
-        certificate '{sc.name}'"
-  pure newGoals
-
-/-- Simulate one object tactic step as a goal-stack transformation for editor infoview state.
-The real checker still uses `compileInternalObjectTactics`; this pass is diagnostic only. -/
-def stepInternalObjectTacticInfoState (target : InternalDefTarget) (sig : HLSignature) (levels :
-  Array Name)
-    (goals : Array InternalObjectGoal) (step : InternalTacticStep) :
-      Except String (Array InternalObjectGoal) := do
-  let some goal := goals[0]?
-    | throw s!"no remaining object goals"
-  let rest := goals.extract 1 goals.size
-  match step with
-  | .exactTerm _ | .refineTerm _ | .exactApp _ _ =>
-      pure rest
-  | .refineApp n args =>
-      let subgoals ← internalObjectRefineDiagnosticSubgoals target sig goal n args true "refine"
-      pure (subgoals ++ rest)
-  | .showGoal newGoal =>
-      unless objectGoalsConvertible sig levels goal.ctx goal.target newGoal do
-        throw s!"object tactic `show` cannot replace current goal"
-      pure (#[{ goal with target := newGoal }] ++ rest)
-  | .changeGoal newGoal =>
-      match objectGoalConversionCheck sig levels goal.ctx goal.target newGoal with
-      | .ok _ => pure (#[{ goal with target := newGoal }] ++ rest)
-      | .error _ =>
-          if objectGoalsConvertible sig levels goal.ctx goal.target newGoal then
-            pure (#[{ goal with target := newGoal }] ++ rest)
-          else
-            throw s!"object tactic `change` cannot replace current goal"
-  | .rwRule n symm =>
-      let newGoal ← rewriteObjectGoalForTactic target sig levels goal.ctx goal.target n symm
-      pure (#[{ goal with target := newGoal }] ++ rest)
-  | .rwRules items =>
-      let newGoal ← rewriteObjectGoalSeqForTactic target sig levels goal.ctx goal.target items
-      pure (#[{ goal with target := newGoal }] ++ rest)
-  | .simp =>
-      let newGoal ← simpObjectGoal target sig levels goal.ctx goal.target
-      pure (#[{ goal with target := newGoal }] ++ rest)
-  | .simpRules names onlyMode =>
-      let newGoal ← simpObjectGoal target sig levels goal.ctx goal.target { names, onlyMode }
-      pure (#[{ goal with target := newGoal }] ++ rest)
-  | .assumption =>
-      let (_, innerGoal) := autoIntroGoal goal
-      let some _ := findAssumption? sig levels innerGoal.ctx innerGoal.target
-        | throw s!"object tactic `assumption` failed"
-      pure rest
-  | .applyName n =>
-      let (_, innerGoal) := autoIntroGoal goal
-      let some cand := findInternalApplyCandidate? target sig n
-        | throw s!"object tactic `apply {n}` failed: unknown rule or internal declaration"
-      let some subst0 := matchInternalCandidateConclusion? sig innerGoal.ctx cand.params
-          cand.conclusionExpr innerGoal.target
-        | throw s!"object tactic `apply {n}` failed: conclusion does not match current goal"
-      let mut subst := subst0
-      let mut newGoals : Array InternalObjectGoal := #[]
-      for param in cand.params do
-        let key := param.name.eraseMacroScopes
-        match subst.find? key with
-        | some _ => pure ()
-        | none =>
-            let paramTy := substObjectVars subst param.typeExpr
-            newGoals := newGoals.push { ctx := innerGoal.ctx, target := paramTy }
-            subst := subst.insert key (internalObjectGoalPlaceholder param.name)
-      for premiseTarget in cand.subgoalTargets do
-        newGoals := newGoals.push {
-          ctx := innerGoal.ctx
-          target := substObjectVars subst premiseTarget
-        }
-      for sc in cand.sideConditions do
-        match classifySideConditionHook sc.solver with
-        | .builtinTrivial => pure ()
-        | .opaque =>
-          throw s!"object tactic `apply {n}` cannot synthesize side-condition certificate \
-            '{sc.name}'"
-      pure (newGoals ++ rest)
-  | .focusBullet =>
-      pure goals
-  | .intro n =>
-      pure (#[← introObjectGoal goal n] ++ rest)
-  | .intros ns =>
-      pure (#[← introsObjectGoal goal ns] ++ rest)
-  | .haveDecl n type _ | .haveTerm n type _ =>
-      if internalObjectContextHasName goal.ctx n then
-        throw s!"object tactic `have {n}` failed: local name '{n}' is already in the object context"
-      let nextGoal := {
-        goal with ctx := goal.ctx.push { name := n, typeExpr := type, visibility := .explicit } }
-      pure (#[nextGoal] ++ rest)
-  | .haveMissingEnd n =>
-      throw s!"object tactic `have {n}` is missing `end`; write `have {n} : ... := by ... end` \
-        or use term-mode `have {n} : ... := proof`"
-  | .sorry =>
-      pure rest
-
-/-- Syntax span for a tactic step, with a harmless fallback for malformed arrays. -/
-def internalTacticStepSyntaxAt (stepStxs : Array Syntax) (idx : Nat) : Syntax :=
-  stepStxs[idx]?.getD Syntax.missing
-
-/-- Append one object-tactic infoview snapshot. -/
-def pushInternalObjectTacticInfo (infos : Array InternalObjectTacticInfo) (stepStxs : Array Syntax)
-    (idx : Nat) (before after : Array InternalObjectGoal) : Array InternalObjectTacticInfo :=
-  infos.push { stx := internalTacticStepSyntaxAt stepStxs idx, goalsBefore := before, goalsAfter :=
-    after }
-
-/-- Compute the diagnostic subgoals created by an object `apply` step.
-This mirrors the real compiler enough to drive infoview state; dependent unsolved parameters are
-represented by placeholders until their proof terms have been compiled by the authoritative path. -/
-def internalObjectApplyDiagnosticSubgoals (target : InternalDefTarget) (sig : HLSignature)
-    (goal : InternalObjectGoal) (rawName : Name) : Except String (Array InternalObjectGoal) := do
-  let (_, innerGoal) := autoIntroGoal goal
-  let some cand := findInternalApplyCandidate? target sig rawName
-    | throw s!"object tactic `apply {rawName}` failed: unknown rule or internal declaration"
-  let some subst0 := matchInternalCandidateConclusion? sig innerGoal.ctx cand.params
-      cand.conclusionExpr innerGoal.target
-    | throw s!"object tactic `apply {rawName}` failed: conclusion does not match current goal"
-  let mut subst := subst0
-  let mut newGoals : Array InternalObjectGoal := #[]
-  for param in cand.params do
-    let key := param.name.eraseMacroScopes
-    match subst.find? key with
-    | some _ => pure ()
-    | none =>
-        let paramTy := substObjectVars subst param.typeExpr
-        newGoals := newGoals.push { ctx := innerGoal.ctx, target := paramTy }
-        subst := subst.insert key (internalObjectGoalPlaceholder param.name)
-  for premiseTarget in cand.subgoalTargets do
-    newGoals := newGoals.push {
-      ctx := innerGoal.ctx
-      target := substObjectVars subst premiseTarget
-    }
-  for sc in cand.sideConditions do
-    match classifySideConditionHook sc.solver with
-    | .builtinTrivial => pure ()
-    | .opaque =>
-      throw s!"object tactic `apply {rawName}` cannot synthesize side-condition certificate \
-        '{sc.name}'"
-  pure newGoals
-
-mutual
-  /-- Collect infoview snapshots while recursively following focused subgoal blocks. -/
-  partial def collectInternalObjectTacticGoalInfo (target : InternalDefTarget) (sig : HLSignature)
-      (levels : Array Name) (steps : Array InternalTacticStep) (stepStxs : Array Syntax)
-      (idx : Nat) (goal : InternalObjectGoal) : Array InternalObjectTacticInfo × Nat := Id.run do
-    let some step := steps[idx]?
-      | return (#[], idx)
-    let before := #[goal]
-    match step with
-    | .focusBullet =>
-        collectInternalObjectTacticGoalInfo target sig levels steps stepStxs (idx + 1) goal
-    | .exactTerm _ | .refineTerm _ | .exactApp _ _ | .assumption | .sorry =>
-        return (pushInternalObjectTacticInfo #[] stepStxs idx before #[], idx + 1)
-    | .showGoal newGoal =>
-        if objectGoalsConvertible sig levels goal.ctx goal.target newGoal then
-          let head := pushInternalObjectTacticInfo #[] stepStxs idx before #[{ goal with target :=
-            newGoal }]
-          let (tail, nextIdx) :=
-            collectInternalObjectTacticGoalInfo target sig levels steps stepStxs (idx + 1) { goal
-              with target := newGoal }
-          return (head ++ tail, nextIdx)
-        else
-          return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
-    | .changeGoal newGoal =>
-        let ok :=
-          match objectGoalConversionCheck sig levels goal.ctx goal.target newGoal with
-          | .ok _ => true
-          | .error _ => objectGoalsConvertible sig levels goal.ctx goal.target newGoal
-        if ok then
-          let head := pushInternalObjectTacticInfo #[] stepStxs idx before #[{ goal with target :=
-            newGoal }]
-          let (tail, nextIdx) :=
-            collectInternalObjectTacticGoalInfo target sig levels steps stepStxs (idx + 1) { goal
-              with target := newGoal }
-          return (head ++ tail, nextIdx)
-        else
-          return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
-    | .rwRule n symm =>
-        match rewriteObjectGoalForTactic target sig levels goal.ctx goal.target n symm with
-        | .ok newGoal =>
-            let nextGoal := { goal with target := newGoal }
-            let head := pushInternalObjectTacticInfo #[] stepStxs idx before #[nextGoal]
-            let (tail, nextIdx) :=
-              collectInternalObjectTacticGoalInfo target sig levels steps stepStxs (idx + 1)
-                nextGoal
-            return (head ++ tail, nextIdx)
-        | .error _ =>
-            return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
-    | .rwRules items =>
-        match rewriteObjectGoalSeqForTactic target sig levels goal.ctx goal.target items with
-        | .ok newGoal =>
-            let nextGoal := { goal with target := newGoal }
-            let head := pushInternalObjectTacticInfo #[] stepStxs idx before #[nextGoal]
-            let (tail, nextIdx) :=
-              collectInternalObjectTacticGoalInfo target sig levels steps stepStxs (idx + 1)
-                nextGoal
-            return (head ++ tail, nextIdx)
-        | .error _ =>
-            return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
-    | .simp =>
-        match simpObjectGoal target sig levels goal.ctx goal.target with
-        | .ok newGoal =>
-            let nextGoal := { goal with target := newGoal }
-            let head := pushInternalObjectTacticInfo #[] stepStxs idx before #[nextGoal]
-            let (tail, nextIdx) :=
-              collectInternalObjectTacticGoalInfo target sig levels steps stepStxs (idx + 1)
-                nextGoal
-            return (head ++ tail, nextIdx)
-        | .error _ =>
-            return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
-    | .simpRules names onlyMode =>
-        match simpObjectGoal target sig levels goal.ctx goal.target { names, onlyMode } with
-        | .ok newGoal =>
-            let nextGoal := { goal with target := newGoal }
-            let head := pushInternalObjectTacticInfo #[] stepStxs idx before #[nextGoal]
-            let (tail, nextIdx) :=
-              collectInternalObjectTacticGoalInfo target sig levels steps stepStxs (idx + 1)
-                nextGoal
-            return (head ++ tail, nextIdx)
-        | .error _ =>
-            return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
-    | .applyName n =>
-        match internalObjectApplyDiagnosticSubgoals target sig goal n with
-        | .error _ =>
-            return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
-        | .ok subgoals =>
-            let head := pushInternalObjectTacticInfo #[] stepStxs idx before subgoals
-            let (tail, nextIdx) :=
-              collectInternalObjectTacticSubgoalsInfo target sig levels steps stepStxs (idx + 1)
-                subgoals
-            return (head ++ tail, nextIdx)
-    | .refineApp n args =>
-        match internalObjectRefineDiagnosticSubgoals target sig goal n args true "refine" with
-        | .error _ =>
-            return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
-        | .ok subgoals =>
-            let head := pushInternalObjectTacticInfo #[] stepStxs idx before subgoals
-            let (tail, nextIdx) :=
-              collectInternalObjectTacticSubgoalsInfo target sig levels steps stepStxs (idx + 1)
-                subgoals
-            return (head ++ tail, nextIdx)
-    | .intro n =>
-        match introObjectGoal goal n with
-        | .ok nextGoal =>
-            let head := pushInternalObjectTacticInfo #[] stepStxs idx before #[nextGoal]
-            let (tail, nextIdx) :=
-              collectInternalObjectTacticGoalInfo target sig levels steps stepStxs (idx + 1)
-                nextGoal
-            return (head ++ tail, nextIdx)
-        | .error _ =>
-            return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
-    | .intros ns =>
-        match introsObjectGoal goal ns with
-        | .ok nextGoal =>
-            let head := pushInternalObjectTacticInfo #[] stepStxs idx before #[nextGoal]
-            let (tail, nextIdx) :=
-              collectInternalObjectTacticGoalInfo target sig levels steps stepStxs (idx + 1)
-                nextGoal
-            return (head ++ tail, nextIdx)
-        | .error _ =>
-            return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
-    | .haveDecl n type body =>
-        if internalObjectContextHasName goal.ctx n then
-          return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
-        let haveGoal := { goal with target := type }
-        let subStxs := body.map fun _ => Syntax.missing
-        let (subInfos, _) := collectInternalObjectTacticGoalInfo target sig levels body subStxs 0
-          haveGoal
-        let nextGoal := {
-          goal with ctx := goal.ctx.push { name := n, typeExpr := type, visibility := .explicit } }
-        let head := pushInternalObjectTacticInfo #[] stepStxs idx before #[haveGoal, nextGoal]
-        let (tail, nextIdx) :=
-          collectInternalObjectTacticGoalInfo target sig levels steps stepStxs (idx + 1) nextGoal
-        return (head ++ subInfos ++ tail, nextIdx)
-    | .haveTerm n type _ =>
-        if internalObjectContextHasName goal.ctx n then
-          return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
-        let nextGoal := {
-          goal with ctx := goal.ctx.push { name := n, typeExpr := type, visibility := .explicit } }
-        let head := pushInternalObjectTacticInfo #[] stepStxs idx before #[nextGoal]
-        let (tail, nextIdx) :=
-          collectInternalObjectTacticGoalInfo target sig levels steps stepStxs (idx + 1) nextGoal
-        return (head ++ tail, nextIdx)
-    | .haveMissingEnd _ =>
-        return (pushInternalObjectTacticInfo #[] stepStxs idx before before, idx + 1)
-
-  /-- Collect snapshots for subgoals produced by an `apply`, honoring Lean-style focus bullets. -/
-  partial def collectInternalObjectTacticSubgoalsInfo (target : InternalDefTarget) (sig :
-    HLSignature)
-      (levels : Array Name) (steps : Array InternalTacticStep) (stepStxs : Array Syntax)
-      (idx : Nat) (subgoals : Array InternalObjectGoal) : Array InternalObjectTacticInfo × Nat :=
-        Id.run do
-    let useBullets := internalTacticStepAtIsFocusBullet steps idx
-    let mut infos := #[]
-    let mut nextIdx := idx
-    for subgoal in subgoals do
-      if useBullets then
-        if internalTacticStepAtIsFocusBullet steps nextIdx then
-          infos := pushInternalObjectTacticInfo infos stepStxs nextIdx #[subgoal] #[subgoal]
-          nextIdx := nextIdx + 1
-        else
-          return (infos, nextIdx)
-      let (subInfos, nextIdx') :=
-        collectInternalObjectTacticGoalInfo target sig levels steps stepStxs nextIdx subgoal
-      infos := infos ++ subInfos
-      nextIdx := nextIdx'
-    return (infos, nextIdx)
-end
-
-/-- Build diagnostic goal-state entries for an internal object tactic script.
-This pass is editor-only and deliberately mirrors subgoal focus: tactic snapshots inside a `·`
-block display only the focused object goal, while the real checker below remains authoritative. -/
-def collectInternalObjectTacticInfo (target : InternalDefTarget) (sig : HLSignature) (levels :
-  Array Name)
-    (typeExpr : ObjExpr) (steps : Array InternalTacticStep) (stepStxs : Array Syntax) :
-      Array InternalObjectTacticInfo :=
-  (collectInternalObjectTacticGoalInfo target sig levels steps stepStxs 0 { target := typeExpr }).1
-
-/-- Convert object-tactic goals to display renderer inputs. -/
-def internalObjectGoalsForDisplay (goals : Array InternalObjectGoal) (stale : Bool := false) :
-    Array InternalGoalDisplayGoal :=
-  goals.map fun goal => mkInternalGoalDisplayGoal goal.ctx goal.target stale
-
 /-- Description shown when hovering over a name in an internal tactic script. -/
 structure InternalObjectHover where
   kind : String
@@ -2707,12 +2153,10 @@ def internalHoverViewType (target : InternalDefTarget) (hover : InternalObjectHo
     (mkStrLit hover.name.eraseMacroScopes.toString)
     (mkStrLit hover.typeOrStatement)
 
-/-- Save hover term-info nodes for recognized names in one internal tactic step. -/
-def saveInternalObjectHoverInfo (target : InternalDefTarget) (sig : HLSignature)
-    (info : InternalObjectTacticInfo) : CommandElabM Unit := do
-  let some goal := info.goalsBefore[0]?
-    | return ()
-  for stx in collectInternalIdentSyntaxes info.stx do
+/-- Save hover term-info nodes for recognized names below one syntax node. -/
+def saveInternalObjectHoverInfoForSyntax (target : InternalDefTarget) (sig : HLSignature)
+    (goal : InternalObjectGoal) (stepStx : Syntax) : CommandElabM Unit := do
+  for stx in collectInternalIdentSyntaxes stepStx do
     let some rawName := internalSyntaxIdentName? stx
       | pure ()
     if let some hover := internalObjectHover? target sig goal rawName then
@@ -2729,31 +2173,22 @@ def saveInternalObjectHoverInfo (target : InternalDefTarget) (sig : HLSignature)
           isDisplayableTerm := false
         }
 
-/-- Save ordinary Lean `TacticInfo` nodes for object-theory tactic steps, so VS Code/infoview
-can show the current object context and target while editing `internal def ... := by`. -/
-def saveInternalObjectTacticInfo (target : InternalDefTarget) (sig : HLSignature)
-    (infos : Array InternalObjectTacticInfo) : CommandElabM Unit := do
-  let displayCtx ← liftTermElabM <| prepareInternalGoalDisplayContext target
-  for info in infos do
-    let (beforeSnapshot, afterSnapshot) ← liftTermElabM do
-      let beforeGoals := internalObjectGoalsForDisplay info.goalsBefore
-      let afterGoals := internalObjectGoalsForDisplay info.goalsAfter info.goalsAfterStale
-      let beforeSnapshot ←
-        mkInternalObjectGoalDisplaySnapshotWithContext target displayCtx beforeGoals
-      let afterSnapshot ←
-        mkInternalObjectGoalDisplaySnapshotWithContext target displayCtx afterGoals
-      pushInfoLeaf <| .ofTacticInfo {
-        elaborator := `InternalLean.internalObjectTacticInfo
-        stx := info.stx
-        mctxBefore := beforeSnapshot.mctx
-        goalsBefore := beforeSnapshot.goals
-        mctxAfter := afterSnapshot.mctx
-        goalsAfter := afterSnapshot.goals
-      }
-      pure (beforeSnapshot, afterSnapshot)
-    recordInternalGoalDisplayFallbacks info.stx beforeSnapshot.fallbacks
-    recordInternalGoalDisplayFallbacks info.stx afterSnapshot.fallbacks
-    saveInternalObjectHoverInfo target sig info
+/-- Save the minimal root-goal snapshot used by explicit raw object-tactic compatibility scripts. -/
+def saveInternalRawRootGoalInfo (target : InternalDefTarget) (sig : HLSignature)
+    (goal : InternalObjectGoal) (stx : Syntax) : CommandElabM Unit := do
+  let snapshot ← liftTermElabM do
+    let displayGoal := mkInternalGoalDisplayGoal goal.ctx goal.target
+    let snapshot ← mkInternalObjectGoalDisplaySnapshot target #[displayGoal]
+    pushInfoLeaf <| .ofTacticInfo {
+      elaborator := `InternalLean.internalRawObjectTacticRootInfo
+      stx := stx
+      mctxBefore := snapshot.mctx
+      goalsBefore := snapshot.goals
+      mctxAfter := snapshot.mctx
+      goalsAfter := snapshot.goals }
+    pure snapshot
+  recordInternalGoalDisplayFallbacks stx snapshot.fallbacks
+  saveInternalObjectHoverInfoForSyntax target sig goal stx
 
 /-- Refresh generated mirror declarations after a successful internal registration.  Goal display
 may force mirror generation while compiling a source module; this best-effort refresh ensures the
@@ -2942,10 +2377,6 @@ initialize internalNativeTacticSessionStack : IO.Ref (Array InternalNativeTactic
 
 initialize internalNativeTacticTransaction : IO.Ref InternalNativeTacticTransaction ←
   IO.mkRef {}
-
-/-- Whether Phase 9 native tactic mode is enabled in the current option set. -/
-def internalNativeTacticModeEnabled : CoreM Bool := do
-  pure <| (← getOptions).getBool `internalLean.nativeTacticMode false
 
 /-- Fetch the currently active native tactic session, if any. -/
 def currentInternalNativeTacticSession? : CoreM (Option InternalNativeTacticSession) := do
@@ -3550,26 +2981,6 @@ def finalizeInternalNativeTacticResult (target : InternalDefTarget) (stx : Synta
       result.session.holes fuel root with
   | .ok term => pure term
   | .error err => throwErrorAt stx err
-
-/-- User-facing finalization error for milestone 9a's skeleton implementation. -/
-def throwInternalNativeTacticSkeletonIncomplete (stx : Syntax)
-    (result : InternalNativeTacticRunResult) : CommandElabM α := do
-  if result.finalGoals.isEmpty && result.session.goals.isEmpty then
-    throwErrorAt stx "InternalLean native tactic mode reached a closed skeleton state, but \
-      Phase 9a does not yet finalize LF proof terms"
-  else
-    throwErrorAt stx "InternalLean native tactic mode is enabled, but Phase 9a only installs the \
-      live-goal skeleton; the tactic block left unsolved InternalLean native goal(s). Core object \
-      tactics are enabled in later Phase 9 milestones."
-
-/-- Run native tactic mode for a canonical internal declaration body.  Milestone 9a never accepts a
-checked declaration through this path; it either reports an unsupported step or the skeleton
-incomplete error after producing live tactic info. -/
-def elabInternalDefNativeTacticSkeleton (target : InternalDefTarget) (sig : HLSignature)
-    (levels : Array Name) (ctx : Array HLBinding) (targetExpr : ObjExpr) (bodyStx : Syntax)
-    (steps : Array Syntax) : CommandElabM Unit := do
-  let result ← runInternalNativeTacticSkeleton target sig levels ctx targetExpr steps
-  throwInternalNativeTacticSkeletonIncomplete bodyStx result
 
 /-- Structured object-tactic compilation errors, optionally tagged with a source step index. -/
 inductive InternalObjectTacticCompileError where
@@ -4500,20 +3911,12 @@ def elabInternalDefBy (doc? : Option (TSyntax ``Parser.Command.docComment))
     (declNameStx : Syntax) (declName : Name) (levels : Array Name)
     (typeStx : TSyntax `ttExpr) (tactics : TSyntaxArray `internalTactic) : CommandElabM Unit := do
   let steps ← tactics.mapM fun tac => withRef tac.raw <| elabInternalTacticStep tac
-  if (← liftCoreM internalNativeTacticModeEnabled) && !internalTacticStepsContainSorry steps then
-    let refStx := match tactics[0]? with | some tac => tac.raw | none => declNameStx
-    throwErrorAt refStx
-      "this `by` block parsed as the legacy InternalLean object-tactic language; Phase 9a \
-      native tactic mode only accepts Lean tactic syntax through the quoted body path. Disable \
-      `internalLean.nativeTacticMode` to use the legacy object-tactic compiler."
   let target ← resolveInternalDefTarget declName
   let some sig ← liftCoreM <| getTheory? target.theoryName
     | throwError "unknown type theory '{target.theoryName}'"
   let flatSig ← liftCoreM <| flattenSignature sig
   let typeExpr ← elabObjExpr typeStx
-  let infos :=
-    collectInternalObjectTacticInfo target flatSig levels typeExpr steps (tactics.map (·.raw))
-  saveInternalObjectTacticInfo target flatSig infos
+  saveInternalRawRootGoalInfo target flatSig { target := typeExpr } declNameStx
   if internalTacticStepsContainSorry steps then
     elabInternalDefSorry doc? declNameStx declName levels typeStx
   else
@@ -4529,12 +3932,6 @@ def elabInternalDefByWithBinders (doc? : Option (TSyntax ``Parser.Command.docCom
     (binders : TSyntaxArray `ttBinder) (typeStx : TSyntax `ttExpr)
     (tactics : TSyntaxArray `internalTactic) : CommandElabM Unit := do
   let steps ← tactics.mapM fun tac => withRef tac.raw <| elabInternalTacticStep tac
-  if (← liftCoreM internalNativeTacticModeEnabled) && !internalTacticStepsContainSorry steps then
-    let refStx := match tactics[0]? with | some tac => tac.raw | none => declNameStx
-    throwErrorAt refStx
-      "this `by` block parsed as the legacy InternalLean object-tactic language; Phase 9a \
-      native tactic mode only accepts Lean tactic syntax through the quoted body path. Disable \
-      `internalLean.nativeTacticMode` to use the legacy object-tactic compiler."
   let target ← resolveInternalDefTarget declName
   let some sig ← liftCoreM <| getTheory? target.theoryName
     | throwError "unknown type theory '{target.theoryName}'"
@@ -4542,9 +3939,7 @@ def elabInternalDefByWithBinders (doc? : Option (TSyntax ``Parser.Command.docCom
   let params ← binders.mapM elabHLBinding
   let typeExpr ← elabObjExpr typeStx
   let fullType := mkInternalDefFunctionType params typeExpr
-  let infos :=
-    collectInternalObjectTacticInfo target flatSig levels fullType steps (tactics.map (·.raw))
-  saveInternalObjectTacticInfo target flatSig infos
+  saveInternalRawRootGoalInfo target flatSig { target := fullType } declNameStx
   if internalTacticStepsContainSorry steps then
     elabInternalDefSorryWithBinders doc? declNameStx declName levels binders typeStx
   else
@@ -4614,32 +4009,6 @@ def elabInternalDefsSorryBatchItem? (decl : TSyntax `internalDefsDecl) :
         pure none
   | _ => pure none
 
-/-- Parsed checked object declaration inside an `internal_defs where` batch. -/
-structure InternalDefsCheckedObjectBatchItem where
-  /-- Original declaration syntax, used for range metadata. -/
-  declStx : Syntax
-  /-- Declaration identifier syntax. -/
-  declNameStx : Syntax
-  /-- Resolved target theory/local name. -/
-  target : InternalDefTarget
-  /-- Source-level documentation, if present. -/
-  sourceDoc? : Option String := none
-  /-- Source binder parameters. -/
-  params : Array HLBinding := #[]
-  /-- User-facing anchor type. -/
-  anchorTypeExpr : ObjExpr
-  /-- Source result type after the explicit declaration binders. -/
-  resultTypeExpr : ObjExpr
-  /-- LF object definition to register. -/
-  lfDef : LFObjectDefDecl
-  deriving Inhabited
-
-/-- Parse one checked direct object declaration in an `internal_defs where` batch. -/
-def elabInternalDefsCheckedObjectBatchItem? (decl : TSyntax `internalDefsDecl) :
-    CommandElabM (Option InternalDefsCheckedObjectBatchItem) := do
-  let _ := decl.raw
-  pure none
-
 /-- Add navigation info for one declaration inside an `internal_defs where` block. -/
 def addInternalDefsDeclNavigationInfo (theoryName : Name) (decl : Syntax) : CommandElabM Unit := do
   let decl : TSyntax `internalDefsDecl := ⟨decl⟩
@@ -4663,49 +4032,6 @@ def addInternalDefsDeclNavigationInfo (theoryName : Name) (decl : Syntax) : Comm
       let locals ← addBinderNavigationInfos theoryName {} binders
       addObjExprNavigationInfo theoryName locals typeStx
   | _ => pure ()
-
-/-- Try to register an all-checked-object `internal_defs where` block as one checked delta. -/
-def tryElabInternalDefsCheckedObjectBatch (decls : Array (TSyntax `internalDefsDecl)) :
-    CommandElabM Bool := do
-  if decls.size <= 1 then
-    return false
-  let mut items : Array InternalDefsCheckedObjectBatchItem := #[]
-  for decl in decls do
-    match ← elabInternalDefsCheckedObjectBatchItem? decl with
-    | some item => items := items.push item
-    | none => return false
-  let some first := items[0]?
-    | return false
-  let theoryName := first.target.theoryName
-  let mut seenLocals : NameSet := {}
-  let mut seenAnchors : NameSet := {}
-  for item in items do
-    if item.target.theoryName != theoryName then
-      return false
-    let localName := item.target.localName.eraseMacroScopes
-    if seenLocals.contains localName then
-      throwError "duplicate internal_defs declaration '{item.target.localName}' in type theory \
-        '{theoryName}'"
-    seenLocals := seenLocals.insert localName
-    let anchorName := item.target.anchorName.eraseMacroScopes
-    if seenAnchors.contains anchorName then
-      throwError "duplicate Lean-visible internal_defs anchor '{item.target.anchorName}'"
-    seenAnchors := seenAnchors.insert anchorName
-  try
-    liftCoreM <| registerLFObjectDefBatch theoryName (items.map (·.lfDef))
-  catch _ =>
-    return false
-  for item in items do
-    if let some doc := item.sourceDoc? then
-      liftCoreM <| registerSourceDoc item.target.theoryName .internalDef
-        item.target.localName doc
-    addInternalDeclarationAnchor item.target item.anchorTypeExpr .checkedObjectDef item.params
-      (some item.lfDef.value) "internal_defs checked object batch" item.sourceDoc? item.declStx
-      item.declNameStx
-    addInternalDeclarationQuoteStub item.target item.params item.resultTypeExpr
-    addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
-  refreshLFMirrorAfterInternalRegistration theoryName
-  return true
 
 /-- Try to register an all-opaque-admission `internal_defs where` block as one checked delta. -/
 def tryElabInternalDefsSorryOpaqueBatch (decls : Array (TSyntax `internalDefsDecl)) :
@@ -4768,81 +4094,7 @@ def tryElabInternalDefsSorryOpaqueBatch (decls : Array (TSyntax `internalDefsDec
     refreshLFMirrorAfterInternalRegistration theoryName
   return true
 
-/-- Elaborate one declaration in an `internal_defs where` batch. -/
-def elabInternalDefsDecl : TSyntax `internalDefsDecl → CommandElabM Unit
-  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr := by
-      $tactics:internalTactic*) =>
-      elabInternalDefBy doc? declName declName.getId #[] typeStx tactics
-  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :
-      $typeStx:ttExpr := by $tactics:internalTactic*) =>
-      elabInternalDefByWithBinders doc? declName declName.getId #[] binders typeStx tactics
-  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr := sorry) =>
-      elabInternalDefSorry doc? declName declName.getId #[] typeStx
-  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :
-      $typeStx:ttExpr := sorry) =>
-      elabInternalDefSorryWithBinders doc? declName declName.getId #[] binders typeStx
-  | `(internalDefsDecl| $[$doc?:docComment]? def $_:ident : $_:ttExpr := $_:term) =>
-      throwUnsupportedSyntax
-  | `(internalDefsDecl| $[$doc?:docComment]? def $_:ident $_:ttBinder* : $_:ttExpr := $_:term) =>
-      throwUnsupportedSyntax
-  | stx => throwError "unsupported internal_defs declaration:{indentD stx}"
-
-/-- Elaborate an `internal_defs where` block, batching consecutive LF-opaque admissions. -/
-def elabInternalDefsDeclsWithSorryOpaqueBatches (decls : Array (TSyntax `internalDefsDecl)) :
-    CommandElabM Unit := do
-  let flush (items : Array InternalDefsSorryBatchItem) : CommandElabM Unit := do
-    if items.isEmpty then
-      return ()
-    let theoryName := items[0]!.target.theoryName
-    let requests := items.map fun item =>
-      ({ localName := item.target.localName
-         anchorName := item.target.anchorName
-         params := item.params
-         typeExpr := item.typeExpr } : AdmittedInternalLFOpaqueRequest)
-    liftCoreM <| registerAdmittedInternalLFOpaqueBatch theoryName requests
-    for item in items do
-      if let some doc := item.sourceDoc? then
-        liftCoreM <| registerSourceDoc item.target.theoryName .internalDef
-          item.target.localName doc
-      addInternalDeclarationAnchor item.target item.typeExpr .admittedLFOpaque item.params none
-        "internal_defs admitted opaque batch" item.sourceDoc? item.declStx item.declNameStx
-      addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
-      logWarning m!"internal declaration '{item.target.anchorName}' was admitted by `sorry`; the \
-        annotation was checked in theory '{item.target.theoryName}', but the body was not \
-        checked. Use `#lint_type_theory_sorries {item.target.theoryName}` to list current \
-        admissions."
-    refreshLFMirrorAfterInternalRegistration theoryName
-  let mut batch : Array InternalDefsSorryBatchItem := #[]
-  for decl in decls do
-    match ← elabInternalDefsSorryBatchItem? decl with
-    | some item =>
-        match ← liftCoreM <| classifyInternalSorryAdmissionShape item.target.theoryName
-            item.target.localName item.params item.typeExpr with
-        | .lfOpaque =>
-            if let some first := batch[0]? then
-              if first.target.theoryName != item.target.theoryName then
-                flush batch
-                batch := #[]
-            let localName := item.target.localName.eraseMacroScopes
-            if batch.any (fun old => old.target.localName.eraseMacroScopes == localName) then
-              throwError "duplicate internal_defs declaration '{item.target.localName}' in type \
-                theory '{item.target.theoryName}'"
-            batch := batch.push item
-        | .judgmentTheorem | .unsupported _ =>
-            flush batch
-            batch := #[]
-            elabInternalDefsDecl decl
-    | none =>
-        flush batch
-        batch := #[]
-        elabInternalDefsDecl decl
-  flush batch
-
 elab_rules : command
-  | `(internal_defs where $decls:internalDefsDecl*) => do
-      unless ← tryElabInternalDefsSorryOpaqueBatch decls do
-        unless ← tryElabInternalDefsCheckedObjectBatch decls do
-          elabInternalDefsDeclsWithSorryOpaqueBatches decls
   | `($[$doc?:docComment]? internal_raw theorem $declName:ident : $typeStx:ttExpr := sorry) =>
       elabInternalTheoremSorryWithBinders doc? declName declName.getId #[] #[] typeStx
   | `($[$doc?:docComment]? internal_raw theorem $declName:ident $binders:ttBinder* :
@@ -4893,27 +4145,5 @@ elab_rules (kind := internalDefLevelSorry) : command
   | `($[$doc?:docComment]? internal def $declName:ident {$levels:ident,*} : $typeStx:ttExpr :=
       sorry) =>
       elabInternalDefSorry doc? declName declName.getId (levels.getElems.map (·.getId)) typeStx
-
-elab_rules (kind := internalDefBy) : command
-  | `($[$doc?:docComment]? internal def $declName:ident : $typeStx:ttExpr := by
-      $tactics:internalTactic*) =>
-      elabInternalDefBy doc? declName declName.getId #[] typeStx tactics
-
-elab_rules (kind := internalDefLevelBy) : command
-  | `($[$doc?:docComment]? internal def $declName:ident {$levels:ident,*} : $typeStx:ttExpr :=
-      by $tactics:internalTactic*) =>
-      elabInternalDefBy doc? declName declName.getId (levels.getElems.map (·.getId)) typeStx
-        tactics
-
-elab_rules (kind := internalDefBinderBy) : command
-  | `($[$doc?:docComment]? internal def $declName:ident $binders:ttBinder* :
-      $typeStx:ttExpr := by $tactics:internalTactic*) =>
-      elabInternalDefByWithBinders doc? declName declName.getId #[] binders typeStx tactics
-
-elab_rules (kind := internalDefLevelBinderBy) : command
-  | `($[$doc?:docComment]? internal def $declName:ident {$levels:ident,*}
-      $binders:ttBinder* : $typeStx:ttExpr := by $tactics:internalTactic*) =>
-      elabInternalDefByWithBinders doc? declName declName.getId
-        (levels.getElems.map (·.getId)) binders typeStx tactics
 
 end InternalLean

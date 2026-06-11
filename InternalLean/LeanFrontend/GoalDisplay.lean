@@ -14,7 +14,7 @@ public meta import InternalLean.LeanFrontend.MirrorCore
 This module builds editor-only Lean goal snapshots for InternalLean object goals.  The generated
 metavariables live in an isolated metavariable context stored in `TacticInfo`; they are
 `syntheticOpaque` and the elaborator state is restored before returning them, so they cannot be
-assigned by later elaboration or by the object-tactic compiler.
+assigned by later elaboration, the native tactic frontend, or the raw compatibility compiler.
 -/
 
 @[expose] public meta section

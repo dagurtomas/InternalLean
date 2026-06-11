@@ -96,16 +96,10 @@ internal def have_term_mode : Reach start finish := by
   have right : Reach mid finish := reach_of_step mid finish step_mid_finish
   exact reach_trans start mid finish left right
 
-/-- error: object tactic `have` nested application `reach_refl` failed: conclusion
-  Reach x x
-does not match current goal
-  Reach start mid
-
-normalized actual: Reach x x
-normalized expected: Reach start mid
-LF definitions mentioned before unfolding: none
-LF definitions unfolded: none -/
-#guard_msgs in
+/-- error: native tactic `have` failed to check proof against the current object goal:
+native tactic 'bad_have_term_type' in type theory 'IntroUXSmoke' has have proof with type
+'Reach start start', expected 'Reach start mid' -/
+#guard_msgs (whitespace := lax) in
 internal def bad_have_term_type : Reach start start := by
   have h : Reach start mid := reach_refl start
   exact reach_refl start
@@ -113,7 +107,7 @@ internal def bad_have_term_type : Reach start start := by
 /-- error: object tactic `have h` is missing `end`; write `have h : ... := by ... end` or use
 term-mode `have h : ... := proof` -/
 #guard_msgs (whitespace := lax) in
-internal def bad_have_missing_end : Reach start mid := by
+internal_raw def bad_have_missing_end : Reach start mid := by
   have h : Reach start mid := by
     exact reach_start_mid
   exact h

@@ -530,10 +530,11 @@ internal_raw def f : J := rawValue
 internal_raw theorem th : J := rawProof
 ```
 
-Use `internal_raw` only when a test needs legacy `ttExpr` body parsing, for example the old
-`{x := value}` named-implicit marker. New code should use canonical `internal def` and
-`internal theorem`, with Lean named arguments such as `(x := value)`. The old prefix projection
-tokens `fst p` and `snd p` were removed from the raw grammar; use `π₁ p` and `π₂ p`.
+Use `internal_raw` only when a test needs legacy `ttExpr` body parsing or the compatibility
+object-tactic compiler, for example the old `{x := value}` named-implicit marker. New code should
+use canonical `internal def` and `internal theorem`, with Lean named arguments such as
+`(x := value)`. The old prefix projection tokens `fst p` and `snd p` were removed from the raw
+grammar; use `π₁ p` and `π₂ p`.
 
 ## Internal tactic syntax
 

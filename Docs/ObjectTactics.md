@@ -1,10 +1,11 @@
 # Internal tactic guide
 
-Internal tactic scripts are available in `internal def ... := by` declarations. They operate on
-goals in the declared type theory and compile to internal terms before the declaration is checked.
+Internal tactic scripts are available in `internal def ... := by` declarations. They use Lean's
+tactic syntax and infoview plumbing, while InternalLean handlers operate on goals in the declared
+type theory and compile to internal terms before the declaration is checked.
 
-They are not Lean tactics over Lean goals. Lean is the host language; the goal being solved is a
-judgment or type in the declared theory.
+The displayed goals are Lean editor handles for object-theory goals. Solving still happens by
+building an internal LF term and replaying it through the LF checker.
 
 ## Basic form
 
@@ -55,12 +56,14 @@ simp only [rule₁, rule₂]
 intros x y
 have h : J := by
   ...
-end
 refine term
 refine head arg₁ _ ?_ (nested arg)
 ·
 sorry
 ```
+
+Raw compatibility scripts also accept the old `have ... := by ... end` spelling under
+`internal_raw def ... := by`. Canonical native scripts use ordinary Lean tactic-block structure.
 
 Internal tactic arguments for `exact head ...` and `refine head ...` are:
 
@@ -175,14 +178,12 @@ proof terms.
 ```lean
 have h : J := by
   ...
-end
 ```
 
 Solves a local internal subgoal `J`, then makes `h : J` available in the remaining goal.
 
 Current limitation: `have` is compiled by substituting the proof term for `h` in the continuation.
 It is useful as tactic structure, but it is not yet a general internal let-binding facility.
-The syntax currently requires the explicit closing `end`.
 
 ## `refine`
 
@@ -363,14 +364,14 @@ exhaustion diagnostics.
 ```
 
 A focus bullet marks the start of a subgoal proof, especially after `apply` or `refine` with holes.
-The bullet discipline is simpler than Lean's full tactic block structure: bullets are consumed by
-the internal tactic compiler to decide where the next subgoal proof starts.
+InternalLean uses Lean focus bullets while keeping the LF goal state and post-step audit under its
+own control.
 
 ## Current limitations
 
 The internal tactic language is small by design. Important current limitations include:
 
-- Tactics operate on internal goals, not Lean goals.
+- Tactics operate on displayed object-theory goals; Lean metavariables are editor handles only.
 - There is no general theorem search or `apply?` yet.
 - There is no full Lean-style simplifier database or simp attributes.
 - Internal `simp` only uses checked LF definition unfolding, executable `beta` plugins, and
@@ -384,6 +385,10 @@ The internal tactic language is small by design. Important current limitations i
 - Side-condition solving is limited to declared/trivial cases; opaque certificates remain trusted
   leaves and are reported by diagnostics.
 - Internal conversion is LF evidence, not Lean equality.
+
+Legacy raw object-tactic scripts are still accepted with `internal_raw def ... := by`. They use the
+compatibility object-tactic compiler and get only a minimal root-goal infoview snapshot, rather than
+per-step native tactic goal updates.
 
 When a tactic fails, read the diagnostic as a statement about the declared type theory and its LF
 metadata. Adding the right `judgment_role`, `rule_role`, rewrite metadata, or transport metadata is

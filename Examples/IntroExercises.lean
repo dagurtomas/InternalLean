@@ -151,9 +151,8 @@ internal def exercise06_direct_term : Reach start finish :=
 /-!
 ## Exercise 7: naming intermediate internal proofs
 
-Use `have name : Type := proof` or `have name : Type := by ... end` blocks to name the two
-subproofs before composing them. A tactic-mode `have` block needs the closing `end`; term-mode
-`have` is useful for short proofs.
+Use `have name : Type := proof` or ordinary Lean tactic-mode `have name : Type := by ...` blocks
+to name the two subproofs before composing them. Term-mode `have` is useful for short proofs.
 -/
 
 internal def exercise07_have_blocks : Reach start finish := by

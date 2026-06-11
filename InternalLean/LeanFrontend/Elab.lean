@@ -540,95 +540,6 @@ partial def collectLeanQuotedTacticSteps (stx : Syntax) : Array Syntax :=
         #[]
   | _ => #[]
 
-/-- Return the first identifier contained in a Lean tactic syntax node. -/
-def firstLeanQuotedTacticIdent? (stx : Syntax) : Option Name := Id.run do
-  for identStx in collectInternalIdentSyntaxes stx do
-    if let some n := internalSyntaxIdentName? identStx then
-      return some n
-  return none
-
-/-- Return every identifier contained in a Lean tactic syntax node. -/
-def leanQuotedTacticIdents (stx : Syntax) : Array Name := Id.run do
-  let mut out := #[]
-  for identStx in collectInternalIdentSyntaxes stx do
-    if let some n := internalSyntaxIdentName? identStx then
-      out := out.push n
-  return out
-
-/-- Diagnostic subgoals for Lean's ordinary `apply` over quote stubs.
-
-Unlike object tactic `apply`, Lean only sees explicit arguments to `LFQuoteTerm` stubs, so explicit
-source parameters become visible Lean subgoals even when the LF conclusion would determine them. -/
-def leanQuotedApplyDiagnosticSubgoals (target : InternalDefTarget) (sig : HLSignature)
-    (goal : InternalObjectGoal) (rawName : Name) : Except String (Array InternalObjectGoal) := do
-  let (_, innerGoal) := autoIntroGoal goal
-  let some cand := findInternalApplyCandidate? target sig rawName
-    | throw s!"quoted LF `apply {rawName}` failed: unknown rule or internal declaration"
-  let some subst0 := matchInternalCandidateConclusion? sig innerGoal.ctx cand.params
-      cand.conclusionExpr innerGoal.target
-    | throw s!"quoted LF `apply {rawName}` failed: conclusion does not match current goal"
-  let mut subst := subst0
-  let mut newGoals : Array InternalObjectGoal := #[]
-  for param in cand.params do
-    let key := param.name.eraseMacroScopes
-    let paramTy := substObjectVars subst param.typeExpr
-    if param.visibility == .explicit then
-      newGoals := newGoals.push { ctx := innerGoal.ctx, target := paramTy }
-      subst := subst.insert key (internalObjectGoalPlaceholder param.name)
-    else if (subst.find? key).isNone then
-      subst := subst.insert key (internalObjectGoalPlaceholder param.name)
-  for premiseTarget in cand.subgoalTargets do
-    newGoals := newGoals.push {
-      ctx := innerGoal.ctx
-      target := substObjectVars subst premiseTarget }
-  pure newGoals
-
-/-- Simulate one Lean tactic step as object-goal metadata for quoted-LF bodies. -/
-def stepLeanQuotedTacticInfoState (target : InternalDefTarget) (sig : HLSignature)
-    (goals : Array InternalObjectGoal) (stx : Syntax) :
-    Except String (Array InternalObjectGoal) := do
-  let some goal := goals[0]?
-    | throw "no remaining object goals"
-  let rest := goals.extract 1 goals.size
-  if stx.isOfKind `Lean.Parser.Tactic.exact then
-    pure rest
-  else if stx.isOfKind `Lean.Parser.Tactic.apply then
-    let some rawName := firstLeanQuotedTacticIdent? stx
-      | throw "quoted LF `apply` tactic has no identifier head"
-    let subgoals ← leanQuotedApplyDiagnosticSubgoals target sig goal rawName
-    pure (subgoals ++ rest)
-  else if stx.isOfKind `Lean.Parser.Tactic.intro then
-    let mut goal := goal
-    for n in leanQuotedTacticIdents stx do
-      goal ← introObjectGoal goal n
-    pure (#[goal] ++ rest)
-  else if stx.isOfKind `Lean.Parser.Tactic.assumption then
-    let (_, innerGoal) := autoIntroGoal goal
-    let some _ := findAssumption? sig #[] innerGoal.ctx innerGoal.target
-      | throw "quoted LF `assumption` tactic failed"
-    pure rest
-  else
-    pure goals
-
-/-- Build per-tactic LF goal snapshots for a Lean `by` proof in the quoted frontend. -/
-def collectLeanQuotedByTacticInfo (target : InternalDefTarget) (sig : HLSignature)
-    (goal : InternalObjectGoal) (stx : Syntax) : Array InternalObjectTacticInfo := Id.run do
-  let mut goals := #[goal]
-  let mut infos := #[]
-  for stepStx in collectLeanQuotedTacticSteps stx do
-    let before := goals
-    let (after, stale) :=
-      match stepLeanQuotedTacticInfoState target sig goals stepStx with
-      | .ok goals => (goals, false)
-      | .error _ => (goals, true)
-    infos := infos.push {
-      stx := stepStx
-      goalsBefore := before
-      goalsAfter := after
-      goalsAfterStale := stale }
-    goals := after
-  return infos
-
 /-- Follow leading Lean lambdas so the infoview inside the body shows LF locals. -/
 partial def saveLeanQuotedLFBodyGoalInfo (target : InternalDefTarget) (flatSig : HLSignature)
     (goal : InternalObjectGoal) (stx : Syntax) : CommandElabM Unit := do
@@ -644,20 +555,10 @@ partial def saveLeanQuotedLFBodyGoalInfo (target : InternalDefTarget) (flatSig :
         saveLeanQuotedLFBodyGoalInfo target flatSig goal bodyStx
       else
         saveLeanQuotedLFGoalInfo target goal stx
-        saveInternalObjectHoverInfo target flatSig {
-          stx := stx
-          goalsBefore := #[goal]
-          goalsAfter := #[goal] }
+        saveInternalObjectHoverInfoForSyntax target flatSig goal stx
   | none =>
-      let byInfos := collectLeanQuotedByTacticInfo target flatSig goal stx
-      if byInfos.isEmpty then
-        saveLeanQuotedLFGoalInfo target goal stx
-        saveInternalObjectHoverInfo target flatSig {
-          stx := stx
-          goalsBefore := #[goal]
-          goalsAfter := #[goal] }
-      else
-        saveInternalObjectTacticInfo target flatSig byInfos
+      saveLeanQuotedLFGoalInfo target goal stx
+      saveInternalObjectHoverInfoForSyntax target flatSig goal stx
 
 /-- Save Lean infoview and hover metadata for a Lean-quoted LF declaration body. -/
 def saveLeanQuotedLFBodyInfo (target : InternalDefTarget) (params : Array HLBinding)
@@ -1994,22 +1895,21 @@ def elabCanonicalLeanQuotedDefChecked (doc? : Option (TSyntax ``Parser.Command.d
   let target ← resolveInternalDefTarget declName
   let typeExpr ← elabObjExpr typeStx
   let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
-  if (← liftCoreM internalNativeTacticModeEnabled) then
-    if let some steps := internalNativeLeanBySteps? bodyStx.raw then
-      if internalNativeStepsContainDirectSorry steps then
-        elabInternalDefSorryWithBinders doc? declNameStx declName #[] binders typeStx
-        return ()
-      let some sig ← liftCoreM <| getTheory? target.theoryName
-        | throwError "unknown type theory '{target.theoryName}'"
-      let flatSig ← liftCoreM <| flattenSignature sig
-      let valueExpr ← elabInternalNativeByTerm target flatSig #[] params typeExpr bodyStx.raw steps
-      if params.isEmpty then
-        elabInternalDefCheckedExpr doc? declNameStx declName #[] typeExpr valueExpr
-          "internal def := by (native)"
-      else
-        elabInternalDefCheckedWithBindersExpr doc? declNameStx declName #[] params typeExpr
-          valueExpr "internal def := by (native)"
+  if let some steps := internalNativeLeanBySteps? bodyStx.raw then
+    if internalNativeStepsContainDirectSorry steps then
+      elabInternalDefSorryWithBinders doc? declNameStx declName #[] binders typeStx
       return ()
+    let some sig ← liftCoreM <| getTheory? target.theoryName
+      | throwError "unknown type theory '{target.theoryName}'"
+    let flatSig ← liftCoreM <| flattenSignature sig
+    let valueExpr ← elabInternalNativeByTerm target flatSig #[] params typeExpr bodyStx.raw steps
+    if params.isEmpty then
+      elabInternalDefCheckedExpr doc? declNameStx declName #[] typeExpr valueExpr
+        "internal def := by (native)"
+    else
+      elabInternalDefCheckedWithBindersExpr doc? declNameStx declName #[] params typeExpr
+        valueExpr "internal def := by (native)"
+    return ()
   let valueExpr ← elabLeanQuotedLFBody target params typeExpr bodyStx
   compareLeanQuotedBodyWithLegacyIfEnabled .objectDef `compareLegacyInternalDef declName target
     params typeExpr valueExpr bodyStx
@@ -2032,33 +1932,30 @@ def elabCanonicalLeanQuotedTheoremChecked (doc? : Option (TSyntax ``Parser.Comma
   let target ← resolveInternalDefTarget declName
   let typeExpr ← elabObjExpr typeStx
   let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
-  if (← liftCoreM internalNativeTacticModeEnabled) then
-    if let some steps := internalNativeLeanBySteps? bodyStx.raw then
-      if internalNativeStepsContainDirectSorry steps then
-        elabInternalTheoremSorryWithBinders doc? declNameStx declName #[] binders typeStx
-        return ()
-      let some sig ← liftCoreM <| getTheory? target.theoryName
-        | throwError "unknown type theory '{target.theoryName}'"
-      let flatSig ← liftCoreM <| flattenSignature sig
-      let valueExpr ← elabInternalNativeByTerm target flatSig #[] params typeExpr bodyStx.raw steps
-      elabLeanQuotedInternalTheoremCheckedExpr doc? declNameStx declName params typeExpr
-        valueExpr "internal theorem := by (native)"
+  if let some steps := internalNativeLeanBySteps? bodyStx.raw then
+    if internalNativeStepsContainDirectSorry steps then
+      elabInternalTheoremSorryWithBinders doc? declNameStx declName #[] binders typeStx
       return ()
+    let some sig ← liftCoreM <| getTheory? target.theoryName
+      | throwError "unknown type theory '{target.theoryName}'"
+    let flatSig ← liftCoreM <| flattenSignature sig
+    let valueExpr ← elabInternalNativeByTerm target flatSig #[] params typeExpr bodyStx.raw steps
+    elabLeanQuotedInternalTheoremCheckedExpr doc? declNameStx declName params typeExpr
+      valueExpr "internal theorem := by (native)"
+    return ()
   let valueExpr ← elabLeanQuotedLFBody target params typeExpr bodyStx
   compareLeanQuotedBodyWithLegacyIfEnabled .judgmentTheorem `compareLegacyInternalTheorem
     declName target params typeExpr valueExpr bodyStx
   saveLeanQuotedLFBodyInfo target params typeExpr bodyStx.raw
   elabLeanQuotedInternalTheoremCheckedExpr doc? declNameStx declName params typeExpr valueExpr
 
-/-- Elaborate a legacy-parsed `internal def ... := by` block through native tactic mode when the
-native option is enabled.  This lets borrowed Lean spellings such as `exact h` and `intro x` use
-the canonical quoted frontend instead of the compatibility object-tactic compiler. -/
+/-- Elaborate a legacy-parsed `internal def ... := by` block through native tactic mode.
+This lets borrowed Lean spellings such as `exact h` and `intro x` use the canonical quoted frontend
+instead of the compatibility object-tactic compiler. -/
 def elabNativeInternalDefByFromParsedTactics
     (doc? : Option (TSyntax ``Parser.Command.docComment)) (declNameStx : Syntax)
     (declName : Name) (levels : Array Name) (binders : TSyntaxArray `ttBinder)
     (typeStx : TSyntax `ttExpr) (tactics : TSyntaxArray `internalTactic) : CommandElabM Unit := do
-  unless (← liftCoreM internalNativeTacticModeEnabled) do
-    throwUnsupportedSyntax
   let steps ← tactics.mapM fun tac => parseInternalNativeLeanTacticFromSource tac.raw
   let stepSyntax := steps.map (·.raw)
   if internalNativeStepsContainDirectSorry stepSyntax then
@@ -2121,10 +2018,12 @@ partial def elabLeanQuotedInternalDefsDecl (decl : TSyntax `internalDefsDecl) :
   match decl with
   | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr := by
       $tactics:internalTactic*) =>
-      elabInternalDefBy doc? declName declName.getId #[] typeStx tactics
+      elabNativeInternalDefByFromParsedTactics doc? declName declName.getId #[] #[] typeStx
+        tactics
   | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :
       $typeStx:ttExpr := by $tactics:internalTactic*) =>
-      elabInternalDefByWithBinders doc? declName declName.getId #[] binders typeStx tactics
+      elabNativeInternalDefByFromParsedTactics doc? declName declName.getId #[] binders
+        typeStx tactics
   | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr := sorry) =>
       elabInternalDefSorry doc? declName declName.getId #[] typeStx
   | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :

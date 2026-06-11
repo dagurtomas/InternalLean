@@ -11,8 +11,8 @@ public import Lean.Elab.Tactic
 /-!
 # Phase 9 native tactic-mode tests
 
-These tests keep native tactic mode opt-in, check that Lean-native tactics build LF terms only
-through InternalLean handlers, and keep unsupported Lean tactics from solving display goals.
+These tests check that default Lean-native tactics build LF terms only through InternalLean
+handlers, and keep unsupported Lean tactics from solving display goals.
 -/
 
 @[expose] public section
@@ -48,91 +48,74 @@ namespace NativeTacticModeSmoke
 
 /-- error: InternalLean native tactic block left unsolved object goal(s) -/
 #guard_msgs in
-set_option internalLean.nativeTacticMode true in
 internal def skip_incomplete : Good o := by
   skip
 
-set_option internalLean.nativeTacticMode true in
 internal def exact_good : Good o := by
   exact good_o
 
-set_option internalLean.nativeTacticMode true in
 internal def intro_id : (x : Obj) → Obj := by
   intro x
   exact x
 
-set_option internalLean.nativeTacticMode true in
 internal def intros_const : (x : Obj) → (y : Obj) → Obj := by
   intros x y
   exact x
 
-set_option internalLean.nativeTacticMode true in
 internal def assumption_good (h : Good o) : Good o := by
   assumption
 
-set_option internalLean.nativeTacticMode true in
 internal def show_good : Good o := by
   show Good o
   exact good_o
 
-set_option internalLean.nativeTacticMode true in
 internal def change_good : Good o := by
   change Good o
   exact good_o
 
-set_option internalLean.nativeTacticMode true in
 internal def have_good : Good o := by
   have h : Good o := good_o
   exact h
 
-set_option internalLean.nativeTacticMode true in
 internal def apply_refl : Rel o o := by
   apply rel_refl
 
-set_option internalLean.nativeTacticMode true in
 internal def apply_twice : Good o := by
   apply good_twice
   exact good_o
   exact good_o
 
-set_option internalLean.nativeTacticMode true in
 internal def apply_twice_bullets : Good o := by
   apply good_twice
   · exact good_o
   · exact good_o
 
-set_option internalLean.nativeTacticMode true in
 internal def refine_twice_bullets : Good o := by
   refine good_twice ?_ ?_
   · exact good_o
   · exact good_o
 
-set_option internalLean.nativeTacticMode true in
 internal def apply_twice_focus_lean : Good o := (by
   apply good_twice
   · exact good_o
   · exact good_o)
 
-set_option internalLean.nativeTacticMode true in
 internal def refine_twice_focus_lean : Good o := (by
   refine good_twice ?left ?right
   · exact good_o
   · exact good_o)
 
-set_option internalLean.nativeTacticMode true in
 internal def have_good_by_end : Good o := by
   have h : Good o := by
     exact good_o
   end
   exact h
 
-set_option internalLean.nativeTacticMode true in
 internal def have_good_by_lean : Good o := (by
   have h : Good o := by
     exact good_o
   exact h)
 
-set_option internalLean.nativeTacticMode true in
 internal theorem exact_theorem : Good o := by
   exact good_o
 
@@ -161,7 +144,6 @@ Omitted explicit arguments are never turned into subgoals. Use `_` only for infe
 and write `?_` exactly where `refine` should create an object-theory subgoal.
 -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def refine_infer_placeholder_rejected : Good o := by
   refine good_twice _ _
   exact good_o
@@ -173,7 +155,6 @@ in this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, 
 `change`, `rw`, `simp`, term- and tactic-form `have`, focus bullets, and `skip`.
 -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def nested_have_decide_rejected : Good o := (by
   have h : Good o := by
     decide
@@ -185,7 +166,6 @@ this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, `sh
 `change`, `rw`, `simp`, term- and tactic-form `have`, focus bullets, and `skip`.
 -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def nested_have_try_rejected : Good o := (by
   have h : Good o := by
     try skip
@@ -197,7 +177,6 @@ in this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, 
 `change`, `rw`, `simp`, term- and tactic-form `have`, focus bullets, and `skip`.
 -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def focused_apply_decide_rejected : Good o := (by
   apply good_twice
   · decide
@@ -209,7 +188,6 @@ this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, `sh
 `change`, `rw`, `simp`, term- and tactic-form `have`, focus bullets, and `skip`.
 -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def focused_refine_try_rejected : Good o := (by
   refine good_twice ?left ?right
   · try skip
@@ -221,7 +199,6 @@ warning: internal declaration 'NativeTacticModeSmoke.direct_sorry_admitted' was 
 Use `#lint_type_theory_sorries NativeTacticModeSmoke` to list current admissions.
 -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def direct_sorry_admitted : Good o := by
   sorry
 
@@ -231,7 +208,6 @@ in this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, 
 `change`, `rw`, `simp`, term- and tactic-form `have`, focus bullets, and `skip`.
 -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def decide_rejected : Good o := by
   decide
 
@@ -241,7 +217,6 @@ tactics in this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assum
 `show`, `change`, `rw`, `simp`, term- and tactic-form `have`, focus bullets, and `skip`.
 -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def constructor_rejected : Good o := by
   constructor
 
@@ -251,7 +226,6 @@ this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, `sh
 `change`, `rw`, `simp`, term- and tactic-form `have`, focus bullets, and `skip`.
 -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def try_rejected : Good o := by
   try skip
 
@@ -261,11 +235,10 @@ this milestone: `intro`, `intros`, `exact`, `apply`, `refine`, `assumption`, `sh
 `change`, `rw`, `simp`, term- and tactic-form `have`, focus bullets, and `skip`.
 -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def rfl_rejected : Good o := by
   rfl
 
-syntax (name := nativeTacticModeMacroSorry) "native_macro_sorry" : tactic
+syntax (name := nativeMacroSorry) "native_macro_sorry" : tactic
 macro_rules
   | `(tactic| native_macro_sorry) => `(tactic| exact sorry)
 
@@ -276,7 +249,6 @@ native tactics in this milestone: `intro`, `intros`, `exact`, `apply`, `refine`,
 and `skip`.
 -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def macro_sorry_rejected : Good o := by
   native_macro_sorry
 
@@ -311,7 +283,6 @@ run_cmd do
   unless infoStateContainsTacticGoal result.initialGoal infoState do
     throwError "native skeleton did not emit TacticInfo for the live display metavariable"
 
-set_option internalLean.nativeTacticMode true in
 example : True := by
   exact True.intro
 
@@ -364,49 +335,40 @@ declare_type_theory NativeTacticModeRewriteSmoke where
 
 namespace NativeTacticModeRewriteSmoke
 
-set_option internalLean.nativeTacticMode true in
 internal def rw_alias_lean : Rel aliasA aliasA := (by
   rw [eq_aliasA_to_a]
   exact rel_refl a)
 
-set_option internalLean.nativeTacticMode true in
 internal def rw_alias_legacy : Rel aliasA aliasA := by
   rw eq_aliasA_to_a
   exact rel_refl a
 
-set_option internalLean.nativeTacticMode true in
 internal def rw_transport_lean : Rel a b := (by
   rw [eq_a_to_b]
   exact rel_refl b)
 
-set_option internalLean.nativeTacticMode true in
 internal def rw_reverse_transport_lean : Rel b b := (by
   rw [← eq_a_to_b]
   exact rw_transport_lean)
 
-set_option internalLean.nativeTacticMode true in
 internal def rw_nested_congr_transport_lean : Rel (f a) b := (by
   rw [eq_a_to_b]
   exact rel_fb)
 
-set_option internalLean.nativeTacticMode true in
 internal def simp_transport_lean : Rel a b := (by
   simp [eq_a_to_b]
   exact rel_refl b)
 
-set_option internalLean.nativeTacticMode true in
 internal def simp_only_definition_lean : Rel aliasA aliasA := (by
   simp only [aliasA]
   exact rel_refl a)
 
-set_option internalLean.nativeTacticMode true in
 internal def simp_nested_congr_transport_lean : Rel (f a) b := (by
   simp only [eq_a_to_b]
   exact rel_fb)
 
 /-- error: object tactic `rw []` failed: rewrite list is empty -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def rw_empty_rejected : Rel a a := (by
   rw []
   exact rel_refl a)
@@ -416,7 +378,6 @@ internal def rw_empty_rejected : Rel a a := (by
 simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), configurations/dischargers,
 and `simp at` locations. -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def simp_star_rejected : Rel aliasA aliasA := (by
   simp [*]
   exact rel_refl aliasA)
@@ -426,7 +387,6 @@ internal def simp_star_rejected : Rel aliasA aliasA := (by
 simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), configurations/dischargers,
 and `simp at` locations. -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def simp_only_star_rejected : Rel aliasA aliasA := (by
   simp only [*, aliasA]
   exact rel_refl aliasA)
@@ -436,7 +396,6 @@ internal def simp_only_star_rejected : Rel aliasA aliasA := (by
 simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), configurations/dischargers,
 and `simp at` locations. -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def simp_erase_rejected : Rel aliasA aliasA := (by
   simp [-aliasA]
   exact rel_refl aliasA)
@@ -446,7 +405,6 @@ internal def simp_erase_rejected : Rel aliasA aliasA := (by
 simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), configurations/dischargers,
 and `simp at` locations. -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def simp_reverse_rejected : Rel aliasA aliasA := (by
   simp [← aliasA]
   exact rel_refl aliasA)
@@ -456,7 +414,6 @@ internal def simp_reverse_rejected : Rel aliasA aliasA := (by
 simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), configurations/dischargers,
 and `simp at` locations. -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def simp_config_rejected : Rel aliasA aliasA := (by
   simp (config := {}) [aliasA]
   exact rel_refl aliasA)
@@ -466,7 +423,6 @@ internal def simp_config_rejected : Rel aliasA aliasA := (by
 simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), configurations/dischargers,
 and `simp at` locations. -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def simp_discharger_rejected : Rel aliasA aliasA := (by
   simp (discharger := assumption) [aliasA]
   exact rel_refl aliasA)
@@ -476,7 +432,6 @@ internal def simp_discharger_rejected : Rel aliasA aliasA := (by
 simp sets (`*`), erased lemmas (`-foo`), reverse lemmas (`← foo`), configurations/dischargers,
 and `simp at` locations. -/
 #guard_msgs (whitespace := lax) in
-set_option internalLean.nativeTacticMode true in
 internal def simp_at_rejected : Rel aliasA aliasA := (by
   have h : Rel aliasA aliasA := rel_refl aliasA
   simp at h
