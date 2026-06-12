@@ -10,6 +10,7 @@ import InternalLeanTest.EndToEndTinyNatTest
 import InternalLeanTest.EvidencePremiseTest
 import InternalLeanTest.FrontendFallbackProfileTest
 import InternalLeanTest.FrontendMacroTest
+import InternalLeanTest.FragmentExtractionTest
 import InternalLeanTest.GenerationHygieneTest
 import InternalLeanTest.GenericStructuralMetatheoryTest
 import InternalLeanTest.GoalDisplayTest

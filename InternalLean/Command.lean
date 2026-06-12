@@ -9,6 +9,7 @@ public import InternalLean.Basic
 public import InternalLean.DSL
 public import InternalLean.Registry
 public meta import InternalLean.ModelTransport
+public meta import InternalLean.Fragment
 public meta import InternalLean.LeanFrontend.Elab
 public meta import InternalLean.LeanFrontend.Mirror
 

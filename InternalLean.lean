@@ -3,6 +3,7 @@ import InternalLean.Basic
 import InternalLean.Command
 import InternalLean.DSL
 import InternalLean.Diagnostics
+import InternalLean.Fragment
 import InternalLean.InternalTactic
 import InternalLean.Kernel
 import InternalLean.LFElab
