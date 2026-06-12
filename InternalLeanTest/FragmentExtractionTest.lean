@@ -7,6 +7,7 @@ module
 
 public import Examples.UniverseHierarchy
 public import InternalLean.Command
+public import InternalLeanTest.InternalTacticTest
 public import InternalLeanTest.TinyNat
 
 @[expose] public section
@@ -127,6 +128,11 @@ run_cmd do
   let report ← TheoryFragment.buildReport `F1FragmentEverything `good_a_thm
   assertFragment (report.fragmentModelFieldCount == report.fullModelFieldCount)
     "fragment using all declarations should have the same model field count as the full theory"
+
+run_cmd do
+  let report ← TheoryFragment.buildReport `InternalTacticSimpPluginSmoke `beta_plugin_simp
+  assertFragment (report.closure.conversionPlugins.contains `beta_step)
+    "fragment report should carry theorem statement conversion plugin beta_step"
 
 run_cmd do
   let report ← TheoryFragment.buildReport `F1Admission `b

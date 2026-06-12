@@ -331,6 +331,55 @@ def Builder.addRuleDependencies (idx : Index) (b : Builder) (r : CheckedLFRule) 
   b := Builder.addCheckedExprHeads idx b r.checkedConclusionExpr reason
   return b
 
+/-- Statement carried by a checked LF derivation node. -/
+def checkedLFDerivationStatement : CheckedLFDerivation → ObjExpr
+  | .localAssumption _ statement => statement
+  | .theoremRef _ statement _ _ => statement
+  | .ruleApp _ statement _ _ _ => statement
+
+/-- Convert checked LF binders back to high-level binders for conversion checking. -/
+def checkedLFBindingsToHLBindings (bindings : Array CheckedLFBinding) : Array HLBinding :=
+  bindings.map fun b => {
+    name := b.name
+    typeExpr := b.typeExpr
+    visibility := b.visibility }
+
+/-- Whether one plugin can justify the theorem-statement conversion recorded by replay. -/
+def theoremStatementConversionUsesPlugin (idx : Index) (t : CheckedLFJudgmentTheorem)
+    (replayStatement : ObjExpr) (plugin : ConversionPluginDecl) : Bool :=
+  let sourceStatement := eraseObjExprScopes t.judgmentExpr
+  let replayStatement := eraseObjExprScopes replayStatement
+  if objectExprEq sourceStatement replayStatement then
+    false
+  else
+    let target : InternalDefTarget := {
+      theoryName := idx.checked.name
+      localName := t.name
+      anchorName := idx.checked.name ++ t.name }
+    let ctx := checkedLFBindingsToHLBindings t.binders
+    let config : ObjectSimpConfig := { names := #[plugin.name], onlyMode := true }
+    match simpObjectGoalDetailed target idx.flat idx.flat.levelParams ctx sourceStatement
+        config with
+    | .ok result =>
+        objectExprEq (eraseObjExprScopes result.newGoal) replayStatement &&
+          result.rewrites.any (fun step =>
+            step.pluginStep?.isSome &&
+              step.rawName.eraseMacroScopes == plugin.name.eraseMacroScopes)
+    | .error _ => false
+
+/-- Conversion plugins needed to reconcile a theorem statement with its checked replay payload. -/
+def theoremStatementConversionPlugins (idx : Index) (t : CheckedLFJudgmentTheorem) : Array Name :=
+  match t.derivation? with
+  | none => #[]
+  | some derivation => Id.run do
+      let replayStatement := checkedLFDerivationStatement derivation
+      let mut out := #[]
+      for plugin in idx.flat.conversionPlugins do
+        if theoremStatementConversionUsesPlugin idx t replayStatement plugin then
+          unless out.any (fun old => old.eraseMacroScopes == plugin.name.eraseMacroScopes) do
+            out := out.push plugin.name.eraseMacroScopes
+      return out
+
 /-- Add dependencies from a checked theorem declaration and replay summary. -/
 def Builder.addTheoremDependencies (idx : Index) (b : Builder)
     (t : CheckedLFJudgmentTheorem) : Except String Builder := do
@@ -354,6 +403,9 @@ def Builder.addTheoremDependencies (idx : Index) (b : Builder)
     if let some cert := idx.sideConditionCertificatesByName.find? n.eraseMacroScopes then
       b := b.add .sideConditionCertificate cert.certificateName
         s!"side-condition certificate used by theorem {t.name.eraseMacroScopes}"
+  for n in theoremStatementConversionPlugins idx t do
+    b := b.add .conversionPlugin n
+      s!"statement conversion used by theorem {t.name.eraseMacroScopes}"
   return b
 
 /-- Add dependencies required by a level-normalizer profile. -/
