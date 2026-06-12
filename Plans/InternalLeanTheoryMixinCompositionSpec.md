@@ -447,3 +447,77 @@ Decision: skip M2 implementation. The profile shows a relative slowdown in the f
 call, but the absolute cost on an MLTT-shaped signature is tens of milliseconds and does not yet
 matter for downstream workflows. The M1 gate remains in place: shared-ancestor diamonds continue to
 use the full checker, while tree/linear parent shapes keep the incremental fast path.
+
+## M2 review — 2026-06-12 (ACCEPTED)
+
+M2 (`1046bd3 M2: record diamond measurement gate`) is accepted as a measured skip. The phase made
+no `InternalLean/` or `InternalLeanTest/` implementation change; it records the required
+registration-time profile and keeps the M1 full-fallback gate for shared-ancestor diamonds.
+
+Verified:
+
+- The scratch benchmark shape is representative of the intended MLTT mixin pressure: a shared
+  `Basic`/`Substitution` layer, seven independent feature layers, and matching diamond vs.
+  linearized final theories.
+- The benchmark measures the final `registerTheory` call after parent registration, which is the
+  M2 gate target, and both variants report the same final checked shape: 115 metadata
+  declarations, 47 LF opaque constants, and 52 rules.
+- Re-running the scratch benchmark during review confirmed the strategies and order of magnitude:
+  three diamond runs were 36ms each with `full fallback declare_type_theory: shared parent
+  ancestor`; three linear runs were 5ms each with `incremental declare_type_theory extends
+  (streaming block)`.
+- The recorded decision to skip incremental-diamond implementation is consistent with the spec's
+  measure gate: the absolute final-registration delta is about 31ms and the whole-file benchmark
+  is dominated by Lean startup/import and parent registration noise.
+- No name-plus-structural checked-artifact dedupe or other trust-boundary change was introduced.
+
+Checks run:
+
+- Three `lake env lean .lake/build/internallean-bench/mixin-m2/m2_profile_diamond.lean` runs
+- Three `lake env lean .lake/build/internallean-bench/mixin-m2/m2_profile_linear.lean` runs
+- `lake build InternalLean.Command InternalLeanTest InternalLean Examples`
+- `lake build -KinternalLean.frontend.compareLegacy=true InternalLean.Command InternalLeanTest \
+  InternalLean Examples`
+- `python3 scripts/check_lean_line_lengths.py --max 100 --root .`
+- `python3 scripts/check_text_style.py --root .`
+- `git diff --check`
+
+No blocking or non-blocking findings. M3 may start as the downstream/report-only validation phase.
+
+## M3 downstream validation — 2026-06-12 (REPORT)
+
+M3 was completed as a downstream-only validation in `../InternalMath-m3-validation`. The worktree
+was created from `../InternalMath` `HEAD` (`e5ea08b`) and populated with the current untracked HoTT
+MLTT sources from `../InternalMath`; `lakefile.toml` in the temporary worktree used path
+dependencies to `../InternalLean` and `../InternalMath/.lake/packages/mathlib`. No source file under
+`../InternalMath` was edited.
+
+Patch snapshot: `Plans/InternalMathMLTTMixinCompositionPatch.diff`.
+
+The downstream patch changes only the MLTT assembly/import shape:
+
+- `MLTT.Sigma`, `MLTT.Coproduct`, `MLTT.Empty`, `MLTT.Unit`, `MLTT.Nat`, and `MLTT.Identity` import
+  `MLTT.Substitution` and extend `MLTT.Substitution` directly instead of forming a temporary
+  linear chain through each other.
+- `InternalMath.HoTT.MLTT` imports all selected mixins and declares final `MLTT` as
+  `MLTT.Pi, MLTT.Sigma, MLTT.Coproduct, MLTT.Empty, MLTT.Unit, MLTT.Nat, MLTT.Identity`.
+- The final `MLTT` registration profile reports
+  `full fallback declare_type_theory: shared parent ancestor`, and `#print_type_theory_parents MLTT`
+  shows `MLTT.Substitution` deduped through the seven parent paths.
+
+Baseline and patched validation:
+
+- Linear baseline in the temporary worktree: `lake build InternalMath.HoTT.MLTT.Library` passed.
+- Linear baseline `#lint_type_theory_sorries MLTT` reported three admitted declarations:
+  `MLTT.idFiberContr`, `MLTT.universePathTy`, and `MLTT.idtoeqv`, with downstream dependency
+  `idIsEquiv depends on admitted idFiberContr`.
+- Patched diamond worktree: `lake build InternalMath.HoTT.MLTT.Library` passed.
+- Patched diamond `#lint_type_theory_sorries MLTT` reported the same three admitted declarations
+  and the same downstream dependency; the normalized lint output was byte-identical after replacing
+  the scratch lint filename.
+- `git diff --check` passed in the temporary downstream worktree after marking the HoTT files as
+  intent-to-add for diff checking.
+
+Decision: M1's full-path diamond support is sufficient for the downstream MLTT de-linearization
+patch. No InternalLean follow-up was needed for M3, and the downstream patch is left as a report
+snapshot rather than applied to `../InternalMath`.
