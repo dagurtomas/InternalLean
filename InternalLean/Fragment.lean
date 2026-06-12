@@ -531,18 +531,29 @@ partial def processWorklist (idx : Index) (b : Builder) (pos : Nat := 0) : Excep
   else
     .ok b
 
-/-- Compute the closure for one checked theorem or object definition root. -/
-def computeClosure (idx : Index) (rootName : Name) : Except String Closure := do
+/-- Add one checked theorem or object-definition root to the closure worklist. -/
+def Builder.addRoot (idx : Index) (b : Builder) (rootName : Name) : Except String Builder := do
   let rootName := rootName.eraseMacroScopes
-  let start : Builder ←
-    if idx.lfJudgmentTheorems.contains rootName then
-      pure <| ({} : Builder).add .lfJudgmentTheorem rootName s!"seed theorem {rootName}"
-    else if idx.lfObjectDefs.contains rootName then
-      pure <| ({} : Builder).add .lfObjectDef rootName s!"seed object definition {rootName}"
-    else
-      throw s!"unknown checked internal declaration '{rootName}' in type theory \
-        '{idx.checked.name.eraseMacroScopes}'"
+  if idx.lfJudgmentTheorems.contains rootName then
+    pure <| b.add .lfJudgmentTheorem rootName s!"seed theorem {rootName}"
+  else if idx.lfObjectDefs.contains rootName then
+    pure <| b.add .lfObjectDef rootName s!"seed object definition {rootName}"
+  else
+    throw s!"unknown checked internal declaration '{rootName}' in type theory \
+      '{idx.checked.name.eraseMacroScopes}'"
+
+/-- Compute the union closure for one or more checked theorem/object-definition roots. -/
+def computeClosureForRoots (idx : Index) (rootNames : Array Name) : Except String Closure := do
+  if rootNames.isEmpty then
+    throw "extract_theory_fragment requires at least one root declaration after `for`"
+  let mut start : Builder := {}
+  for rootName in rootNames do
+    start ← start.addRoot idx rootName
   return (← processWorklist idx start).closure
+
+/-- Compute the closure for one checked theorem or object definition root. -/
+def computeClosure (idx : Index) (rootName : Name) : Except String Closure :=
+  computeClosureForRoots idx #[rootName]
 
 /-- Whether a declaration name is included anywhere in the closure. -/
 def Closure.includesDeclaration (c : Closure) (name : Name) : Bool :=
@@ -639,6 +650,7 @@ def renderableModelFieldCount (checked : CheckedSignature) (admittedNames : Name
 structure Report where
   theoryName : Name
   rootName : Name
+  rootNames : Array Name := #[]
   flat : HLSignature
   checked : CheckedSignature
   closure : Closure
@@ -647,15 +659,27 @@ structure Report where
   carriedAdmissions : Array InternalAdmission := #[]
   deriving Inhabited
 
-/-- Build a report-only fragment closure for one theory and root declaration. -/
-def buildReport (theoryName rootName : Name) : CommandElabM Report := do
+/-- Root names with erased macro scopes and first occurrences retained in user order. -/
+def normalizeRootNames (rootNames : Array Name) : Array Name := Id.run do
+  let mut seen : NameSet := {}
+  let mut out := #[]
+  for rootName in rootNames do
+    let rootName := rootName.eraseMacroScopes
+    unless seen.contains rootName do
+      seen := seen.insert rootName
+      out := out.push rootName
+  return out
+
+/-- Build a report-only fragment closure for one theory and one or more root declarations. -/
+def buildReportForRoots (theoryName : Name) (rootNames : Array Name) : CommandElabM Report := do
   let some sig ← liftCoreM <| getTheory? theoryName
     | throwError "unknown type theory '{theoryName}'"
   let some checked ← liftCoreM <| getCheckedTheory? theoryName
     | throwError "type theory '{theoryName}' has no checked LF signature"
+  let roots := normalizeRootNames rootNames
   let flat ← liftCoreM <| flattenSignature sig
   let idx := mkIndex flat checked
-  let closure ← match computeClosure idx rootName with
+  let closure ← match computeClosureForRoots idx roots with
     | .ok closure => pure closure
     | .error err => throwError err
   let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theoryName
@@ -665,13 +689,18 @@ def buildReport (theoryName rootName : Name) : CommandElabM Report := do
   let fragmentAdmittedNames := LeanTypeModelGeneration.internalAdmissionNameSet fragmentAdmissions
   pure {
     theoryName := theoryName.eraseMacroScopes
-    rootName := rootName.eraseMacroScopes
+    rootName := roots[0]!
+    rootNames := roots
     flat := flat
     checked := checked
     closure := closure
     fullModelFieldCount := renderableModelFieldCount checked admittedNames
     fragmentModelFieldCount := renderableModelFieldCount fragmentChecked fragmentAdmittedNames
     carriedAdmissions := fragmentAdmissions }
+
+/-- Build a report-only fragment closure for one theory and root declaration. -/
+def buildReport (theoryName rootName : Name) : CommandElabM Report :=
+  buildReportForRoots theoryName #[rootName]
 
 /-- Model-section names whose included memberships survive in a source-level fragment. -/
 def carriedSourceModelSectionNames (sig : HLSignature) (c : Closure) : NameSet := Id.run do
@@ -887,6 +916,15 @@ def addFragmentInternalAnchors (fragmentName : Name) (r : Report) (rangeStx name
   addFragmentTheoremAnchors fragmentName r rangeStx nameStx
   addFragmentAdmissionAnchors fragmentName r rangeStx nameStx
 
+/-- Human-readable root list for report and extraction diagnostics. -/
+def rootNamesText (theoryName : Name) (rootNames : Array Name) : String :=
+  let roots := if rootNames.isEmpty then #[Name.anonymous] else rootNames
+  let rendered := roots.toList.map fun n => toString n.eraseMacroScopes
+  if roots.size == 1 then
+    s!"{theoryName.eraseMacroScopes}.{roots[0]!.eraseMacroScopes}"
+  else
+    s!"{theoryName.eraseMacroScopes} for roots {String.intercalate ", " rendered}"
+
 /-- Compact summary emitted by the state-changing extraction command. -/
 def extractionSummaryString (fragmentName : Name) (r : Report) (sig : HLSignature) : String :=
   let admissions := r.carriedAdmissions.map (fun a => a.declName.eraseMacroScopes)
@@ -895,7 +933,7 @@ def extractionSummaryString (fragmentName : Name) (r : Report) (sig : HLSignatur
       s!"{admissions.size}: {String.intercalate ", " (admissions.toList.map toString)}"
   String.intercalate "\n" [
     s!"extracted theory fragment {fragmentName.eraseMacroScopes} from \
-      {r.theoryName.eraseMacroScopes}.{r.rootName.eraseMacroScopes}",
+      {rootNamesText r.theoryName r.rootNames}",
     s!"declarations: {sig.syntaxSorts.size} syntax sort(s), {sig.judgments.size} judgment(s), \
       {sig.lfOpaqueConsts.size} LF opaque constant(s), {sig.rules.size} rule(s), \
       {sig.lfObjectDefs.size} LF object definition(s), \
@@ -904,10 +942,10 @@ def extractionSummaryString (fragmentName : Name) (r : Report) (sig : HLSignatur
     s!"carried admissions: {admissionText}" ]
 
 /-- Register the computed fragment as an ordinary standalone theory and add generated anchors. -/
-def extractFragment (fragmentName theoryName rootName : Name) (rangeStx nameStx : Syntax) :
-    CommandElabM Unit := do
+def extractFragment (fragmentName theoryName : Name) (rootNames : Array Name)
+    (rangeStx nameStx : Syntax) : CommandElabM Unit := do
   ensureTheoryRegistrationNamesAvailable fragmentName
-  let report ← buildReport theoryName rootName
+  let report ← buildReportForRoots theoryName rootNames
   let fragmentSig := buildFragmentSignature fragmentName report
   liftCoreM <| registerTheoryFull fragmentSig
   liftCoreM <| registerFragmentSourceDocs fragmentSig.name report
@@ -1006,7 +1044,7 @@ def reportString (r : Report) : String :=
   let carriedMetadata := carriedMetadataNames checked c
   let droppedMetadata := droppedMetadataNames checked c
   let lines := #[
-    s!"theory fragment report for {r.theoryName}.{r.rootName}",
+    s!"theory fragment report for {rootNamesText r.theoryName r.rootNames}",
     "mode: report-only; no fragment theory was registered",
     s!"model fields: full={r.fullModelFieldCount}, fragment={r.fragmentModelFieldCount}"]
   let lines := lines ++ renderCategory "level parameters" levelNames c
@@ -1147,10 +1185,11 @@ end TheoryFragment
 elab "#print_theory_fragment " theory:ident root:ident : command => do
   logInfo m!"{← TheoryFragment.reportStringFor theory.getId root.getId}"
 
-/-- Register the dependency-closure fragment for one checked internal declaration. -/
-elab "extract_theory_fragment " fragment:ident " from " theory:ident " for " root:ident :
+/-- Register the dependency-closure fragment for one or more checked internal declarations. -/
+elab "extract_theory_fragment " fragment:ident " from " theory:ident " for " roots:ident* :
     command => do
-  TheoryFragment.extractFragment fragment.getId theory.getId root.getId (← getRef) fragment.raw
+  TheoryFragment.extractFragment fragment.getId theory.getId (roots.map (·.getId)) (← getRef)
+    fragment.raw
 
 /-- Generate a projection-only restriction from a model of a source theory to a fragment model. -/
 elab "generate_model_restriction " source:ident " to " fragment:ident " as " restriction:ident :

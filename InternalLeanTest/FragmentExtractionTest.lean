@@ -80,6 +80,11 @@ internal def b depends on admitted a -/
 
 extract_theory_fragment F2LevelNormalizerFragment from UniverseHierarchy for liftedZeroUnivLmax_wf
 extract_theory_fragment F2ParentFragment from F2ParentChild for good_a_thm
+extract_theory_fragment F4UniverseMultiFragment from UniverseHierarchy for zero_le_succ_zero
+  liftedZeroUniv_wf
+#check F4UniverseMultiFragment.zero_le_succ_zero
+#check F4UniverseMultiFragment.liftedZeroUniv
+#check F4UniverseMultiFragment.liftedZeroUniv_wf
 
 generate_model_interface F2UniverseFragment as Model
 generate_syntactic_model_instance F2UniverseFragment as syntacticModel for Model
@@ -123,6 +128,14 @@ extract_theory_fragment F2NegativeUnknownTheory from NoSuchTheory for foo
 /-- error: unknown checked internal declaration 'nope' in type theory 'UniverseHierarchy' -/
 #guard_msgs in
 extract_theory_fragment F2NegativeUnknownRoot from UniverseHierarchy for nope
+
+/-- error: extract_theory_fragment requires at least one root declaration after `for` -/
+#guard_msgs in
+extract_theory_fragment F4NegativeNoRoots from UniverseHierarchy for
+
+/-- error: unknown checked internal declaration 'nope' in type theory 'UniverseHierarchy' -/
+#guard_msgs in
+extract_theory_fragment F4NegativeUnknownRoot from UniverseHierarchy for zero_le_succ_zero nope
 
 declare_type_theory F2NegativeClash where
   syntax_sort A
@@ -346,6 +359,61 @@ run_cmd do
     | throwError "missing parent-fragment checked signature"
   assertFragment (checked.lfSyntaxSorts.any (fun d => d.name == `A))
     "parent fragment should contain inherited flattened declarations"
+
+run_cmd do
+  let zeroReport ← TheoryFragment.buildReport `UniverseHierarchy `zero_le_succ_zero
+  let multiReport ← TheoryFragment.buildReportForRoots `UniverseHierarchy
+    #[`zero_le_succ_zero, `liftedZeroUniv_wf]
+  assertFragment (multiReport.closure.lfJudgmentTheorems.contains `zero_le_succ_zero)
+    "multi-root fragment omitted first theorem root"
+  assertFragment (multiReport.closure.lfJudgmentTheorems.contains `liftedZeroUniv_wf)
+    "multi-root fragment omitted second theorem root"
+  assertFragment (multiReport.closure.lfObjectDefs.contains `liftedZeroUniv)
+    "multi-root fragment omitted object-definition dependency"
+  assertFragment (multiReport.fragmentModelFieldCount > zeroReport.fragmentModelFieldCount)
+    "multi-root fragment should add fields beyond the zero-only fragment"
+  let some checked ← liftCoreM <| getCheckedTheory? `F4UniverseMultiFragment
+    | throwError "missing multi-root fragment checked signature"
+  assertFragment (checked.lfJudgmentTheorems.any (fun d => d.name == `zero_le_succ_zero))
+    "checked multi-root fragment omitted zero theorem"
+  assertFragment (checked.lfJudgmentTheorems.any (fun d => d.name == `liftedZeroUniv_wf))
+    "checked multi-root fragment omitted lifted theorem"
+  assertFragment (checked.lfObjectDefs.any (fun d => d.name == `liftedZeroUniv))
+    "checked multi-root fragment omitted lifted object definition"
+  assertFragment (!checked.lfOpaqueConsts.any (fun d => d.name == `Pi))
+    "multi-root fragment should not include unrelated later extension constants"
+
+run_cmd do
+  let report ← TheoryFragment.buildReportForRoots `UniverseHierarchy
+    #[`zero_le_succ_zero, `liftedZeroUniv_wf]
+  let expectedRaw := TheoryFragment.buildFragmentSignature `F4UniverseMultiFragment report
+  let expected ← liftCoreM do
+    let head ← flattenSignature expectedRaw
+    elaborateImplicitAppsInSignatureWithEnv head expectedRaw
+  let some actual ← liftCoreM <| getTheory? `F4UniverseMultiFragment
+    | throwError "missing extracted F4UniverseMultiFragment"
+  assertFragment (actual == expected)
+    "multi-root fragment source records should match the filtered source signature"
+
+run_cmd do
+  let some sourceChecked ← liftCoreM <| getCheckedTheory? `UniverseHierarchy
+    | throwError "missing source UniverseHierarchy checked signature"
+  let some fragmentChecked ← liftCoreM <| getCheckedTheory? `F4UniverseMultiFragment
+    | throwError "missing multi-root fragment checked signature"
+  let fragmentKernelSig ← match checkedSignatureToKSignature fragmentChecked.name
+      fragmentChecked.lfSyntaxDefs fragmentChecked.lfOpaqueConsts fragmentChecked.lfContextZones
+      fragmentChecked.lfBinderClasses fragmentChecked.lfConversionPlugins
+      fragmentChecked.lfRuleSchemas fragmentChecked.lfObjectDefs fragmentChecked.lfJudgmentTheorems
+    with
+    | .ok sig => pure sig
+    | .error err => throwError err
+  for root in #[`zero_le_succ_zero, `liftedZeroUniv_wf] do
+    let sourceCert ← kernelLFReplayCertificateForTheorem sourceChecked root
+    let fragmentCert : Kernel.KernelLFReplayCertificate := {
+      sourceCert with signature := fragmentKernelSig }
+    match fragmentCert.check with
+    | .ok _ => pure ()
+    | .error err => throwError "source certificate for {root} failed in multi fragment: {err}"
 
 run_cmd do
   let report ← TheoryFragment.buildReport `UniverseHierarchy `zero_le_succ_zero
