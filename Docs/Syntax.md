@@ -448,6 +448,13 @@ side_condition le_left by level_norm_solver : Le i (lmax i j)
 Successful uses produce checked level-normalizer certificates; failed or unsupported level terms
 are errors. The profile never changes ordinary LF definitional equality globally.
 
+Opting in is also a semantic trust commitment about the named object-language constructors:
+`level_norm_solver`/`level_norm` use the executable max-algebra for `zero`, `succ`, and `lmax`
+(idempotence, commutativity, associativity, zero as a bottom component, and successor monotonicity)
+to produce audit-visible certificates. Generated model interfaces do not add extra fields forcing
+models to prove those algebra laws; models that interpret the constructors differently are relying
+on the recorded executable-checked trust leaf.
+
 ### Conversion plugins
 
 ```lean

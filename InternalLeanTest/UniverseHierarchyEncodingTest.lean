@@ -129,6 +129,63 @@ run_cmd do
         err.message.contains "level-normalizer conversion failed"
 
 #guard
+  let stmt : ConversionStatement := {
+    plugin := `level_norm
+    lhs := .tmMeta `i
+    rhs := .tyMeta `i }
+  let profile : LevelNormalizerRawProfile := {
+    zeroName := `zero
+    succName := `succ
+    maxName := `lmax }
+  let sig : Signature := {
+    name := `T
+    conversionPlugins := [{
+      name := `level_norm
+      trust := .executableChecked
+      supportedSteps := [.reindexing]
+      levelNormalizer? := some profile }] }
+  match KernelLFConversionCertificate.checkDetailed sig (.pluginStep stmt .reindexing none [] "")
+      stmt with
+  | .ok _ => false
+  | .error err =>
+      err.kind == .unsupportedConversion && err.message.contains "type-metavariable sort"
+
+#guard
+  let profile : LevelNormalizerRawProfile := {
+    zeroName := `zero
+    succName := `succ
+    maxName := `lmax }
+  match KernelLFConversionCertificate.normalizeRawLevel profile (.tmMeta `i) 0 with
+  | .ok _ => false
+  | .error err =>
+      err.kind == .unsupportedConversion && err.message.contains "budget exhausted"
+
+private def rawLevelMaxDoubling : Nat → Raw → Raw
+  | 0, atom => atom
+  | n + 1, atom =>
+      let subtree := rawLevelMaxDoubling n atom
+      .tmApp `lmax [subtree, subtree]
+
+#guard
+  let lhs := rawLevelMaxDoubling 8 (.tmMeta `i)
+  let rhs := .tmMeta `i
+  let stmt : ConversionStatement := { plugin := `level_norm, lhs := lhs, rhs := rhs }
+  let profile : LevelNormalizerRawProfile := {
+    zeroName := `zero
+    succName := `succ
+    maxName := `lmax }
+  let sig : Signature := {
+    name := `T
+    conversionPlugins := [{
+      name := `level_norm
+      trust := .executableChecked
+      supportedSteps := [.reindexing]
+      levelNormalizer? := some profile }] }
+  match KernelLFConversionCertificate.check sig (.pluginStep stmt .reindexing none [] "") stmt with
+  | .ok () => true
+  | .error _ => false
+
+#guard
   let head (n : Name) : Kernel.KTerm := .ident { name := Kernel.KName.ofName n }
   let app2 (n : Name) (lhs rhs : Kernel.KTerm) : Kernel.KTerm :=
     .app (.app (head n) lhs) rhs
@@ -563,3 +620,33 @@ declare_type_theory MissingLevelNormalizerProfile where
     side_condition le by level_norm_solver : Le i (lmax i j)
     conclusion : Le i (lmax i j)
   judgment_theorem use : Le zero (lmax zero zero) := ok zero zero
+
+declare_type_theory MissingLevelNormalizerNativeTacticProfile where
+  side_condition_solver level_norm_solver
+  syntax_sort Level
+  lf_opaque zero : Level
+  lf_opaque lmax (i : Level) (j : Level) : Level
+  judgment Le (i : Level) (j : Level)
+  rule ok (i : Level) (j : Level) where
+    side_condition le by level_norm_solver : Le i (lmax i j)
+    conclusion : Le i (lmax i j)
+
+namespace MissingLevelNormalizerNativeTacticProfile
+
+/--
+error: object tactic `apply ok` cannot synthesize side-condition certificate 'le' for rule or
+  declaration 'ok'
+
+required side condition:
+  le by level_norm_solver : Le zero (lmax zero zero)
+
+The solver 'level_norm_solver' is opaque to core object tactic mode. Side conditions are
+  certificate obligations at the LF replay boundary; they are not Lean goals.
+Use a checked side-condition solver such as `trivial_side_condition`, supply a
+  `judgment_theorem`, or use a profile tactic that produces an explicit certificate.
+-/
+#guard_msgs (whitespace := lax) in
+internal theorem missing_level_norm_native_failure : Le zero (lmax zero zero) := by
+  apply ok
+
+end MissingLevelNormalizerNativeTacticProfile

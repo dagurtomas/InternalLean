@@ -924,21 +924,23 @@ def objectSideConditionsAreBuiltinTrivial (sig : HLSignature)
     | .builtinTrivial | .levelNormalizer => true
     | .opaque => false
 
-/-- Check selected rewrite-helper side conditions, accepting only the built-in trivial hook. -/
+/-- Check selected rewrite-helper side conditions, accepting only the built-in trivial hook.
+Level-normalizer side conditions are rejected here in this milestone because rewrite helpers do not
+carry the checked profile array needed to synthesize them. -/
 def checkRewriteHelperSideConditions (rawName helperKind helperName : Name)
     (sideConditions : Array RuleSideConditionDecl) (subst : NameMap ObjExpr) :
     Except String Unit := do
   for sc in sideConditions do
     let scInput := substObjectVars subst sc.input
-    match classifySideConditionHook sc.solver with
-    | .builtinTrivial => pure ()
-    | .levelNormalizer | .opaque =>
-        throw <| String.intercalate "\n" [
-          s!"object tactic `rw {rawName}` cannot synthesize side-condition certificate " ++
-            s!"'{sc.name.eraseMacroScopes}' for {helperKind.eraseMacroScopes} " ++
-            s!"'{helperName.eraseMacroScopes}'",
-          s!"solver: {sc.solver.eraseMacroScopes}",
-          s!"input: {diagnosticObjExprString scInput}"]
+    if sc.solver.eraseMacroScopes == `trivial_side_condition then
+      pure ()
+    else
+      throw <| String.intercalate "\n" [
+        s!"object tactic `rw {rawName}` cannot synthesize side-condition certificate " ++
+          s!"'{sc.name.eraseMacroScopes}' for {helperKind.eraseMacroScopes} " ++
+          s!"'{helperName.eraseMacroScopes}'",
+        s!"solver: {sc.solver.eraseMacroScopes}",
+        s!"input: {diagnosticObjExprString scInput}"]
 
 /-- Try to synthesize a premise proof from locals and simple already-declared LF facts. -/
 partial def synthesizeObjectPremiseProof? (target : InternalDefTarget) (sig : HLSignature)

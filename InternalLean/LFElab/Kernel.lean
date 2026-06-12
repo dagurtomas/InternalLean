@@ -377,7 +377,13 @@ def checkedLFMultiContextOfLocals (locals : Array CheckedLFTypedLocal) : Checked
           checkedTypeExpr := v.checkedTypeExpr }
       | none => none }
 
-/-- Normal form for the first-order object-level universe fragment. -/
+/-- Normalizer budget for object-expression level side-condition checks. -/
+def levelNormalizerObjFuelLimit : Nat := 4096
+
+/-- Normal form for the first-order object-level universe fragment.
+
+This mirrors `InternalLean.LevelNormalizerRawNF` and `InternalLean.Kernel.LevelNormalizerKNF`. The
+copies stay separate because they run at different trust-boundary layers. -/
 structure LevelNormalizerObjNF where
   floor : Nat := 0
   atoms : Array (Name × Nat) := #[]
@@ -440,44 +446,46 @@ def format (nf : LevelNormalizerObjNF) : String :=
 end LevelNormalizerObjNF
 
 /-- Normalize one object-level universe expression in the profiled first-order fragment. -/
-partial def normalizeObjLevel (profile : CheckedLFLevelNormalizerProfile) (expr : ObjExpr) :
-    Except String LevelNormalizerObjNF := do
-  let expr := eraseObjExprScopes expr
-  let (head, args) := splitObjApp expr
-  match head, args.toList with
-  | .ident n, [] =>
-      let n := n.eraseMacroScopes
-      if n == profile.zeroName then pure {} else pure { atoms := #[(n, 0)] }
-  | .ident n, [arg] =>
-      let n := n.eraseMacroScopes
-      if n == profile.succName then
-        return (← normalizeObjLevel profile arg).succ
-      else
-        throw s!"unsupported level-normalizer head '{n}' in '{expr}'"
-  | .ident n, [lhs, rhs] =>
-      let n := n.eraseMacroScopes
-      if n == profile.maxName then
-        return LevelNormalizerObjNF.maxNF (← normalizeObjLevel profile lhs)
-          (← normalizeObjLevel profile rhs)
-      else
-        throw s!"unsupported level-normalizer head '{n}' in '{expr}'"
-  | .ident n, _ =>
-      throw s!"unsupported level-normalizer head '{n.eraseMacroScopes}' in '{expr}'"
-  | _, _ =>
-      throw s!"unsupported level-normalizer expression '{expr}'"
+def normalizeObjLevel (profile : CheckedLFLevelNormalizerProfile) (expr : ObjExpr)
+    (fuel : Nat := levelNormalizerObjFuelLimit) : Except String LevelNormalizerObjNF := do
+  match fuel with
+  | 0 => throw s!"level-normalizer budget exhausted while normalizing '{expr}'"
+  | fuel + 1 =>
+      let expr := eraseObjExprScopes expr
+      match expr with
+      | .ident n =>
+          let n := n.eraseMacroScopes
+          if n == profile.zeroName then pure {} else pure { atoms := #[(n, 0)] }
+      | .app (.ident n) arg =>
+          let n := n.eraseMacroScopes
+          if n == profile.succName then
+            return (← normalizeObjLevel profile arg fuel).succ
+          else
+            throw s!"unsupported level-normalizer head '{n}' in '{expr}'"
+      | .app (.app (.ident n) lhs) rhs =>
+          let n := n.eraseMacroScopes
+          if n == profile.maxName then
+            return LevelNormalizerObjNF.maxNF (← normalizeObjLevel profile lhs fuel)
+              (← normalizeObjLevel profile rhs fuel)
+          else
+            throw s!"unsupported level-normalizer head '{n}' in '{expr}'"
+      | .app (.app (.app (.ident n) _) _) _ =>
+          throw s!"unsupported level-normalizer head '{n.eraseMacroScopes}' in '{expr}'"
+      | _ =>
+          throw s!"unsupported level-normalizer expression '{expr}'"
 
 /-- Run the executable level-normalizer side-condition hook. -/
 def checkLFLevelNormalizerSideCondition (profile : CheckedLFLevelNormalizerProfile)
     (ruleName : Name) (sc : CheckedLFRuleSideCondition) :
     Except String CheckedLFSideConditionCertificate := do
-  let (head, args) := splitObjApp (eraseObjExprScopes sc.input)
+  let input := eraseObjExprScopes sc.input
   let (lhs, rhs) ←
-    match head, args.toList with
-    | .ident n, [lhs, rhs] =>
+    match input with
+    | .app (.app (.ident n) lhs) rhs =>
         if n.eraseMacroScopes == profile.leName then pure (lhs, rhs) else
           throw s!"level-normalizer side-condition '{sc.name}' in rule '{ruleName}' must be \
             headed by profiled order judgment '{profile.leName}', got '{n.eraseMacroScopes}'"
-    | _, _ =>
+    | _ =>
         throw s!"level-normalizer side-condition '{sc.name}' in rule '{ruleName}' must have \
           shape '{profile.leName} lhs rhs', got '{sc.input}'"
   let lhsNF ← normalizeObjLevel profile lhs

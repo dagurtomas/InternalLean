@@ -775,14 +775,14 @@ def throwFailure (kind : ConversionCheckFailureKind) (message : String) :
     Except ConversionCheckFailure α :=
   throw { kind, message }
 
-/-- Split a structural application into head and spine. -/
-partial def splitKApp : KTerm → KTerm × List KTerm
-  | .app f a =>
-      let (h, args) := splitKApp f
-      (h, args ++ [a])
-  | e => (e, [])
+/-- Normalizer budget for structural executable level-conversion leaves. -/
+def levelNormalizerKFuelLimit : Nat := 4096
 
-/-- Normal form for the first-order level fragment over structural terms. -/
+/-- Normal form for the first-order level fragment over structural terms.
+
+This mirrors `InternalLean.LevelNormalizerRawNF` and `LFElab.Kernel.LevelNormalizerObjNF`. The
+copies stay separate so the raw compatibility checker and structural checker do not share trusted
+syntax. -/
 structure LevelNormalizerKNF where
   floor : Nat := 0
   atoms : List (KTerm × Nat) := []
@@ -796,14 +796,14 @@ def atomOffset? (nf : LevelNormalizerKNF) (atom : KTerm) : Option Nat :=
 
 /-- Set one atom to the maximum of the old and new offsets. -/
 def setAtomMax (nf : LevelNormalizerKNF) (atom : KTerm) (offset : Nat) : LevelNormalizerKNF :=
-  let rec go (changed : Bool) : List (KTerm × Nat) → List (KTerm × Nat)
-    | [] => if changed then [] else [(atom, offset)]
+  let rec go : List (KTerm × Nat) → List (KTerm × Nat)
+    | [] => [(atom, offset)]
     | (oldAtom, oldOffset) :: rest =>
         if oldAtom.alphaEq atom then
           (oldAtom, Nat.max oldOffset offset) :: rest
         else
-          (oldAtom, oldOffset) :: go changed rest
-  { nf with atoms := go false nf.atoms }
+          (oldAtom, oldOffset) :: go rest
+  { nf with atoms := go nf.atoms }
 
 /-- Successor of a structural level normal form. -/
 def succ (nf : LevelNormalizerKNF) : LevelNormalizerKNF :=
@@ -836,36 +836,41 @@ def format (nf : LevelNormalizerKNF) : String :=
 end LevelNormalizerKNF
 
 /-- Normalize one structural level term for an executable conversion plugin. -/
-partial def normalizeKLevel (profile : LevelNormalizerKProfile) (term : KTerm) :
+def normalizeKLevel (profile : LevelNormalizerKProfile) (term : KTerm)
+    (fuel : Nat := levelNormalizerKFuelLimit) :
     Except ConversionCheckFailure LevelNormalizerKNF := do
-  let (head, args) := splitKApp term
-  match head, args with
-  | .ident h, [] =>
-      if h.name == profile.zeroName then
-        pure {}
-      else
-        pure { atoms := [(term, 0)] }
-  | .ident h, [arg] =>
-      if h.name == profile.succName then
-        return (← normalizeKLevel profile arg).succ
-      else
-        throwFailure .unsupportedConversion <|
-          s!"level normalizer does not support application headed by '{h.name}'"
-  | .ident h, [lhs, rhs] =>
-      if h.name == profile.maxName then
-        return LevelNormalizerKNF.max (← normalizeKLevel profile lhs)
-          (← normalizeKLevel profile rhs)
-      else
-        throwFailure .unsupportedConversion <|
-          s!"level normalizer does not support application headed by '{h.name}'"
-  | .fvar _, [] | .mvar .., [] =>
-      pure { atoms := [(term, 0)] }
-  | .ident h, _ =>
+  match fuel with
+  | 0 =>
       throwFailure .unsupportedConversion <|
-        s!"level normalizer does not support application headed by '{h.name}'"
-  | _, _ =>
-      throwFailure .unsupportedConversion <|
-        s!"level normalizer does not support structural term '{reprStr term}'"
+        s!"level normalizer budget exhausted while normalizing structural term '{reprStr term}'"
+  | fuel + 1 =>
+      match term with
+      | .ident h =>
+          if h.name == profile.zeroName then
+            pure {}
+          else
+            pure { atoms := [(term, 0)] }
+      | .app (.ident h) arg =>
+          if h.name == profile.succName then
+            return (← normalizeKLevel profile arg fuel).succ
+          else
+            throwFailure .unsupportedConversion <|
+              s!"level normalizer does not support application headed by '{h.name}'"
+      | .app (.app (.ident h) lhs) rhs =>
+          if h.name == profile.maxName then
+            return LevelNormalizerKNF.max (← normalizeKLevel profile lhs fuel)
+              (← normalizeKLevel profile rhs fuel)
+          else
+            throwFailure .unsupportedConversion <|
+              s!"level normalizer does not support application headed by '{h.name}'"
+      | .fvar _ | .mvar .. =>
+          pure { atoms := [(term, 0)] }
+      | .app .. =>
+          throwFailure .unsupportedConversion <|
+            s!"level normalizer does not support structural application '{reprStr term}'"
+      | _ =>
+          throwFailure .unsupportedConversion <|
+            s!"level normalizer does not support structural term '{reprStr term}'"
 
 /-- Validate a structural level-normalization conversion leaf. -/
 def validateKLevelNormalization (profile : LevelNormalizerKProfile) (stmt : ConversionStatement) :

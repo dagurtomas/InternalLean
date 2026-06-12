@@ -2042,7 +2042,13 @@ def throwFailure (kind : ConversionCheckFailureKind) (message : String) :
     Except ConversionCheckFailure α :=
   throw (ConversionCheckFailure.mk kind message)
 
-/-- Normal form for the first-order level fragment over raw syntax. -/
+/-- Normalizer budget for raw executable level-conversion leaves. -/
+def levelNormalizerRawFuelLimit : Nat := 4096
+
+/-- Normal form for the first-order level fragment over raw syntax.
+
+This mirrors `Kernel.LevelNormalizerKNF` and `LFElab.Kernel.LevelNormalizerObjNF`. The copies stay
+separate so the compatibility raw checker and structural checker do not share trusted syntax. -/
 structure LevelNormalizerRawNF where
   floor : Nat := 0
   atoms : List (Name × Nat) := []
@@ -2058,14 +2064,14 @@ def atomOffset? (nf : LevelNormalizerRawNF) (atom : Name) : Option Nat :=
 def setAtomMax (nf : LevelNormalizerRawNF) (atom : Name) (offset : Nat) :
     LevelNormalizerRawNF :=
   let atom := atom.eraseMacroScopes
-  let rec go (changed : Bool) : List (Name × Nat) → List (Name × Nat)
-    | [] => if changed then [] else [(atom, offset)]
+  let rec go : List (Name × Nat) → List (Name × Nat)
+    | [] => [(atom, offset)]
     | (name, old) :: rest =>
         if name == atom then
           (name, Nat.max old offset) :: rest
         else
-          (name, old) :: go changed rest
-  { nf with atoms := go false nf.atoms }
+          (name, old) :: go rest
+  { nf with atoms := go nf.atoms }
 
 /-- Successor of a raw level normal form. -/
 def succ (nf : LevelNormalizerRawNF) : LevelNormalizerRawNF :=
@@ -2097,34 +2103,59 @@ def format (nf : LevelNormalizerRawNF) : String :=
 end LevelNormalizerRawNF
 
 /-- Normalize one raw level term for an executable conversion plugin. -/
-partial def normalizeRawLevel (profile : LevelNormalizerRawProfile) : Raw →
-    Except ConversionCheckFailure LevelNormalizerRawNF
-  | .tmConst n =>
-      if n.eraseMacroScopes == profile.zeroName.eraseMacroScopes then
-        pure {}
-      else
-        pure { atoms := [(n.eraseMacroScopes, 0)] }
-  | .tmMeta n | .tyMeta n | .ctxMeta n | .substMeta n | .leanParam n =>
-      pure { atoms := [(n.eraseMacroScopes, 0)] }
-  | .tmApp f [arg] =>
-      if f.eraseMacroScopes == profile.succName.eraseMacroScopes then
-        return (← normalizeRawLevel profile arg).succ
-      else
-        throwFailure .unsupportedConversion <|
-          s!"level normalizer does not support raw application headed by '{f.eraseMacroScopes}'"
-  | .tmApp f [lhs, rhs] =>
-      if f.eraseMacroScopes == profile.maxName.eraseMacroScopes then
-        return LevelNormalizerRawNF.max (← normalizeRawLevel profile lhs)
-          (← normalizeRawLevel profile rhs)
-      else
-        throwFailure .unsupportedConversion <|
-          s!"level normalizer does not support raw application headed by '{f.eraseMacroScopes}'"
-  | .tmApp f _ =>
+def normalizeRawLevel (profile : LevelNormalizerRawProfile) (term : Raw)
+    (fuel : Nat := levelNormalizerRawFuelLimit) :
+    Except ConversionCheckFailure LevelNormalizerRawNF := do
+  match fuel with
+  | 0 =>
       throwFailure .unsupportedConversion <|
-        s!"level normalizer does not support raw application headed by '{f.eraseMacroScopes}'"
-  | other =>
-      throwFailure .unsupportedConversion <|
-        s!"level normalizer does not support raw term '{rawSourceString other}'"
+        s!"level normalizer budget exhausted while normalizing raw term \
+          '{rawSourceString term}'"
+  | fuel + 1 =>
+      match term with
+      | .tmConst n =>
+          if n.eraseMacroScopes == profile.zeroName.eraseMacroScopes then
+            pure {}
+          else
+            throwFailure .unsupportedConversion <|
+              s!"level normalizer does not support raw closed constant \
+                '{n.eraseMacroScopes}' as a neutral atom"
+      | .tmMeta n | .leanParam n =>
+          pure { atoms := [(n.eraseMacroScopes, 0)] }
+      | .tyMeta n =>
+          throwFailure .unsupportedConversion <|
+            s!"level normalizer raw atom '{n.eraseMacroScopes}' has type-metavariable sort; \
+              only term metavariables and Lean parameters are supported as raw neutral levels"
+      | .ctxMeta n =>
+          throwFailure .unsupportedConversion <|
+            s!"level normalizer raw atom '{n.eraseMacroScopes}' has context-metavariable sort; \
+              only term metavariables and Lean parameters are supported as raw neutral levels"
+      | .substMeta n =>
+          throwFailure .unsupportedConversion <|
+            s!"level normalizer raw atom '{n.eraseMacroScopes}' has substitution-metavariable \
+              sort; only term metavariables and Lean parameters are supported as raw neutral \
+              levels"
+      | .tmApp f [arg] =>
+          if f.eraseMacroScopes == profile.succName.eraseMacroScopes then
+            return (← normalizeRawLevel profile arg fuel).succ
+          else
+            throwFailure .unsupportedConversion <|
+              s!"level normalizer does not support raw application headed by \
+                '{f.eraseMacroScopes}'"
+      | .tmApp f [lhs, rhs] =>
+          if f.eraseMacroScopes == profile.maxName.eraseMacroScopes then
+            return LevelNormalizerRawNF.max (← normalizeRawLevel profile lhs fuel)
+              (← normalizeRawLevel profile rhs fuel)
+          else
+            throwFailure .unsupportedConversion <|
+              s!"level normalizer does not support raw application headed by \
+                '{f.eraseMacroScopes}'"
+      | .tmApp f _ =>
+          throwFailure .unsupportedConversion <|
+            s!"level normalizer does not support raw application headed by '{f.eraseMacroScopes}'"
+      | other =>
+          throwFailure .unsupportedConversion <|
+            s!"level normalizer does not support raw term '{rawSourceString other}'"
 
 /-- Validate a raw level-normalization conversion leaf. -/
 def validateRawLevelNormalization (profile : LevelNormalizerRawProfile)
