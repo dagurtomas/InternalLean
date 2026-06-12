@@ -40,6 +40,73 @@ namespace F1Admission
 internal def b : A := a
 end F1Admission
 
+/-- Parent-fragment smoke theory for F2 standalone flattened extraction. -/
+declare_type_theory F2ParentBase where
+  syntax_sort A
+  judgment Good (a : A)
+  lf_opaque a : A
+  rule good_a : Good a
+
+declare_type_theory F2ParentChild extends F2ParentBase where
+
+namespace F2ParentChild
+internal theorem good_a_thm : Good a := good_a
+end F2ParentChild
+
+extract_theory_fragment F2UniverseFragment from UniverseHierarchy for zero_le_succ_zero
+#check F2UniverseFragment.zero_le_succ_zero
+
+/-- info: type theory F2UniverseFragment: direct-LF signature
+Lean-visible anchor: F2UniverseFragment.theory
+internal declarations: 1 checked/replayed, 0 admitted by `sorry`
+LF metadata: 1 syntax sort(s), 0 syntax abbreviation(s), 0 judgment abbreviation(s),
+  1 judgment(s), 1 rule(s), 1 checked judgment theorem(s)
+generated admitted transports recorded: 0
+user workflow: `#print_model_obligations`, `generate_model_interface`,
+  `#print_model_template`, `#print_model_transport_status`, `generate_model_transport`,
+  `generate_model_transports` -/
+#guard_msgs (whitespace := lax) in
+#check_theory F2UniverseFragment
+
+extract_theory_fragment F2AdmissionFragment from F1Admission for b
+#check F2AdmissionFragment.a
+
+/-- warning: type theory 'F2AdmissionFragment' has 1 admitted internal declaration(s):
+admitted internal def F2AdmissionFragment.a : A [missing doc]
+downstream declarations mentioning admissions:
+internal def b depends on admitted a -/
+#guard_msgs (whitespace := lax) in
+#lint_type_theory_sorries F2AdmissionFragment
+
+extract_theory_fragment F2LevelNormalizerFragment from UniverseHierarchy for liftedZeroUnivLmax_wf
+extract_theory_fragment F2ParentFragment from F2ParentChild for good_a_thm
+
+/-- error: unknown type theory 'NoSuchTheory' -/
+#guard_msgs in
+extract_theory_fragment F2NegativeUnknownTheory from NoSuchTheory for foo
+
+/-- error: unknown checked internal declaration 'nope' in type theory 'UniverseHierarchy' -/
+#guard_msgs in
+extract_theory_fragment F2NegativeUnknownRoot from UniverseHierarchy for nope
+
+declare_type_theory F2NegativeClash where
+  syntax_sort A
+
+/-- error: type theory 'F2NegativeClash' has already been declared -/
+#guard_msgs in
+extract_theory_fragment F2NegativeClash from UniverseHierarchy for zero_le_succ_zero
+
+declare_type_theory F2NegativeBadRoot where
+  syntax_sort A
+
+/-- error: Unknown identifier `missing` -/
+#guard_msgs in
+internal def F2NegativeBadRoot.bad : A := missing
+
+/-- error: unknown checked internal declaration 'bad' in type theory 'F2NegativeBadRoot' -/
+#guard_msgs in
+extract_theory_fragment F2NegativeBadRootFragment from F2NegativeBadRoot for bad
+
 namespace InternalLeanTest.FragmentExtraction
 
 def assertFragment (ok : Bool) (msg : String) : CommandElabM Unit := do
@@ -151,5 +218,98 @@ run_cmd do
     "fragment report should not register a new theory"
   assertFragment (after.find? `UniverseHierarchy).isSome
     "fragment report should preserve the original theory registry"
+
+run_cmd do
+  let report ← TheoryFragment.buildReport `UniverseHierarchy `zero_le_succ_zero
+  let expectedRaw := TheoryFragment.buildFragmentSignature `F2UniverseFragment report
+  let expected ← liftCoreM do
+    let head ← flattenSignature expectedRaw
+    elaborateImplicitAppsInSignatureWithEnv head expectedRaw
+  let some actual ← liftCoreM <| getTheory? `F2UniverseFragment
+    | throwError "missing extracted F2UniverseFragment"
+  assertFragment (actual == expected)
+    "extracted fragment source records should match the filtered source signature"
+
+run_cmd do
+  let some sourceChecked ← liftCoreM <| getCheckedTheory? `UniverseHierarchy
+    | throwError "missing source UniverseHierarchy checked signature"
+  let some fragmentChecked ← liftCoreM <| getCheckedTheory? `F2UniverseFragment
+    | throwError "missing extracted F2UniverseFragment checked signature"
+  let some sourceTheorem := sourceChecked.lfJudgmentTheorems.find? (fun t =>
+      t.name == `zero_le_succ_zero)
+    | throwError "missing source theorem zero_le_succ_zero"
+  let some fragmentTheorem := fragmentChecked.lfJudgmentTheorems.find? (fun t =>
+      t.name == `zero_le_succ_zero)
+    | throwError "missing fragment theorem zero_le_succ_zero"
+  assertFragment (objectExprEq (eraseObjExprScopes sourceTheorem.judgmentExpr)
+      (eraseObjExprScopes fragmentTheorem.judgmentExpr))
+    "fragment theorem statement should equal the source theorem statement"
+  let evidence? ← liftCoreM <| findInternalDeclarationEvidence? `F2UniverseFragment
+    `zero_le_succ_zero
+  let some evRec := evidence?
+    | throwError "missing fragment theorem evidence"
+  assertFragment (evRec.kind == .checkedJudgmentTheorem)
+    "fragment root theorem should be checked, not admitted"
+
+run_cmd do
+  let some sourceChecked ← liftCoreM <| getCheckedTheory? `UniverseHierarchy
+    | throwError "missing source UniverseHierarchy checked signature"
+  let some fragmentChecked ← liftCoreM <| getCheckedTheory? `F2UniverseFragment
+    | throwError "missing extracted F2UniverseFragment checked signature"
+  let sourceCert ← kernelLFReplayCertificateForTheorem sourceChecked `zero_le_succ_zero
+  let fragmentKernelSig ← match checkedSignatureToKSignature fragmentChecked.name
+      fragmentChecked.lfSyntaxDefs fragmentChecked.lfOpaqueConsts fragmentChecked.lfContextZones
+      fragmentChecked.lfBinderClasses fragmentChecked.lfConversionPlugins
+      fragmentChecked.lfRuleSchemas fragmentChecked.lfObjectDefs fragmentChecked.lfJudgmentTheorems
+    with
+    | .ok sig => pure sig
+    | .error err => throwError err
+  let fragmentCert : Kernel.KernelLFReplayCertificate := {
+    sourceCert with signature := fragmentKernelSig }
+  match fragmentCert.check with
+  | .ok _ => pure ()
+  | .error err => throwError "source certificate failed against fragment signature: {err}"
+
+run_cmd do
+  let env ← getEnv
+  for n in [`Level, `Le, `zero, `succ, `le_succ, `zero_le_succ_zero] do
+    assertFragment (env.contains (lfQuoteDeclName `F2UniverseFragment n))
+      s!"fragment omitted quote stub for {n}"
+  assertFragment (env.contains (lfMirrorDeclName `F2UniverseFragment `Le))
+    "fragment omitted mirror declaration for Le"
+  assertFragment (env.contains (theoryAnchorName `F2UniverseFragment))
+    "fragment omitted theory anchor"
+  let some _ ← liftCoreM <| internalSourceDeclAnchorName? `F2UniverseFragment `Le
+    | throwError "fragment omitted source anchor for Le"
+
+run_cmd do
+  let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents `F2AdmissionFragment
+  assertFragment (admissions.any (fun a => a.declName == `a))
+    "extracted fragment should carry admitted dependency a"
+  let report ← TheoryFragment.buildReport `F1Admission `b
+  let summary := TheoryFragment.extractionSummaryString `F2AdmissionFragment report
+    (TheoryFragment.buildFragmentSignature `F2AdmissionFragment report)
+  assertFragment (summary.contains "carried admissions: 1: a")
+    "extraction summary should count carried admissions"
+
+run_cmd do
+  let some checked ← liftCoreM <| getCheckedTheory? `F2LevelNormalizerFragment
+    | throwError "missing F2 level-normalizer fragment"
+  assertFragment (checked.lfLevelNormalizerProfiles.any (fun p =>
+      p.solverName == `level_norm_solver))
+    "level-normalizer fragment should revalidate the profile"
+  assertFragment (checked.lfConversionPlugins.any (fun p =>
+      p.name == `level_norm && p.levelNormalizer?.isSome))
+    "level-normalizer fragment should keep executable plugin provenance"
+  let _ ← kernelLFReplayCertificateForTheorem checked `liftedZeroUnivLmax_wf
+
+run_cmd do
+  let some sig ← liftCoreM <| getTheory? `F2ParentFragment
+    | throwError "missing parent-fragment theory"
+  assertFragment sig.parents.isEmpty "extracted parent fragment should be standalone"
+  let some checked ← liftCoreM <| getCheckedTheory? `F2ParentFragment
+    | throwError "missing parent-fragment checked signature"
+  assertFragment (checked.lfSyntaxSorts.any (fun d => d.name == `A))
+    "parent fragment should contain inherited flattened declarations"
 
 end InternalLeanTest.FragmentExtraction

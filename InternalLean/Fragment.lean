@@ -673,6 +673,254 @@ def buildReport (theoryName rootName : Name) : CommandElabM Report := do
     fragmentModelFieldCount := renderableModelFieldCount fragmentChecked fragmentAdmittedNames
     carriedAdmissions := fragmentAdmissions }
 
+/-- Model-section names whose included memberships survive in a source-level fragment. -/
+def carriedSourceModelSectionNames (sig : HLSignature) (c : Closure) : NameSet := Id.run do
+  let mut out : NameSet := {}
+  for m in sig.modelSectionMemberships do
+    if c.includesDeclaration m.declName then
+      out := out.insert m.sectionName.eraseMacroScopes
+  return out
+
+/-- Build the source-level standalone fragment signature from a report closure. -/
+def buildFragmentSignature (fragmentName : Name) (r : Report) : HLSignature :=
+  let c := r.closure
+  let flat := r.flat
+  let sectionNames := carriedSourceModelSectionNames flat c
+  { name := fragmentName.eraseMacroScopes
+    parents := #[]
+    levelParams := flat.levelParams.filter (fun n => c.levelParams.contains n.eraseMacroScopes)
+    syntaxSorts := flat.syntaxSorts.filter (fun d => c.syntaxSorts.contains d.name.eraseMacroScopes)
+    syntaxAbbrevs := flat.syntaxAbbrevs.filter (fun d =>
+      c.syntaxAbbrevs.contains d.name.eraseMacroScopes)
+    syntaxDefs := flat.syntaxDefs.filter (fun d => c.syntaxDefs.contains d.name.eraseMacroScopes)
+    judgmentAbbrevs := flat.judgmentAbbrevs.filter (fun d =>
+      c.judgmentAbbrevs.contains d.name.eraseMacroScopes)
+    syntaxSortRoles := flat.syntaxSortRoles.filter (fun d =>
+      c.syntaxSorts.contains d.sortName.eraseMacroScopes)
+    contextZones := flat.contextZones.filter (fun d =>
+      c.contextZones.contains d.name.eraseMacroScopes)
+    binderClasses := flat.binderClasses.filter (fun d =>
+      c.binderClasses.contains d.name.eraseMacroScopes)
+    judgments := flat.judgments.filter (fun d => c.judgments.contains d.name.eraseMacroScopes)
+    judgmentRoles := flat.judgmentRoles.filter (fun d =>
+      c.judgments.contains d.judgmentName.eraseMacroScopes)
+    rules := flat.rules.filter (fun d => c.rules.contains d.name.eraseMacroScopes)
+    ruleRoles := flat.ruleRoles.filter (fun d => c.rules.contains d.ruleName.eraseMacroScopes)
+    rewriteRelations := flat.rewriteRelations.filter (c.carriesRewriteRelation ·)
+    rewriteSymmetries := flat.rewriteSymmetries.filter (c.carriesRewriteSymmetry ·)
+    rewriteCongruences := flat.rewriteCongruences.filter (c.carriesRewriteCongruence ·)
+    transportRules := flat.transportRules.filter (c.carriesTransportRule ·)
+    transportPositions := flat.transportPositions.filter (c.carriesTransportPosition ·)
+    sideConditionSolvers := flat.sideConditionSolvers.filter (fun d =>
+      c.sideConditionSolvers.contains d.name.eraseMacroScopes)
+    conversionPlugins := flat.conversionPlugins.filter (fun d =>
+      c.conversionPlugins.contains d.name.eraseMacroScopes)
+    levelNormalizerProfiles := flat.levelNormalizerProfiles.filter (fun d =>
+      c.levelNormalizerProfiles.contains d.solverName.eraseMacroScopes)
+    lfOpaqueConsts := flat.lfOpaqueConsts.filter (fun d =>
+      c.lfOpaqueConsts.contains d.name.eraseMacroScopes)
+    modelVisibilities := flat.modelVisibilities.filter (fun d => c.includesDeclaration d.declName)
+    modelSections := flat.modelSections.filter (fun d =>
+      sectionNames.contains d.name.eraseMacroScopes)
+    modelSectionMemberships := flat.modelSectionMemberships.filter (fun d =>
+      c.includesDeclaration d.declName)
+    lfObjectDefs := flat.lfObjectDefs.filter (fun d =>
+      c.lfObjectDefs.contains d.name.eraseMacroScopes)
+    lfJudgmentTheorems := flat.lfJudgmentTheorems.filter (fun d =>
+      c.lfJudgmentTheorems.contains d.name.eraseMacroScopes)
+    macros := #[]
+    roles := #[] }
+
+/-- Whether a source docstring belongs to an item carried by the closure. -/
+def sourceDocCarriedByClosure (c : Closure) (doc : SourceDoc) : Bool :=
+  match doc.role with
+  | .theory => false
+  | _ => c.includesDeclaration doc.sourceName
+
+/-- Copy carried source docstrings from the source theory to the fragment theory. -/
+def registerFragmentSourceDocs (fragmentName : Name) (r : Report) : CoreM Unit := do
+  let docs ← getSourceDocsFor r.theoryName
+  for doc in docs do
+    if sourceDocCarriedByClosure r.closure doc then
+      registerSourceDoc fragmentName doc.role doc.sourceName doc.doc
+
+/-- Construct a synthetic source-anchor reference for a generated fragment declaration. -/
+def fragmentSourceDeclRef (role : SourceDocRole) (sourceName : Name) (rangeStx nameStx : Syntax) :
+    SourceDeclSyntaxRef := {
+  role := role
+  sourceName := sourceName.eraseMacroScopes
+  declStx := rangeStx
+  nameStx := nameStx }
+
+/-- Source-declaration anchors for all anchorable items in a generated fragment. -/
+def fragmentSourceDeclRefs (sig : HLSignature) (rangeStx nameStx : Syntax) :
+    Array SourceDeclSyntaxRef := Id.run do
+  let mut out : Array SourceDeclSyntaxRef := #[]
+  let push (out : Array SourceDeclSyntaxRef) (role : SourceDocRole) (name : Name) :=
+    out.push (fragmentSourceDeclRef role name rangeStx nameStx)
+  for d in sig.syntaxSorts do out := push out .syntaxSort d.name
+  for d in sig.syntaxAbbrevs do out := push out .syntaxAbbrev d.name
+  for d in sig.syntaxDefs do out := push out .syntaxDef d.name
+  for d in sig.judgmentAbbrevs do out := push out .judgmentAbbrev d.name
+  for d in sig.contextZones do out := push out .contextZone d.name
+  for d in sig.binderClasses do out := push out .binderClass d.name
+  for d in sig.judgments do out := push out .judgment d.name
+  for d in sig.rules do out := push out .rule d.name
+  for d in sig.sideConditionSolvers do out := push out .sideConditionSolver d.name
+  for d in sig.conversionPlugins do out := push out .conversionPlugin d.name
+  for d in sig.lfOpaqueConsts do out := push out .lfOpaque d.name
+  for d in sig.lfObjectDefs do out := push out .lfObjectDef d.name
+  for d in sig.lfJudgmentTheorems do out := push out .lfJudgmentTheorem d.name
+  return out
+
+/-- Add synthetic source anchors for a generated fragment's declaration records. -/
+def addFragmentSourceAnchors (sig : HLSignature) (rangeStx nameStx : Syntax) :
+    CommandElabM Unit := do
+  for ref in fragmentSourceDeclRefs sig rangeStx nameStx do
+    addInternalTheoryDeclarationAnchor sig.name ref
+
+/-- Re-home an internal declaration name to the fragment theory. -/
+def rehomeInternalTarget (fragmentName : Name) (localName : Name) : InternalDefTarget := {
+  theoryName := fragmentName.eraseMacroScopes
+  localName := localName.eraseMacroScopes
+  anchorName := fragmentName.eraseMacroScopes ++ localName.eraseMacroScopes }
+
+/-- Checked evidence kind for an extracted LF object definition. -/
+def checkedObjectEvidenceKind (record? : Option InternalDeclarationEvidenceRecord) :
+    InternalDeclarationEvidenceKind :=
+  match record? with
+  | some record => record.kind
+  | none => .checkedObjectDef
+
+/-- Checked evidence kind for an extracted LF judgment theorem. -/
+def checkedTheoremEvidenceKind (record? : Option InternalDeclarationEvidenceRecord) :
+    InternalDeclarationEvidenceKind :=
+  match record? with
+  | some record => record.kind
+  | none => .checkedJudgmentTheorem
+
+/-- Copy one source internal docstring to the fragment, if the source had one. -/
+def copyInternalSourceDoc? (sourceTheory fragmentName localName : Name) :
+    CoreM (Option String) := do
+  let doc? ← findInternalSourceDoc? sourceTheory localName
+  if let some doc := doc? then
+    registerSourceDoc fragmentName .internalDef localName doc
+  return doc?
+
+/-- Add public checked internal-declaration anchors for extracted LF object definitions. -/
+def addFragmentObjectDefAnchors (fragmentName : Name) (r : Report) (rangeStx nameStx : Syntax) :
+    CommandElabM Unit := do
+  for d in (buildFragmentSignature fragmentName r).lfObjectDefs do
+    let record? ← liftCoreM <| findInternalDeclarationEvidence? r.theoryName d.name
+    let target := rehomeInternalTarget fragmentName d.name
+    let sourceDoc? ← liftCoreM <| copyInternalSourceDoc? r.theoryName fragmentName d.name
+    let typeExpr := record?.map (·.typeExpr) |>.getD d.typeExpr
+    let valueExpr? :=
+      match record?.bind (·.valueExpr?) with
+      | some value => some value
+      | none => some d.value
+    let sourceCommand := record?.map (·.sourceCommand) |>.getD "extracted lf_def"
+    addInternalDeclarationAnchor target typeExpr (checkedObjectEvidenceKind record?)
+      (record?.map (·.params) |>.getD #[]) valueExpr? sourceCommand sourceDoc? rangeStx nameStx
+
+/-- Add public checked internal-declaration anchors for extracted LF judgment theorems. -/
+def addFragmentTheoremAnchors (fragmentName : Name) (r : Report) (rangeStx nameStx : Syntax) :
+    CommandElabM Unit := do
+  for d in (buildFragmentSignature fragmentName r).lfJudgmentTheorems do
+    let record? ← liftCoreM <| findInternalDeclarationEvidence? r.theoryName d.name
+    let target := rehomeInternalTarget fragmentName d.name
+    let sourceDoc? ← liftCoreM <| copyInternalSourceDoc? r.theoryName fragmentName d.name
+    let defaultType := mkInternalDefFunctionType d.binders d.judgmentExpr
+    let typeExpr := record?.map (·.typeExpr) |>.getD defaultType
+    let valueExpr? :=
+      match record?.bind (·.valueExpr?) with
+      | some value => some value
+      | none => some d.proof
+    let sourceCommand := record?.map (·.sourceCommand) |>.getD "extracted judgment_theorem"
+    addInternalDeclarationAnchor target typeExpr (checkedTheoremEvidenceKind record?)
+      (record?.map (·.params) |>.getD d.binders) valueExpr? sourceCommand sourceDoc?
+      rangeStx nameStx
+
+/-- Record an admitted LF opaque carried by a full-signature fragment registration. -/
+def registerFragmentLFOpaqueAdmission (fragmentName : Name) (a : InternalAdmission) : CoreM Unit :=
+  modifyEnv fun env => internalAdmissionExt.addEntry env (.admission {
+    theoryName := fragmentName.eraseMacroScopes
+    declName := a.declName.eraseMacroScopes
+    anchorName := fragmentName.eraseMacroScopes ++ a.declName.eraseMacroScopes
+    params := a.params
+    typeExpr := a.typeExpr
+    kind := .lfOpaque })
+
+/-- Add public anchors and admission records for admitted dependencies carried by a fragment. -/
+def addFragmentAdmissionAnchors (fragmentName : Name) (r : Report) (rangeStx nameStx : Syntax) :
+    CommandElabM Unit := do
+  for a in r.carriedAdmissions do
+    match a.kind with
+    | .lfOpaque =>
+        let record? ← liftCoreM <| findInternalDeclarationEvidence? r.theoryName a.declName
+        let target := rehomeInternalTarget fragmentName a.declName
+        let sourceDoc? ← liftCoreM <| copyInternalSourceDoc? r.theoryName fragmentName a.declName
+        liftCoreM <| registerFragmentLFOpaqueAdmission fragmentName a
+        let typeExpr := record?.map (·.typeExpr) |>.getD a.typeExpr
+        let sourceCommand := record?.map (·.sourceCommand) |>.getD "extracted admitted LF opaque"
+        addInternalDeclarationAnchor target typeExpr .admittedLFOpaque
+          (record?.map (·.params) |>.getD a.params) none sourceCommand sourceDoc? rangeStx nameStx
+    | .judgmentTheorem =>
+        let record? ← liftCoreM <| findInternalDeclarationEvidence? r.theoryName a.declName
+        let target := rehomeInternalTarget fragmentName a.declName
+        let sourceDoc? ← liftCoreM <| copyInternalSourceDoc? r.theoryName fragmentName a.declName
+        liftCoreM <| registerAdmittedInternalLFJudgmentTheorem fragmentName target.anchorName
+          target.localName a.params a.typeExpr
+        let typeExpr := record?.map (·.typeExpr) |>.getD
+          (mkInternalDefFunctionType a.params a.typeExpr)
+        let sourceCommand := record?.map (·.sourceCommand) |>.getD
+          "extracted admitted LF judgment theorem"
+        addInternalDeclarationAnchor target typeExpr .admittedJudgmentTheorem
+          (record?.map (·.params) |>.getD a.params) none sourceCommand sourceDoc? rangeStx
+          nameStx
+    | .syntaxDef => pure ()
+
+/-- Add public anchors for all extracted top-level LF/internal declarations. -/
+def addFragmentInternalAnchors (fragmentName : Name) (r : Report) (rangeStx nameStx : Syntax) :
+    CommandElabM Unit := do
+  addFragmentObjectDefAnchors fragmentName r rangeStx nameStx
+  addFragmentTheoremAnchors fragmentName r rangeStx nameStx
+  addFragmentAdmissionAnchors fragmentName r rangeStx nameStx
+
+/-- Compact summary emitted by the state-changing extraction command. -/
+def extractionSummaryString (fragmentName : Name) (r : Report) (sig : HLSignature) : String :=
+  let admissions := r.carriedAdmissions.map (fun a => a.declName.eraseMacroScopes)
+  let admissionText :=
+    if admissions.isEmpty then "none" else
+      s!"{admissions.size}: {String.intercalate ", " (admissions.toList.map toString)}"
+  String.intercalate "\n" [
+    s!"extracted theory fragment {fragmentName.eraseMacroScopes} from \
+      {r.theoryName.eraseMacroScopes}.{r.rootName.eraseMacroScopes}",
+    s!"declarations: {sig.syntaxSorts.size} syntax sort(s), {sig.judgments.size} judgment(s), \
+      {sig.lfOpaqueConsts.size} LF opaque constant(s), {sig.rules.size} rule(s), \
+      {sig.lfObjectDefs.size} LF object definition(s), \
+      {sig.lfJudgmentTheorems.size} LF judgment theorem(s)",
+    s!"model fields: full={r.fullModelFieldCount}, fragment={r.fragmentModelFieldCount}",
+    s!"carried admissions: {admissionText}" ]
+
+/-- Register the computed fragment as an ordinary standalone theory and add generated anchors. -/
+def extractFragment (fragmentName theoryName rootName : Name) (rangeStx nameStx : Syntax) :
+    CommandElabM Unit := do
+  ensureTheoryRegistrationNamesAvailable fragmentName
+  let report ← buildReport theoryName rootName
+  let fragmentSig := buildFragmentSignature fragmentName report
+  liftCoreM <| registerTheoryFull fragmentSig
+  liftCoreM <| registerFragmentSourceDocs fragmentSig.name report
+  addFragmentSourceAnchors fragmentSig rangeStx nameStx
+  let some checkedHL ← liftCoreM <| getCheckedHLSignature? fragmentSig.name
+    | throwError "no checked high-level signature stored for extracted fragment \
+      '{fragmentSig.name}'"
+  addLFQuoteStubsForHLSignatureIfMissing fragmentSig.name checkedHL
+  addTheoryAnchorDeclaration fragmentSig none rangeStx nameStx
+  addFragmentInternalAnchors fragmentSig.name report rangeStx nameStx
+  refreshLFMirrorAfterInternalRegistration fragmentSig.name
+  logInfo m!"{extractionSummaryString fragmentSig.name report fragmentSig}"
+
 /-- Reason for an included declaration, if available. -/
 def Closure.reason (c : Closure) (name : Name) : String :=
   (c.reasons.find? name.eraseMacroScopes).getD "included by dependency closure"
@@ -809,5 +1057,10 @@ end TheoryFragment
 /-- Print the dependency-closure fragment that would be needed for one checked declaration. -/
 elab "#print_theory_fragment " theory:ident root:ident : command => do
   logInfo m!"{← TheoryFragment.reportStringFor theory.getId root.getId}"
+
+/-- Register the dependency-closure fragment for one checked internal declaration. -/
+elab "extract_theory_fragment " fragment:ident " from " theory:ident " for " root:ident :
+    command => do
+  TheoryFragment.extractFragment fragment.getId theory.getId root.getId (← getRef) fragment.raw
 
 end InternalLean
