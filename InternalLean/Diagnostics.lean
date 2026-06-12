@@ -1339,6 +1339,50 @@ elab "#expand_object" theory:ident e:ttExpr : command => do
   let expanded ← liftCoreM <| expandObjectMacrosInExpr flatSig e
   logInfo m!"{expanded}"
 
+/-- Indentation for parent-DAG diagnostics. -/
+def parentDagIndent (depth : Nat) : String :=
+  String.intercalate "" (List.replicate depth "  ")
+
+/-- Format a theory parent path. -/
+def parentDagPathString (path : Array Name) : String :=
+  String.intercalate " -> " (path.toList.map (toString ·.eraseMacroScopes))
+
+/-- Collect parent-DAG lines with an explicit marker for shared ancestors. -/
+partial def collectParentDagLines (theoryName : Name) (path : Array Name) (depth : Nat)
+    (seen : Array (Name × Array Name)) (deduped : NameSet) :
+    CoreM (Array String × Array (Name × Array Name) × NameSet) := do
+  let theoryName := theoryName.eraseMacroScopes
+  let indent := parentDagIndent depth
+  match seen.find? (fun entry => entry.1 == theoryName) with
+  | some old =>
+      let line := s!"{indent}{theoryName} (already included via {parentDagPathString old.2})"
+      pure (#[line], seen, deduped.insert theoryName)
+  | none =>
+      let some sig ← getTheory? theoryName
+        | throwError "unknown type theory '{theoryName}'"
+      let mut lines := #[s!"{indent}{theoryName}"]
+      let mut seen := seen.push (theoryName, path)
+      let mut deduped := deduped
+      for parentName in sig.parents do
+        let parentName := parentName.eraseMacroScopes
+        let (childLines, seen', deduped') ← collectParentDagLines parentName
+          (path.push parentName) (depth + 1) seen deduped
+        lines := lines ++ childLines
+        seen := seen'
+        deduped := deduped'
+      pure (lines, seen, deduped)
+
+/-- Print the parent DAG of a registered type theory, marking shared ancestors. -/
+elab "#print_type_theory_parents" theory:ident : command => do
+  let (lines, _, deduped) ← liftCoreM <| collectParentDagLines theory.getId #[theory.getId] 0 #[] {}
+  let dedupeLine :=
+    if deduped.isEmpty then
+      "deduped shared ancestors: none"
+    else
+      let names := deduped.toList.map (toString ·.eraseMacroScopes)
+      s!"deduped shared ancestors: {String.intercalate ", " names}"
+  logInfo m!"parent DAG for {theory.getId}:\n{String.intercalate "\n" lines.toList}\n{dedupeLine}"
+
 /-- Print the names of registered type theories. -/
 elab "#print_type_theories" : command => do
   let theories ← liftCoreM getTheories

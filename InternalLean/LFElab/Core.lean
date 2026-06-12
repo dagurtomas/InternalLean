@@ -169,106 +169,192 @@ def HLSignature.containsName (sig : HLSignature) (n : Name) : Bool :=
     sig.lfOpaqueConsts.any (fun d => d.name == n) ||
     sig.lfObjectDefs.any (fun d => d.name == n) || sig.lfJudgmentTheorems.any (fun d => d.name == n)
 
-/-- Flatten a signature's parent theories before its own declarations.
+/-- One source declaration contributing to a flattened theory. -/
+structure FlattenContribution where
+  /-- Declaration-local name after macro-scope erasure. -/
+  name : Name
+  /-- Human-readable declaration category. -/
+  kind : String
+  /-- Source theory that directly declared the item. -/
+  sourceTheory : Name
+  /-- One root-to-source parent path witnessing how the item was inherited. -/
+  path : Array Name
+  deriving Inhabited, Repr
 
-This concatenates parent declarations/definitions/theorems into the child signature and keeps the
-child's name. It rejects parent cycles; namespacing and selective imports are intentionally left to
-future extensions. -/
-partial def flattenSignature (sig : HLSignature) (seen : NameSet := {}) : CoreM HLSignature := do
-  if seen.contains sig.name then
-    throwError "cyclic type-theory extension involving '{sig.name}'"
-  let seen := seen.insert sig.name
-  let mut syntaxSorts := #[]
-  let mut syntaxAbbrevs := #[]
-  let mut syntaxDefs := #[]
-  let mut syntaxSortRoles := #[]
-  let mut judgmentAbbrevs := #[]
-  let mut contextZones := #[]
-  let mut binderClasses := #[]
-  let mut judgments := #[]
-  let mut judgmentRoles := #[]
-  let mut rules := #[]
-  let mut ruleRoles := #[]
-  let mut rewriteRelations := #[]
-  let mut rewriteSymmetries := #[]
-  let mut rewriteCongruences := #[]
-  let mut transportRules := #[]
-  let mut transportPositions := #[]
-  let mut sideConditionSolvers := #[]
-  let mut conversionPlugins := #[]
-  let mut levelNormalizerProfiles := #[]
-  let mut lfOpaqueConsts := #[]
-  let mut modelVisibilities := #[]
-  let mut modelSections := #[]
-  let mut modelSectionMemberships := #[]
-  let mut lfObjectDefs := #[]
-  let mut lfJudgmentTheorems := #[]
-  let mut macros := #[]
-  let mut roles := #[]
-  let mut levelParams := #[]
+/-- State for parent-DAG flattening. -/
+structure FlattenState where
+  /-- Source theories already contributed to the flattened signature. -/
+  visited : NameSet := {}
+  /-- Named declarations already contributed, used only for conflict diagnostics. -/
+  contributions : Array FlattenContribution := #[]
+  /-- Accumulated flattened signature. -/
+  flat : HLSignature
+
+/-- Render a parent path for composition diagnostics. -/
+def flattenParentPathString (path : Array Name) : String :=
+  String.intercalate " -> " (path.toList.map (toString ·.eraseMacroScopes))
+
+/-- Empty flattened signature with the requested final name. -/
+def emptyFlattenedSignature (name : Name) : HLSignature := {
+  name := name.eraseMacroScopes
+  parents := #[] }
+
+/-- Append one theory's own direct declarations and metadata to an accumulated flattened result. -/
+def appendDirectSignatureContribution (flat source : HLSignature) : HLSignature := {
+  flat with
+  levelParams := flat.levelParams ++ source.levelParams
+  syntaxSorts := flat.syntaxSorts ++ source.syntaxSorts
+  syntaxAbbrevs := flat.syntaxAbbrevs ++ source.syntaxAbbrevs
+  syntaxDefs := flat.syntaxDefs ++ source.syntaxDefs
+  judgmentAbbrevs := flat.judgmentAbbrevs ++ source.judgmentAbbrevs
+  syntaxSortRoles := flat.syntaxSortRoles ++ source.syntaxSortRoles
+  contextZones := flat.contextZones ++ source.contextZones
+  binderClasses := flat.binderClasses ++ source.binderClasses
+  judgments := flat.judgments ++ source.judgments
+  judgmentRoles := flat.judgmentRoles ++ source.judgmentRoles
+  rules := flat.rules ++ source.rules
+  ruleRoles := flat.ruleRoles ++ source.ruleRoles
+  rewriteRelations := flat.rewriteRelations ++ source.rewriteRelations
+  rewriteSymmetries := flat.rewriteSymmetries ++ source.rewriteSymmetries
+  rewriteCongruences := flat.rewriteCongruences ++ source.rewriteCongruences
+  transportRules := flat.transportRules ++ source.transportRules
+  transportPositions := flat.transportPositions ++ source.transportPositions
+  sideConditionSolvers := flat.sideConditionSolvers ++ source.sideConditionSolvers
+  conversionPlugins := flat.conversionPlugins ++ source.conversionPlugins
+  levelNormalizerProfiles := flat.levelNormalizerProfiles ++ source.levelNormalizerProfiles
+  lfOpaqueConsts := flat.lfOpaqueConsts ++ source.lfOpaqueConsts
+  modelVisibilities := flat.modelVisibilities ++ source.modelVisibilities
+  modelSections := flat.modelSections ++ source.modelSections
+  modelSectionMemberships := flat.modelSectionMemberships ++ source.modelSectionMemberships
+  lfObjectDefs := flat.lfObjectDefs ++ source.lfObjectDefs
+  lfJudgmentTheorems := flat.lfJudgmentTheorems ++ source.lfJudgmentTheorems
+  macros := flat.macros ++ source.macros
+  roles := flat.roles ++ source.roles }
+
+/-- Record one named contribution, rejecting independent declarations with the same local name. -/
+def recordFlattenContribution (rootName sourceName : Name) (path : Array Name)
+    (kind : String) (rawName : Name) (state : FlattenState) : CoreM FlattenState := do
+  let n := rawName.eraseMacroScopes
+  let sourceName := sourceName.eraseMacroScopes
+  let path := path.map Name.eraseMacroScopes
+  let isLevelParam := kind == "universe level parameter"
+  match state.contributions.find? (fun old =>
+      old.name == n && (old.kind == "universe level parameter") == isLevelParam) with
+  | none =>
+      pure { state with
+        contributions := state.contributions.push {
+          name := n
+          kind := kind
+          sourceTheory := sourceName
+          path := path } }
+  | some old =>
+      if old.sourceTheory == sourceName then
+        throwError "duplicate {kind} declaration '{n}' in flattened type theory \
+          '{rootName.eraseMacroScopes}'"
+      else
+        throwError "conflicting inherited declaration '{n}' in type theory \
+          '{rootName.eraseMacroScopes}'\nfrom parent path {flattenParentPathString old.path} and \
+          parent path {flattenParentPathString path}\nexisting declaration is {old.kind} from \
+          '{old.sourceTheory}', new declaration is {kind} from '{sourceName}'"
+
+/-- Record all directly named declarations of one source theory for flattening diagnostics. -/
+def recordDirectSignatureContributions (rootName : Name) (source : HLSignature)
+    (path : Array Name) (state : FlattenState) : CoreM FlattenState := do
+  let mut state := state
+  for u in source.levelParams do
+    state ← recordFlattenContribution rootName source.name path "universe level parameter" u state
+  for d in source.syntaxSorts do
+    state ← recordFlattenContribution rootName source.name path "syntax-sort" d.name state
+  for d in source.syntaxAbbrevs do
+    state ← recordFlattenContribution rootName source.name path "syntax abbreviation" d.name state
+  for d in source.syntaxDefs do
+    state ← recordFlattenContribution rootName source.name path "syntax definition" d.name state
+  for d in source.judgmentAbbrevs do
+    state ← recordFlattenContribution rootName source.name path "judgment abbreviation" d.name state
+  for d in source.contextZones do
+    state ← recordFlattenContribution rootName source.name path "context-zone" d.name state
+  for d in source.binderClasses do
+    state ← recordFlattenContribution rootName source.name path "binder class" d.name state
+  for d in source.judgments do
+    state ← recordFlattenContribution rootName source.name path "judgment" d.name state
+  for d in source.rules do
+    state ← recordFlattenContribution rootName source.name path "rule" d.name state
+  for d in source.sideConditionSolvers do
+    state ← recordFlattenContribution rootName source.name path "side-condition solver" d.name state
+  for d in source.conversionPlugins do
+    state ← recordFlattenContribution rootName source.name path "conversion plugin" d.name state
+  for d in source.lfOpaqueConsts do
+    state ← recordFlattenContribution rootName source.name path "LF opaque constant" d.name state
+  for d in source.lfObjectDefs do
+    state ← recordFlattenContribution rootName source.name path "LF object definition" d.name state
+  for d in source.lfJudgmentTheorems do
+    state ← recordFlattenContribution rootName source.name path "LF judgment theorem" d.name state
+  pure state
+
+/-- Visit a theory in deterministic left-to-right parent post-order. -/
+partial def flattenSignatureVisit (rootName : Name) (sig : HLSignature) (path : Array Name)
+    (active : NameSet) (state : FlattenState) : CoreM FlattenState := do
+  let sigName := sig.name.eraseMacroScopes
+  if active.contains sigName then
+    throwError "cyclic type-theory extension involving '{sigName}'"
+  if state.visited.contains sigName then
+    return state
+  let active := active.insert sigName
+  let mut state := state
   for parentName in sig.parents do
+    let parentName := parentName.eraseMacroScopes
     let some parent ← getTheory? parentName
-      | throwError "unknown parent type theory '{parentName}' for '{sig.name}'"
-    let parentFlat ← flattenSignature parent seen
-    syntaxSorts := syntaxSorts ++ parentFlat.syntaxSorts
-    syntaxAbbrevs := syntaxAbbrevs ++ parentFlat.syntaxAbbrevs
-    syntaxDefs := syntaxDefs ++ parentFlat.syntaxDefs
-    syntaxSortRoles := syntaxSortRoles ++ parentFlat.syntaxSortRoles
-    judgmentAbbrevs := judgmentAbbrevs ++ parentFlat.judgmentAbbrevs
-    contextZones := contextZones ++ parentFlat.contextZones
-    binderClasses := binderClasses ++ parentFlat.binderClasses
-    judgments := judgments ++ parentFlat.judgments
-    judgmentRoles := judgmentRoles ++ parentFlat.judgmentRoles
-    rules := rules ++ parentFlat.rules
-    ruleRoles := ruleRoles ++ parentFlat.ruleRoles
-    rewriteRelations := rewriteRelations ++ parentFlat.rewriteRelations
-    rewriteSymmetries := rewriteSymmetries ++ parentFlat.rewriteSymmetries
-    rewriteCongruences := rewriteCongruences ++ parentFlat.rewriteCongruences
-    transportRules := transportRules ++ parentFlat.transportRules
-    transportPositions := transportPositions ++ parentFlat.transportPositions
-    sideConditionSolvers := sideConditionSolvers ++ parentFlat.sideConditionSolvers
-    conversionPlugins := conversionPlugins ++ parentFlat.conversionPlugins
-    levelNormalizerProfiles := levelNormalizerProfiles ++ parentFlat.levelNormalizerProfiles
-    lfOpaqueConsts := lfOpaqueConsts ++ parentFlat.lfOpaqueConsts
-    modelVisibilities := modelVisibilities ++ parentFlat.modelVisibilities
-    modelSections := modelSections ++ parentFlat.modelSections
-    modelSectionMemberships := modelSectionMemberships ++ parentFlat.modelSectionMemberships
-    lfObjectDefs := lfObjectDefs ++ parentFlat.lfObjectDefs
-    lfJudgmentTheorems := lfJudgmentTheorems ++ parentFlat.lfJudgmentTheorems
-    macros := macros ++ parentFlat.macros
-    roles := roles ++ parentFlat.roles
-    levelParams := levelParams ++ parentFlat.levelParams
-  return {
-    name := sig.name
-    parents := #[]
-    levelParams := levelParams ++ sig.levelParams
-    syntaxSorts := syntaxSorts ++ sig.syntaxSorts
-    syntaxAbbrevs := syntaxAbbrevs ++ sig.syntaxAbbrevs
-    syntaxDefs := syntaxDefs ++ sig.syntaxDefs
-    judgmentAbbrevs := judgmentAbbrevs ++ sig.judgmentAbbrevs
-    syntaxSortRoles := syntaxSortRoles ++ sig.syntaxSortRoles
-    contextZones := contextZones ++ sig.contextZones
-    binderClasses := binderClasses ++ sig.binderClasses
-    judgments := judgments ++ sig.judgments
-    judgmentRoles := judgmentRoles ++ sig.judgmentRoles
-    rules := rules ++ sig.rules
-    ruleRoles := ruleRoles ++ sig.ruleRoles
-    rewriteRelations := rewriteRelations ++ sig.rewriteRelations
-    rewriteSymmetries := rewriteSymmetries ++ sig.rewriteSymmetries
-    rewriteCongruences := rewriteCongruences ++ sig.rewriteCongruences
-    transportRules := transportRules ++ sig.transportRules
-    transportPositions := transportPositions ++ sig.transportPositions
-    sideConditionSolvers := sideConditionSolvers ++ sig.sideConditionSolvers
-    conversionPlugins := conversionPlugins ++ sig.conversionPlugins
-    levelNormalizerProfiles := levelNormalizerProfiles ++ sig.levelNormalizerProfiles
-    lfOpaqueConsts := lfOpaqueConsts ++ sig.lfOpaqueConsts
-    modelVisibilities := modelVisibilities ++ sig.modelVisibilities
-    modelSections := modelSections ++ sig.modelSections
-    modelSectionMemberships := modelSectionMemberships ++ sig.modelSectionMemberships
-    lfObjectDefs := lfObjectDefs ++ sig.lfObjectDefs
-    lfJudgmentTheorems := lfJudgmentTheorems ++ sig.lfJudgmentTheorems
-    macros := macros ++ sig.macros
-    roles := roles ++ sig.roles }
+      | throwError "unknown parent type theory '{parentName}' for '{rootName.eraseMacroScopes}'"
+    state ← flattenSignatureVisit rootName parent (path.push parentName) active state
+  state ← recordDirectSignatureContributions rootName sig path state
+  pure {
+    state with
+    visited := state.visited.insert sigName
+    flat := appendDirectSignatureContribution state.flat sig }
+
+/-- Flatten a signature's parent DAG before its own declarations.
+
+Each source theory contributes at most once, so ordinary diamonds inherit a shared ancestor only
+once. Independent declarations with the same local name remain conflicts. -/
+partial def flattenSignature (sig : HLSignature) (seen : NameSet := {}) : CoreM HLSignature := do
+  let initial : FlattenState := {
+    visited := seen
+    flat := emptyFlattenedSignature sig.name }
+  let state ← flattenSignatureVisit sig.name sig #[sig.name.eraseMacroScopes] {} initial
+  pure state.flat
+
+/-- Visit the parent DAG and report whether a source theory is reachable through two paths. -/
+partial def parentDagSharedVisit (rootName : Name) (sig : HLSignature) (active visited : NameSet) :
+    CoreM (Bool × NameSet) := do
+  let sigName := sig.name.eraseMacroScopes
+  if active.contains sigName then
+    throwError "cyclic type-theory extension involving '{sigName}'"
+  if visited.contains sigName then
+    return (true, visited)
+  let active := active.insert sigName
+  let mut visited := visited.insert sigName
+  let mut shared := false
+  for parentName in sig.parents do
+    let parentName := parentName.eraseMacroScopes
+    let some parent ← getTheory? parentName
+      | throwError "unknown parent type theory '{parentName}' for '{rootName.eraseMacroScopes}'"
+    let (parentShared, visited') ← parentDagSharedVisit rootName parent active visited
+    shared := shared || parentShared
+    visited := visited'
+  return (shared, visited)
+
+/-- Whether a signature's parent DAG has a shared ancestor requiring full-path registration. -/
+def parentDagHasSharedAncestor (sig : HLSignature) : CoreM Bool := do
+  let mut visited : NameSet := {}
+  let mut shared := false
+  for parentName in sig.parents do
+    let parentName := parentName.eraseMacroScopes
+    let some parent ← getTheory? parentName
+      | throwError "unknown parent type theory '{parentName}' for '{sig.name.eraseMacroScopes}'"
+    let (parentShared, visited') ← parentDagSharedVisit sig.name parent {} visited
+    shared := shared || parentShared
+    visited := visited'
+  pure shared
 
 /-- Check that model-interface visibility annotations are unique and refer to known declarations. -/
 def checkModelVisibilityMetadataInSignature (sig : HLSignature) : CoreM Unit := do

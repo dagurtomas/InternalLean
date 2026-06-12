@@ -46,6 +46,7 @@ import InternalLeanTest.SyntacticModelInstanceTest
 import InternalLeanTest.SyntaxAbbrevPiTest
 import InternalLeanTest.SyntaxDefTest
 import InternalLeanTest.TheoryAnchorTest
+import InternalLeanTest.TheoryMixinCompositionTest
 import InternalLeanTest.TinyNatModel
 import InternalLeanTest.TransportPlanTest
 import InternalLeanTest.UniverseHierarchyEncodingTest

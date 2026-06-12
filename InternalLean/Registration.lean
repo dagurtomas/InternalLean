@@ -1218,7 +1218,7 @@ def checkedParentBaseForSignature (sig : HLSignature) (flatSourceBase : HLSignat
   pure checked
 
 /-- Register a theory by checking its whole flattened signature. -/
-def registerTheoryFull (sig : HLSignature) : CoreM Unit := do
+def registerTheoryFull (sig : HLSignature) (strategy? : Option String := none) : CoreM Unit := do
   let headSig ← flattenSignature sig
   let sig ← elaborateImplicitAppsInSignatureWithEnv headSig sig
   let checked ← checkSignatureForRegistration sig
@@ -1232,7 +1232,7 @@ def registerTheoryFull (sig : HLSignature) : CoreM Unit := do
   recordInternalRegistrationProfile {
     theoryName := sig.name.eraseMacroScopes
     declName := `declare_type_theory
-    strategy := "full declare_type_theory (streaming artifacts)"
+    strategy := strategy?.getD "full declare_type_theory (streaming artifacts)"
     priorObjectDefs := 0
     priorJudgmentTheorems := 0
     recheckedObjectDefs := 0
@@ -1289,6 +1289,8 @@ def registerTheory (sig : HLSignature) : CoreM Unit := do
   let block := signatureOwnBlock sig
   if sig.parents.isEmpty || !(sig.macros.isEmpty && sig.roles.isEmpty) then
     registerTheoryFull sig
+  else if (← parentDagHasSharedAncestor sig) then
+    registerTheoryFull sig <| some "full fallback declare_type_theory: shared parent ancestor"
   else
     match unsupportedIncrementalTheoryBlockReason? block with
     | none => registerTheoryIncrementalFromParents sig block
