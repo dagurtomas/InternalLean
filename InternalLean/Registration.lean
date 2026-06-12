@@ -26,6 +26,8 @@ register_option internalLean.profileInternalDef : Bool := {
     are checked"
 }
 
+initialize registerTraceClass `InternalLean.quoteStubs
+
 /-- Count checked LF metadata declarations represented in a checked signature. -/
 def checkedLFMetadataDeclCount (checked : CheckedSignature) : Nat :=
   checked.lfSyntaxSorts.size + checked.lfSyntaxAbbrevs.size + checked.lfSyntaxDefs.size +
@@ -746,6 +748,133 @@ def lfQuoteParamsOfRule (r : RuleDecl) : Array HLBinding :=
   r.params ++ r.premises.map fun p =>
     ({ name := p.name, typeExpr := p.judgmentExpr, visibility := .explicit } : HLBinding)
 
+/-- One pending generated quoted-LF frontend stub. -/
+structure LFQuoteStubRequest where
+  /-- Source LF declaration name in the owning type theory. -/
+  sourceName : Name
+  /-- Source telescope exposed by the generated Lean stub. -/
+  params : Array HLBinding := #[]
+  /-- Optional source result type/judgment for indexed stubs. -/
+  resultType? : Option ObjExpr := none
+  deriving Inhabited, Repr
+
+/-- Whether an LF expression mentions a pending source declaration whose quote stub is missing. -/
+partial def lfQuoteExprHasMissingPendingStub (env : Environment) (theoryName : Name)
+    (pendingNames locals : NameSet) : ObjExpr → Bool
+  | .ident n =>
+      let n := n.eraseMacroScopes
+      !locals.contains n && pendingNames.contains n &&
+        !env.contains (lfQuoteDeclName theoryName n)
+  | .app f a =>
+      lfQuoteExprHasMissingPendingStub env theoryName pendingNames locals f ||
+        lfQuoteExprHasMissingPendingStub env theoryName pendingNames locals a
+  | .arrow binder? A B | .funArrow binder? A B | .sigma binder? A B =>
+      let bodyLocals :=
+        match binder? with
+        | some name => locals.insert name.eraseMacroScopes
+        | none => locals
+      lfQuoteExprHasMissingPendingStub env theoryName pendingNames locals A ||
+        lfQuoteExprHasMissingPendingStub env theoryName pendingNames bodyLocals B
+  | .pair a b | .jeq a b =>
+      lfQuoteExprHasMissingPendingStub env theoryName pendingNames locals a ||
+        lfQuoteExprHasMissingPendingStub env theoryName pendingNames locals b
+  | .fst e | .snd e =>
+      lfQuoteExprHasMissingPendingStub env theoryName pendingNames locals e
+  | .lam names body =>
+      let locals := names.foldl (fun locals n => locals.insert n.eraseMacroScopes) locals
+      lfQuoteExprHasMissingPendingStub env theoryName pendingNames locals body
+  | .sort | .univ _ => false
+
+/-- Whether a request is ready for the existing quote-stub builder in the current environment.
+
+The readiness test only waits for declarations from the same registration unit whose stubs have not
+been emitted yet. It does not relax or duplicate `lfQuoteSupportsIndexedQuoteType`; unsupported
+index shapes still flow through the existing marker fallbacks. -/
+def lfQuoteStubRequestReady (env : Environment) (theoryName : Name) (pendingNames : NameSet)
+    (req : LFQuoteStubRequest) : Bool :=
+  let rec go (i : Nat) (locals : NameSet) : Bool :=
+    if h : i < req.params.size then
+      let p := req.params[i]
+      if lfQuoteExprHasMissingPendingStub env theoryName pendingNames locals p.typeExpr then
+        false
+      else
+        go (i + 1) (locals.insert p.name.eraseMacroScopes)
+    else
+      match req.resultType? with
+      | none => true
+      | some resultType =>
+          !lfQuoteExprHasMissingPendingStub env theoryName pendingNames locals resultType
+  go 0 {}
+
+/-- Names still pending in one staged quote-stub emission unit. -/
+def lfQuotePendingSourceNames (pending : Array LFQuoteStubRequest) : NameSet :=
+  pending.foldl (fun names req => names.insert req.sourceName.eraseMacroScopes) {}
+
+/-- Requests for all stubs represented by a checked high-level signature, in legacy category
+order. -/
+def lfQuoteStubRequestsOfHLSignature (sig : HLSignature) : Array LFQuoteStubRequest := Id.run do
+  let mut out := #[]
+  for d in sig.syntaxSorts do
+    out := out.push { sourceName := d.name, params := d.params }
+  for d in sig.syntaxAbbrevs do
+    out := out.push { sourceName := d.name, params := d.params }
+  for d in sig.syntaxDefs do
+    out := out.push { sourceName := d.name, params := d.params }
+  for d in sig.judgmentAbbrevs do
+    out := out.push { sourceName := d.name, params := d.params }
+  for d in sig.lfOpaqueConsts do
+    out := out.push {
+      sourceName := d.name
+      params := lfQuoteParamsOfLFOpaqueConst d
+      resultType? := d.typeExpr? }
+  for d in sig.judgments do
+    out := out.push { sourceName := d.name, params := d.params }
+  for d in sig.rules do
+    out := out.push {
+      sourceName := d.name
+      params := lfQuoteParamsOfRule d
+      resultType? := some d.conclusionExpr }
+  for d in sig.lfObjectDefs do
+    out := out.push { sourceName := d.name, resultType? := some d.typeExpr }
+  for d in sig.lfJudgmentTheorems do
+    out := out.push {
+      sourceName := d.name
+      params := d.binders
+      resultType? := some d.judgmentExpr }
+  return out
+
+/-- Requests for all stubs introduced by one theory block, in legacy category order. -/
+def lfQuoteStubRequestsOfTheoryBlock (block : HLTheoryBlock) : Array LFQuoteStubRequest := Id.run do
+  let mut out := #[]
+  for d in block.syntaxSorts do
+    out := out.push { sourceName := d.name, params := d.params }
+  for d in block.syntaxAbbrevs do
+    out := out.push { sourceName := d.name, params := d.params }
+  for d in block.syntaxDefs do
+    out := out.push { sourceName := d.name, params := d.params }
+  for d in block.judgmentAbbrevs do
+    out := out.push { sourceName := d.name, params := d.params }
+  for d in block.lfOpaqueConsts do
+    out := out.push {
+      sourceName := d.name
+      params := lfQuoteParamsOfLFOpaqueConst d
+      resultType? := d.typeExpr? }
+  for d in block.judgments do
+    out := out.push { sourceName := d.name, params := d.params }
+  for d in block.rules do
+    out := out.push {
+      sourceName := d.name
+      params := lfQuoteParamsOfRule d
+      resultType? := some d.conclusionExpr }
+  for d in block.lfObjectDefs do
+    out := out.push { sourceName := d.name, resultType? := some d.typeExpr }
+  for d in block.lfJudgmentTheorems do
+    out := out.push {
+      sourceName := d.name
+      params := d.binders
+      resultType? := some d.judgmentExpr }
+  return out
+
 /-- Return whether a name can be registered as a namespace prefix. -/
 def lfQuoteIsNamespaceName : Name → Bool
   | .str .anonymous _ => true
@@ -835,6 +964,14 @@ def lfQuoteStubDocString (theoryName sourceName : Name) (params : Array HLBindin
     "This Lean declaration exists only for term elaboration and editor navigation. The \
       reflected expression is still checked by InternalLean's LF checker." ]
 
+/-- Add documentation and source ranges for one Lean-visible generated quote stub. -/
+def addLFQuoteStubDeclarationMetadata (theoryName sourceName : Name) (params : Array HLBinding)
+    (resultType? : Option ObjExpr := none) : CommandElabM Unit := do
+  let declName := lfQuoteDeclName theoryName sourceName
+  addDocStringCore declName (lfQuoteStubDocString theoryName sourceName params resultType?)
+  liftCoreM <| addDeclarationRangesFromInternalSourceAnchorIfSameModule declName theoryName
+    sourceName
+
 /-- Add one Lean-visible generated quote stub for an LF source declaration. -/
 def addLFQuoteStubDeclaration (theoryName sourceName : Name) (params : Array HLBinding)
     (resultType? : Option ObjExpr := none) : CommandElabM Unit := do
@@ -844,12 +981,19 @@ def addLFQuoteStubDeclaration (theoryName sourceName : Name) (params : Array HLB
       let decl ← mkLFQuoteStubDeclaration env theoryName sourceName params resultType?
       addAndCompile decl
   catch _ =>
+    trace[InternalLean.quoteStubs]
+      "precise quote-stub generation failed for '{theoryName}.{sourceName}'; emitting marker"
     let decl ← liftCoreM <| mkLFQuoteUntypedStubDeclaration env theoryName sourceName params
     liftCoreM <| addAndCompile decl
-  let declName := lfQuoteDeclName theoryName sourceName
-  addDocStringCore declName (lfQuoteStubDocString theoryName sourceName params resultType?)
-  liftCoreM <| addDeclarationRangesFromInternalSourceAnchorIfSameModule declName theoryName
-    sourceName
+  addLFQuoteStubDeclarationMetadata theoryName sourceName params resultType?
+
+/-- Add one Lean-visible generated quote stub as an unindexed marker. -/
+def addLFQuoteUntypedStubDeclaration (theoryName sourceName : Name) (params : Array HLBinding)
+    (resultType? : Option ObjExpr := none) : CommandElabM Unit := do
+  let env ← getEnv
+  let decl ← liftCoreM <| mkLFQuoteUntypedStubDeclaration env theoryName sourceName params
+  liftCoreM <| addAndCompile decl
+  addLFQuoteStubDeclarationMetadata theoryName sourceName params resultType?
 
 /-- Add one generated quote stub unless the target Lean stub name already exists. -/
 def addLFQuoteStubDeclarationIfMissing (theoryName sourceName : Name)
@@ -857,51 +1001,57 @@ def addLFQuoteStubDeclarationIfMissing (theoryName sourceName : Name)
   unless (← getEnv).contains (lfQuoteDeclName theoryName sourceName) do
     addLFQuoteStubDeclaration theoryName sourceName params resultType?
 
+/-- Add one staged quote-stub request. -/
+def addLFQuoteStubRequest (theoryName : Name) (req : LFQuoteStubRequest) : CommandElabM Unit :=
+  addLFQuoteStubDeclaration theoryName req.sourceName req.params req.resultType?
+
+/-- Add one staged quote-stub request as a conservative marker. -/
+def addLFQuoteUntypedStubRequest (theoryName : Name) (req : LFQuoteStubRequest) :
+    CommandElabM Unit :=
+  addLFQuoteUntypedStubDeclaration theoryName req.sourceName req.params req.resultType?
+
+/-- Emit a batch of quote stubs after waiting for same-batch dependencies to become available. -/
+partial def addLFQuoteStubsStaged (theoryName : Name) (requests : Array LFQuoteStubRequest) :
+    CommandElabM Unit := do
+  let rec loop (pending : Array LFQuoteStubRequest) (fuel : Nat) : CommandElabM Unit := do
+    if pending.isEmpty then
+      return
+    match fuel with
+    | 0 =>
+        throwError "internal error: quoted-LF frontend stub dependency staging for type theory \
+          '{theoryName}' exceeded {requests.size + 1} pass(es)"
+    | fuel + 1 =>
+        let pendingNames := lfQuotePendingSourceNames pending
+        let mut rest := #[]
+        let mut emittedAny := false
+        for req in pending do
+          let env ← getEnv
+          if lfQuoteStubRequestReady env theoryName pendingNames req then
+            addLFQuoteStubRequest theoryName req
+            emittedAny := true
+          else
+            rest := rest.push req
+        if rest.isEmpty then
+          return
+        else if emittedAny then
+          loop rest fuel
+        else
+          for req in rest do
+            addLFQuoteUntypedStubRequest theoryName req
+  loop requests (requests.size + 1)
+
 /-- Add generated quote stubs for all term/proof heads in a checked high-level signature. -/
 def addLFQuoteStubsForHLSignatureIfMissing (theoryName : Name) (sig : HLSignature) :
     CommandElabM Unit := do
-  for d in sig.syntaxSorts do
-    addLFQuoteStubDeclarationIfMissing theoryName d.name d.params
-  for d in sig.syntaxAbbrevs do
-    addLFQuoteStubDeclarationIfMissing theoryName d.name d.params
-  for d in sig.syntaxDefs do
-    addLFQuoteStubDeclarationIfMissing theoryName d.name d.params
-  for d in sig.judgmentAbbrevs do
-    addLFQuoteStubDeclarationIfMissing theoryName d.name d.params
-  for d in sig.lfOpaqueConsts do
-    addLFQuoteStubDeclarationIfMissing theoryName d.name (lfQuoteParamsOfLFOpaqueConst d)
-      d.typeExpr?
-  for d in sig.judgments do
-    addLFQuoteStubDeclarationIfMissing theoryName d.name d.params
-  for d in sig.rules do
-    addLFQuoteStubDeclarationIfMissing theoryName d.name (lfQuoteParamsOfRule d)
-      (some d.conclusionExpr)
-  for d in sig.lfObjectDefs do
-    addLFQuoteStubDeclarationIfMissing theoryName d.name #[] (some d.typeExpr)
-  for d in sig.lfJudgmentTheorems do
-    addLFQuoteStubDeclarationIfMissing theoryName d.name d.binders (some d.judgmentExpr)
+  let env ← getEnv
+  let requests := (lfQuoteStubRequestsOfHLSignature sig).filter fun req =>
+    !env.contains (lfQuoteDeclName theoryName req.sourceName)
+  addLFQuoteStubsStaged theoryName requests
 
 /-- Add generated quote stubs for all term/proof heads introduced by one theory block. -/
 def addLFQuoteStubsForTheoryBlock (theoryName : Name) (block : HLTheoryBlock) :
     CommandElabM Unit := do
-  for d in block.syntaxSorts do
-    addLFQuoteStubDeclaration theoryName d.name d.params
-  for d in block.syntaxAbbrevs do
-    addLFQuoteStubDeclaration theoryName d.name d.params
-  for d in block.syntaxDefs do
-    addLFQuoteStubDeclaration theoryName d.name d.params
-  for d in block.judgmentAbbrevs do
-    addLFQuoteStubDeclaration theoryName d.name d.params
-  for d in block.lfOpaqueConsts do
-    addLFQuoteStubDeclaration theoryName d.name (lfQuoteParamsOfLFOpaqueConst d) d.typeExpr?
-  for d in block.judgments do
-    addLFQuoteStubDeclaration theoryName d.name d.params
-  for d in block.rules do
-    addLFQuoteStubDeclaration theoryName d.name (lfQuoteParamsOfRule d) (some d.conclusionExpr)
-  for d in block.lfObjectDefs do
-    addLFQuoteStubDeclaration theoryName d.name #[] (some d.typeExpr)
-  for d in block.lfJudgmentTheorems do
-    addLFQuoteStubDeclaration theoryName d.name d.binders (some d.judgmentExpr)
+  addLFQuoteStubsStaged theoryName (lfQuoteStubRequestsOfTheoryBlock block)
 
 /-- Resolved target information for a top-level `internal def`. -/
 structure InternalDefTarget where
@@ -916,7 +1066,10 @@ structure InternalDefTarget where
 /-- Add a generated quote stub for a top-level internal declaration. -/
 def addInternalDeclarationQuoteStub (target : InternalDefTarget) (params : Array HLBinding)
     (resultType : ObjExpr) : CommandElabM Unit := do
-  addLFQuoteStubDeclaration target.theoryName target.localName params (some resultType)
+  addLFQuoteStubsStaged target.theoryName #[{
+    sourceName := target.localName
+    params := params
+    resultType? := some resultType }]
 
 /-- Return true when a parsed identifier is syntactically qualified. -/
 def isQualifiedIdentName (n : Name) : Bool :=

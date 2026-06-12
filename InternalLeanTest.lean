@@ -38,6 +38,7 @@ import InternalLeanTest.NativeTacticModeTest
 import InternalLeanTest.NavigationTest
 import InternalLeanTest.ObjectNotationTest
 import InternalLeanTest.QuotedFrontendWinsTest
+import InternalLeanTest.QuotedStubDependencyOrderTest
 import InternalLeanTest.RawConversionCaptureTest
 import InternalLeanTest.ReservedNamesTest
 import InternalLeanTest.RawConversionTest
