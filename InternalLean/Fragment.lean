@@ -8,11 +8,11 @@ module
 public meta import InternalLean.ModelInterface
 
 /-!
-# Theory fragment dependency reports
+# Theory fragment extraction
 
-This module implements the report-only first phase of theory-fragment extraction.  The closure is
-computed from checked LF replay artifacts for a flattened theory; no generated fragment theory is
-registered in this phase.
+This module computes dependency-closure reports for checked internal declarations, registers
+ordinary standalone fragment theories from those closures, and generates projection-only model
+restrictions from source-theory models to fragment models.
 -/
 
 @[expose] public meta section
@@ -1052,6 +1052,95 @@ def reportString (r : Report) : String :=
 def reportStringFor (theoryName rootName : Name) : CommandElabM String := do
   return reportString (← buildReport theoryName rootName)
 
+/-- Default generated model-interface structure name used by fragment restriction commands. -/
+def defaultModelStructureName : Name := `Model
+
+/-- Reject generated restriction commands under a non-root namespace. -/
+def requireRootNamespaceForRestriction (commandName : String) : CommandElabM Unit := do
+  let ns ← getCurrNamespace
+  unless ns == .anonymous do
+    throwError "{commandName} must be run at the root namespace; current namespace is '{ns}'. \
+      Close the namespace before generating model restrictions."
+
+/-- Check that the default model interface has been generated for a theory. -/
+def ensureDefaultModelInterfaceExists (theoryName : Name) : CommandElabM Unit := do
+  let fullName := theoryName.eraseMacroScopes ++ defaultModelStructureName
+  unless (← getEnv).contains fullName do
+    throwError "generated model interface '{fullName}' was not found; run \
+      `generate_model_interface {theoryName.eraseMacroScopes} as Model` first"
+
+/-- Renderable field obligations for a theory's default generated model interface. -/
+def defaultModelFieldObligations (theoryName : Name) : CommandElabM
+    (Array LeanTypeModelGeneration.LFModelObligation) := do
+  let some checked ← liftCoreM <| getCheckedTheory? theoryName
+    | throwError "no checked artifact stored for type theory '{theoryName}'"
+  ensureDefaultModelInterfaceExists theoryName
+  let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents theoryName
+  let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  let obs ← LeanTypeModelGeneration.validateLFModelObligations checked admittedNames
+  return obs.filter fun o => o.generatedRole == .field && o.renderable
+
+/-- Extract generated field names from already validated field obligations. -/
+def modelFieldNames (theoryName : Name)
+    (fields : Array LeanTypeModelGeneration.LFModelObligation) : CommandElabM (Array Name) := do
+  fields.mapM fun o => do
+    match o.generatedName? with
+    | some n => pure n.eraseMacroScopes
+    | none =>
+        throwError "model field obligation '{o.name}' for type theory '{theoryName}' has no \
+          generated field name"
+
+/-- Ensure every target fragment field can be projected from the source model. -/
+def checkRestrictionFields (sourceTheory fragmentTheory : Name) (sourceFields targetFields :
+    Array LeanTypeModelGeneration.LFModelObligation) : CommandElabM (Array Name) := do
+  let sourceFieldNames ← modelFieldNames sourceTheory sourceFields
+  let sourceFieldSet : NameSet :=
+    sourceFieldNames.foldl (fun s n => s.insert n.eraseMacroScopes) {}
+  let targetFieldNames ← modelFieldNames fragmentTheory targetFields
+  for field in targetFieldNames do
+    unless sourceFieldSet.contains field.eraseMacroScopes do
+      throwError "cannot generate model restriction from '{sourceTheory.eraseMacroScopes}' to \
+        '{fragmentTheory.eraseMacroScopes}': fragment model field '{field.eraseMacroScopes}' has \
+        no matching source model field in '{sourceTheory.eraseMacroScopes}.Model'"
+  return targetFieldNames
+
+/-- Parse a generated command string with an actionable diagnostic. -/
+def parseGeneratedRestrictionCommand (source : String) : CommandElabM Syntax := do
+  match Lean.Parser.runParserCategory (← getEnv) `command source with
+  | .ok stx => pure stx
+  | .error err =>
+      throwError "failed to parse generated model restriction command:\n{err}\n\
+        generated command:\n{source}"
+
+/-- Source string for a projection-only model restriction definition. -/
+def modelRestrictionCommandSource (sourceTheory fragmentTheory restrictionName : Name)
+    (fieldNames : Array Name) : String :=
+  let sourceModel := sourceTheory.eraseMacroScopes ++ defaultModelStructureName
+  let fragmentModel := fragmentTheory.eraseMacroScopes ++ defaultModelStructureName
+  let header := String.intercalate "\n" [
+    s!"/-- Restrict a model of `{sourceTheory.eraseMacroScopes}` to extracted fragment \
+      `{fragmentTheory.eraseMacroScopes}` by field projection. -/",
+    s!"def {restrictionName.eraseMacroScopes} (M : {sourceModel}) : {fragmentModel}"]
+  if fieldNames.isEmpty then
+    header ++ " := {}\n"
+  else
+    let fieldLines := fieldNames.map fun n => s!"  {n.eraseMacroScopes} := M.{n.eraseMacroScopes}"
+    header ++ " where\n" ++ String.intercalate "\n" fieldLines.toList ++ "\n"
+
+/-- Generate a projection-only restriction from a full model to a fragment model. -/
+def generateModelRestriction (sourceTheory fragmentTheory restrictionName : Name) :
+    CommandElabM Unit := do
+  requireRootNamespaceForRestriction "generate_model_restriction"
+  if (← getEnv).contains restrictionName.eraseMacroScopes then
+    throwError "cannot generate model restriction '{restrictionName.eraseMacroScopes}': a Lean \
+      declaration with that name already exists"
+  let sourceFields ← defaultModelFieldObligations sourceTheory
+  let targetFields ← defaultModelFieldObligations fragmentTheory
+  let fieldNames ← checkRestrictionFields sourceTheory fragmentTheory sourceFields targetFields
+  let cmdSource := modelRestrictionCommandSource sourceTheory fragmentTheory restrictionName
+    fieldNames
+  elabCommand (← parseGeneratedRestrictionCommand cmdSource)
+
 end TheoryFragment
 
 /-- Print the dependency-closure fragment that would be needed for one checked declaration. -/
@@ -1062,5 +1151,10 @@ elab "#print_theory_fragment " theory:ident root:ident : command => do
 elab "extract_theory_fragment " fragment:ident " from " theory:ident " for " root:ident :
     command => do
   TheoryFragment.extractFragment fragment.getId theory.getId root.getId (← getRef) fragment.raw
+
+/-- Generate a projection-only restriction from a model of a source theory to a fragment model. -/
+elab "generate_model_restriction " source:ident " to " fragment:ident " as " restriction:ident :
+    command => do
+  TheoryFragment.generateModelRestriction source.getId fragment.getId restriction.getId
 
 end InternalLean

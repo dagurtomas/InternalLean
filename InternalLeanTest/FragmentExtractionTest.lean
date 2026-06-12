@@ -81,6 +81,41 @@ internal def b depends on admitted a -/
 extract_theory_fragment F2LevelNormalizerFragment from UniverseHierarchy for liftedZeroUnivLmax_wf
 extract_theory_fragment F2ParentFragment from F2ParentChild for good_a_thm
 
+generate_model_interface F2UniverseFragment as Model
+generate_syntactic_model_instance F2UniverseFragment as syntacticModel for Model
+generate_model_restriction UniverseHierarchy to F2UniverseFragment as restrictUniverseToZeroFragment
+generate_model_transport UniverseHierarchy zero_le_succ_zero for Model
+generate_model_transport F2UniverseFragment zero_le_succ_zero for Model
+
+#check F2UniverseFragment.syntacticModel
+#check restrictUniverseToZeroFragment
+#check (restrictUniverseToZeroFragment UniverseHierarchy.natModel : F2UniverseFragment.Model)
+#check F2UniverseFragment.Model.zero_le_succ_zero
+#check UniverseHierarchy.Model.zero_le_succ_zero
+
+example :
+    F2UniverseFragment.Model.zero_le_succ_zero
+        (restrictUniverseToZeroFragment UniverseHierarchy.natModel) =
+      UniverseHierarchy.Model.zero_le_succ_zero UniverseHierarchy.natModel := rfl
+
+def directZeroFragmentModel : F2UniverseFragment.Model where
+  Level := Nat
+  Le := fun i j => PLift (i ≤ j)
+  zero := 0
+  succ := Nat.succ
+  le_succ := fun i => ⟨Nat.le_succ i⟩
+
+#check (F2UniverseFragment.Model.zero_le_succ_zero directZeroFragmentModel)
+
+generate_model_interface F1FragmentEverything as Model
+
+/--
+error: cannot generate model restriction from 'UniverseHierarchy' to 'F1FragmentEverything':
+  fragment model field 'A' has no matching source model field in 'UniverseHierarchy.Model'
+-/
+#guard_msgs (whitespace := lax) in
+generate_model_restriction UniverseHierarchy to F1FragmentEverything as badRestriction
+
 /-- error: unknown type theory 'NoSuchTheory' -/
 #guard_msgs in
 extract_theory_fragment F2NegativeUnknownTheory from NoSuchTheory for foo
@@ -311,5 +346,24 @@ run_cmd do
     | throwError "missing parent-fragment checked signature"
   assertFragment (checked.lfSyntaxSorts.any (fun d => d.name == `A))
     "parent fragment should contain inherited flattened declarations"
+
+run_cmd do
+  let report ← TheoryFragment.buildReport `UniverseHierarchy `zero_le_succ_zero
+  assertFragment (report.fragmentModelFieldCount < report.fullModelFieldCount)
+    "F3 fragment model should have fewer fields than the full UniverseHierarchy model"
+  let env ← getEnv
+  assertFragment (env.contains `F2UniverseFragment.Model) "missing generated fragment model"
+  assertFragment (env.contains `restrictUniverseToZeroFragment) "missing model restriction"
+
+run_cmd do
+  let some checked ← liftCoreM <| getCheckedTheory? `F2UniverseFragment
+    | throwError "missing extracted F2UniverseFragment checked signature"
+  let admissions ← liftCoreM <| getInternalAdmissionsForIncludingParents `F2UniverseFragment
+  let admittedNames := LeanTypeModelGeneration.internalAdmissionNameSet admissions
+  let provenance ← LeanTypeModelGeneration.lfModelObligationProvenanceString checked admittedNames
+  assertFragment (provenance.contains "model obligation provenance for F2UniverseFragment")
+    "fragment model provenance should render like an ordinary theory"
+  assertFragment (provenance.contains "syntax_sort Level")
+    "fragment model provenance should mention the retained Level field"
 
 end InternalLeanTest.FragmentExtraction
