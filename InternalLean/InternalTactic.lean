@@ -535,6 +535,8 @@ def checkObjectConversionPluginStep (sig : HLSignature) (ctx : Array HLBinding)
 inductive LFObjectConversionStepKind where
   /-- Endpoints are syntactically identical modulo object-name scopes. -/
   | syntacticRefl
+  /-- Endpoints agree after beta/eta-only compact normalization. -/
+  | compactNormalization
   /-- Endpoints agree after bounded unfolding of checked LF definitions. -/
   | lfDefinitionUnfolding
   deriving Inhabited, Repr, BEq
@@ -544,6 +546,7 @@ namespace LFObjectConversionStepKind
 /-- User-facing label for an object-conversion step kind. -/
 def label : LFObjectConversionStepKind → String
   | .syntacticRefl => "syntactic_refl"
+  | .compactNormalization => "compact_normalization"
   | .lfDefinitionUnfolding => "lf_definition_unfolding"
 
 end LFObjectConversionStepKind
@@ -578,33 +581,50 @@ structure CheckedLFObjectConversion where
   remainingDefinitionHeads : Array Name := #[]
   deriving Inhabited, Repr, BEq
 
+/-- Definition heads syntactically present in two displayed conversion endpoints. -/
+def remainingObjectConversionDefinitionHeads (defs : LFDefinitionValueMap) (locals : NameSet)
+    (lhs rhs : ObjExpr) : Array Name :=
+  let remaining := collectLFDefinitionMentions defs locals #[] lhs
+  collectLFDefinitionMentions defs locals remaining rhs
+
+/-- Success certificate for an object-goal conversion step. -/
+def mkObjectGoalConversionSuccess (defs : LFDefinitionValueMap) (locals : NameSet)
+    (kind : LFObjectConversionStepKind) (lhs rhs normalizedLhs normalizedRhs : ObjExpr)
+    (unfoldedDefinitions : Array Name := #[]) : CheckedLFObjectConversion :=
+  let step : LFObjectConversionStep := { kind, lhs, rhs, unfoldedDefinitions }
+  {
+    lhs, rhs, normalizedLhs, normalizedRhs
+    steps := #[step]
+    blockedLocalNames := #[]
+    remainingDefinitionHeads :=
+      remainingObjectConversionDefinitionHeads defs locals normalizedLhs normalizedRhs }
+
 /-- Check object goals through the direct-LF conversion interface. -/
 def checkObjectGoalConversion (sig : HLSignature) (_levels : Array Name) (ctx : Array HLBinding)
     (a b : ObjExpr) : Except String CheckedLFObjectConversion :=
   let defs := objectTacticLFDefinitionValues sig
   let locals := internalObjectLocalNames ctx
-  let aN := unfoldLFDefinitionsInExprWithLocals defs locals a
-  let bN := unfoldLFDefinitionsInExprWithLocals defs locals b
-  let blocked : Array Name := #[]
-  let remaining := collectLFDefinitionMentions defs locals #[] aN
-  let remaining := collectLFDefinitionMentions defs locals remaining bN
-  if objectExprEq a b then
-    .ok {
-      lhs := a, rhs := b, normalizedLhs := aN, normalizedRhs := bN,
-      steps := #[{ kind := .syntacticRefl, lhs := a, rhs := b }],
-      blockedLocalNames := blocked, remainingDefinitionHeads := remaining }
-  else if lfExprAlphaEq aN bN then
-    let unfolded := collectLFDefinitionUnfolds defs locals #[] a
-    let unfolded := collectLFDefinitionUnfolds defs locals unfolded b
-    .ok {
-      lhs := a, rhs := b, normalizedLhs := aN, normalizedRhs := bN,
-      steps := #[{
-        kind := .lfDefinitionUnfolding, lhs := a, rhs := b,
-        unfoldedDefinitions := unfolded }],
-      blockedLocalNames := blocked, remainingDefinitionHeads := remaining }
+  let a := eraseObjExprScopes a
+  let b := eraseObjExprScopes b
+  if lfExprAlphaEq a b then
+    .ok <| mkObjectGoalConversionSuccess defs locals .syntacticRefl a b a b
   else
-    .error "unsupported LF conversion: endpoints are not syntactically identical and do not \
-      match after bounded checked LF-definition unfolding"
+    let aCheap := normalizeLFExprForConversionWithLocals {} locals a
+    let bCheap := normalizeLFExprForConversionWithLocals {} locals b
+    if lfExprAlphaEq aCheap bCheap then
+      .ok <| mkObjectGoalConversionSuccess defs locals .compactNormalization a b aCheap bCheap
+    else
+      let aN := unfoldLFDefinitionsInExprWithLocals defs locals a
+      let bN := unfoldLFDefinitionsInExprWithLocals defs locals b
+      if lfExprAlphaEq aN bN then
+        let unfolded := collectLFDefinitionUnfolds defs locals #[] a
+        let unfolded := collectLFDefinitionUnfolds defs locals unfolded b
+        .ok <| mkObjectGoalConversionSuccess defs locals .lfDefinitionUnfolding a b aN bN
+          unfolded
+      else
+        .error "unsupported LF conversion: endpoints are not syntactically identical, do not \
+          match after beta/eta-only compact normalization, and do not match after bounded \
+          checked LF-definition unfolding"
 
 /-- Build a bounded profile entry for the current object-goal conversion checker. -/
 def objectGoalConversionProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
@@ -613,12 +633,20 @@ def objectGoalConversionProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
   let locals := internalObjectLocalNames ctx
   let a := eraseObjExprScopes a
   let b := eraseObjExprScopes b
-  let aN := unfoldLFDefinitionsInExprWithLocals defs locals a
-  let bN := unfoldLFDefinitionsInExprWithLocals defs locals b
-  let accepted := objectExprEq a b || lfExprAlphaEq aN bN
-  let counts :=
-    mergeLFConversionNameCounts (countLFDefinitionUnfolds defs locals a)
-      (countLFDefinitionUnfolds defs locals b)
+  let alphaSucceeded := lfExprAlphaEq a b
+  let aCheap := if alphaSucceeded then a else normalizeLFExprForConversionWithLocals {} locals a
+  let bCheap := if alphaSucceeded then b else normalizeLFExprForConversionWithLocals {} locals b
+  let compactSucceeded := alphaSucceeded || lfExprAlphaEq aCheap bCheap
+  let (accepted, normActual?, normExpected?, counts) :=
+    if compactSucceeded then
+      (true, some (objExprNodeCount aCheap), some (objExprNodeCount bCheap), {})
+    else
+      let aN := unfoldLFDefinitionsInExprWithLocals defs locals a
+      let bN := unfoldLFDefinitionsInExprWithLocals defs locals b
+      let counts :=
+        mergeLFConversionNameCounts (countLFDefinitionUnfolds defs locals a)
+          (countLFDefinitionUnfolds defs locals b)
+      (lfExprAlphaEq aN bN, some (objExprNodeCount aN), some (objExprNodeCount bN), counts)
   {
     site := "object_goal_conversion"
     owner := { theoryName := some sig.name }
@@ -626,10 +654,10 @@ def objectGoalConversionProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
     expectedHead? := lfExprHeadIdent? b
     actualSize := objExprNodeCount a
     expectedSize := objExprNodeCount b
-    normalizedActualSize? := some (objExprNodeCount aN)
-    normalizedExpectedSize? := some (objExprNodeCount bN)
-    compactSucceeded := objectExprEq a b
-    fullUnfoldFallback := !objectExprEq a b
+    normalizedActualSize? := normActual?
+    normalizedExpectedSize? := normExpected?
+    compactSucceeded
+    fullUnfoldFallback := !compactSucceeded
     accepted
     unfoldedCounts := counts }
 
