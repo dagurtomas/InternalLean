@@ -972,37 +972,108 @@ def transportPositionAllows (sig : HLSignature) (app : LFObjectRewriteApplicatio
           sameObjectName pos.targetHead head && pos.argumentIndex == idx
     | none => false
 
+/-- Pattern variables supplied by a candidate telescope. -/
+def objectCandidateParamVars (params : Array HLBinding) : NameSet :=
+  params.foldl (init := {}) fun acc p => acc.insert p.name.eraseMacroScopes
+
+/-- Local names that block LF-definition unfolding while matching a candidate telescope. -/
+def objectCandidateLocalNames (ctx params : Array HLBinding) : NameSet :=
+  params.foldl (init := internalObjectLocalNames ctx) fun locals b =>
+    locals.insert b.name.eraseMacroScopes
+
+/-- Whether an object expression mentions any candidate pattern variable. -/
+def objectExprMentionsAnyPatternVar (paramVars : NameSet) (e : ObjExpr) : Bool :=
+  (freeLFObjectIdentifiers e).toList.any fun n => paramVars.contains n.eraseMacroScopes
+
+/-- Match same-head checked LF-definition applications without unfolding their bodies. -/
+def matchSameCheckedDefinitionHead? (defs : LFDefinitionValueMap) (locals paramVars : NameSet)
+    (candidate expected : ObjExpr) (subst : NameMap ObjExpr) : Option (NameMap ObjExpr) :=
+  let (candidateHead, candidateArgs) := objectAppHeadAndArgs candidate
+  let (expectedHead, expectedArgs) := objectAppHeadAndArgs expected
+  match candidateHead, expectedHead with
+  | .ident candidateName, .ident expectedName => Id.run do
+      let candidateName := candidateName.eraseMacroScopes
+      let expectedName := expectedName.eraseMacroScopes
+      if candidateName != expectedName then
+        return none
+      if locals.contains candidateName || (defs.find? candidateName).isNone then
+        return none
+      if candidateArgs.size != expectedArgs.size then
+        return none
+      let mut subst := subst
+      for idx in [:candidateArgs.size] do
+        match matchObjectPattern paramVars candidateArgs[idx]! expectedArgs[idx]! subst with
+        | some subst' => subst := subst'
+        | none =>
+            let mentionsParam := objectExprMentionsAnyPatternVar paramVars candidateArgs[idx]!
+            if mentionsParam || !objectGoalCheapEq candidateArgs[idx]! expectedArgs[idx]! then
+              return none
+      return some subst
+  | _, _ => none
+
+/-- Candidate-conclusion match that avoids LF-definition unfolding on compact success. -/
+def matchObjectCandidateCompact? (defs : LFDefinitionValueMap) (locals paramVars : NameSet)
+    (candidateConclusion expected : ObjExpr) : Option (NameMap ObjExpr) :=
+  let candidateConclusion := eraseObjExprScopes candidateConclusion
+  let expected := eraseObjExprScopes expected
+  match matchObjectPattern paramVars candidateConclusion expected {} with
+  | some subst => some subst
+  | none =>
+      let candidateCheap := normalizeLFExprForConversionWithLocals {} locals candidateConclusion
+      let expectedCheap := normalizeLFExprForConversionWithLocals {} locals expected
+      match matchObjectPattern paramVars candidateCheap expectedCheap {} with
+      | some subst => some subst
+      | none =>
+          matchSameCheckedDefinitionHead? defs locals paramVars candidateCheap expectedCheap {}
+
+/-- Candidate-conclusion match using the compatibility full LF-definition unfolding fallback. -/
+def matchObjectCandidateFullUnfold? (defs : LFDefinitionValueMap) (locals paramVars : NameSet)
+    (candidateConclusion expected : ObjExpr) : Option (NameMap ObjExpr) :=
+  let candidateConclusion :=
+    unfoldLFDefinitionsInExprWithLocals defs locals candidateConclusion
+  let expected := unfoldLFDefinitionsInExprWithLocals defs locals expected
+  matchObjectPattern paramVars candidateConclusion expected {}
+
+/-- Candidate-conclusion match with compact checks before full LF-definition unfolding. -/
+def matchObjectCandidateCheapFirst? (defs : LFDefinitionValueMap) (locals paramVars : NameSet)
+    (candidateConclusion expected : ObjExpr) : Option (NameMap ObjExpr) :=
+  match matchObjectCandidateCompact? defs locals paramVars candidateConclusion expected with
+  | some subst => some subst
+  | none => matchObjectCandidateFullUnfold? defs locals paramVars candidateConclusion expected
+
 /-- Match a no-user-input candidate conclusion against a premise to synthesize. -/
 def matchObjectSynthesisCandidate? (sig : HLSignature) (ctx : Array HLBinding)
     (params : Array HLBinding) (candidateConclusion expected : ObjExpr) :
     Option (NameMap ObjExpr) :=
-  let paramVars := params.foldl (init := {}) fun acc p => acc.insert p.name.eraseMacroScopes
-  match matchObjectPattern paramVars candidateConclusion expected {} with
-  | some subst => some subst
-  | none =>
-      let defs := objectTacticLFDefinitionValues sig
-      let paramLocals := params.foldl (init := internalObjectLocalNames ctx) fun locals b =>
-        locals.insert b.name.eraseMacroScopes
-      let candidateConclusion := unfoldLFDefinitionsInExprWithLocals defs paramLocals
-        candidateConclusion
-      let expected := unfoldLFDefinitionsInExprWithLocals defs paramLocals expected
-      matchObjectPattern paramVars candidateConclusion expected {}
+  let defs := objectTacticLFDefinitionValues sig
+  let paramVars := objectCandidateParamVars params
+  let paramLocals := objectCandidateLocalNames ctx params
+  matchObjectCandidateCheapFirst? defs paramLocals paramVars candidateConclusion expected
 
 /-- Build a bounded profile entry for candidate-conclusion matching. -/
 def objectCandidateMatchProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
     (params : Array HLBinding) (candidateConclusion expected : ObjExpr) :
     LFConversionProfileEntry :=
-  let paramVars := params.foldl (init := {}) fun acc p => acc.insert p.name.eraseMacroScopes
-  let compactSucceeded := (matchObjectPattern paramVars candidateConclusion expected {}).isSome
   let defs := objectTacticLFDefinitionValues sig
-  let paramLocals := params.foldl (init := internalObjectLocalNames ctx) fun locals b =>
-    locals.insert b.name.eraseMacroScopes
-  let candidateN := unfoldLFDefinitionsInExprWithLocals defs paramLocals candidateConclusion
-  let expectedN := unfoldLFDefinitionsInExprWithLocals defs paramLocals expected
-  let accepted := compactSucceeded || (matchObjectPattern paramVars candidateN expectedN {}).isSome
-  let counts :=
-    mergeLFConversionNameCounts (countLFDefinitionUnfolds defs paramLocals candidateConclusion)
-      (countLFDefinitionUnfolds defs paramLocals expected)
+  let paramVars := objectCandidateParamVars params
+  let paramLocals := objectCandidateLocalNames ctx params
+  let candidateConclusion := eraseObjExprScopes candidateConclusion
+  let expected := eraseObjExprScopes expected
+  let compactSucceeded :=
+    (matchObjectCandidateCompact? defs paramLocals paramVars candidateConclusion expected).isSome
+  let candidateCheap := normalizeLFExprForConversionWithLocals {} paramLocals candidateConclusion
+  let expectedCheap := normalizeLFExprForConversionWithLocals {} paramLocals expected
+  let (accepted, normActual?, normExpected?, counts) :=
+    if compactSucceeded then
+      (true, some (objExprNodeCount candidateCheap), some (objExprNodeCount expectedCheap), {})
+    else
+      let candidateN := unfoldLFDefinitionsInExprWithLocals defs paramLocals candidateConclusion
+      let expectedN := unfoldLFDefinitionsInExprWithLocals defs paramLocals expected
+      let accepted := (matchObjectPattern paramVars candidateN expectedN {}).isSome
+      let counts :=
+        mergeLFConversionNameCounts (countLFDefinitionUnfolds defs paramLocals candidateConclusion)
+          (countLFDefinitionUnfolds defs paramLocals expected)
+      (accepted, some (objExprNodeCount candidateN), some (objExprNodeCount expectedN), counts)
   {
     site := "candidate_match"
     owner := { theoryName := some sig.name }
@@ -1010,12 +1081,25 @@ def objectCandidateMatchProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
     expectedHead? := lfExprHeadIdent? expected
     actualSize := objExprNodeCount candidateConclusion
     expectedSize := objExprNodeCount expected
-    normalizedActualSize? := some (objExprNodeCount candidateN)
-    normalizedExpectedSize? := some (objExprNodeCount expectedN)
+    normalizedActualSize? := normActual?
+    normalizedExpectedSize? := normExpected?
     compactSucceeded
     fullUnfoldFallback := !compactSucceeded
     accepted
     unfoldedCounts := counts }
+
+syntax "#print_internal_candidate_match_profile" ident "(" ttExpr ")" "(" ttExpr ")" : command
+
+/-- Print the bounded profile for candidate-conclusion matching. -/
+elab_rules : command
+  | `(#print_internal_candidate_match_profile $theory:ident ($candidate:ttExpr)
+      ($expected:ttExpr)) => do
+      let some sig ← liftCoreM <| getTheory? theory.getId
+        | throwError "unknown type theory '{theory.getId}'"
+      let candidate ← elabObjExpr candidate
+      let expected ← elabObjExpr expected
+      let entry := objectCandidateMatchProfileEntry sig #[] #[] candidate expected
+      logInfo m!"{renderLFConversionProfileEntry entry}"
 
 /-- Whether all side conditions of a synthesized helper are discharged by the built-in hook. -/
 def objectSideConditionsAreBuiltinTrivial (sig : HLSignature)
@@ -1831,17 +1915,10 @@ partial def internalObjExprMentionsName (needle : Name) : ObjExpr → Bool
 def matchInternalCandidateConclusion? (sig : HLSignature) (ctx : Array HLBinding)
     (params : Array HLBinding) (candidateConclusion goalTarget : ObjExpr) :
     Option (NameMap ObjExpr) :=
-  let paramVars := params.foldl (init := {}) fun vars b => vars.insert b.name.eraseMacroScopes
-  match matchObjectPattern paramVars candidateConclusion goalTarget {} with
-  | some subst => some subst
-  | none =>
-      let defs := objectTacticLFDefinitionValues sig
-      let paramLocals := params.foldl (init := internalObjectLocalNames ctx) fun locals b =>
-        locals.insert b.name.eraseMacroScopes
-      let candidateConclusion :=
-        unfoldLFDefinitionsInExprWithLocals defs paramLocals candidateConclusion
-      let goalTarget := unfoldLFDefinitionsInExprWithLocals defs paramLocals goalTarget
-      matchObjectPattern paramVars candidateConclusion goalTarget {}
+  let defs := objectTacticLFDefinitionValues sig
+  let paramVars := objectCandidateParamVars params
+  let paramLocals := objectCandidateLocalNames ctx params
+  matchObjectCandidateCheapFirst? defs paramLocals paramVars candidateConclusion goalTarget
 
 /-- Label for diagnostics shared by object tactics and term-mode placeholder elaboration. -/
 def internalElaborationActionLabel (tacticName : String) : String :=

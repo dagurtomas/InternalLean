@@ -67,3 +67,21 @@ compact=false, fallback=true, accepted=true, unfolded=Alias:2
 #guard_msgs (whitespace := lax) in
 #print_internal_object_conversion_profile LFConversionProfileSmoke
   (shapeIncl emptyCtx Alias Alias) (shapeIncl emptyCtx simplexPayload simplexPayload)
+
+/--
+info: LF conversion profile site=candidate_match, theory=LFConversionProfileSmoke,
+owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=-,
+compact=true, fallback=false, accepted=true, unfolded=none
+-/
+#guard_msgs (whitespace := lax) in
+#print_internal_candidate_match_profile LFConversionProfileSmoke
+  (shapeIncl emptyCtx Big Big) (shapeIncl emptyCtx Big Big)
+
+/--
+info: LF conversion profile site=candidate_match, theory=LFConversionProfileSmoke,
+owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=-,
+compact=false, fallback=true, accepted=true, unfolded=Alias:2
+-/
+#guard_msgs (whitespace := lax) in
+#print_internal_candidate_match_profile LFConversionProfileSmoke
+  (shapeIncl emptyCtx Alias Alias) (shapeIncl emptyCtx simplexPayload simplexPayload)
