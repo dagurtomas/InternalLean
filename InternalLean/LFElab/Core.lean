@@ -2119,21 +2119,35 @@ def lfDefinitionValuesWithSyntaxDefs (lookup : LFCheckLookupContext) : LFDefinit
     out := out.insert n value
   return out
 
+/-- Normalized pair plus whether the compact beta/eta-only path accepted it. -/
+structure LFTypeComparisonNormalizationResult where
+  actual : ObjExpr
+  expected : ObjExpr
+  compactSucceeded : Bool
+  deriving Inhabited, Repr, BEq
+
+/-- Normalize a pair, unfolding checked LF and syntax definitions only after compact mismatch. -/
+def normalizeLFTypeComparisonPairInLookupDetailed (lookup : LFCheckLookupContext)
+    (actual expected : ObjExpr) : LFTypeComparisonNormalizationResult :=
+  let actualCheap := normalizeLFExprForTypeComparisonWithDefs {} actual
+  let expectedCheap := normalizeLFExprForTypeComparisonWithDefs {} expected
+  if lfExprAlphaEq actualCheap expectedCheap then
+    { actual := actualCheap, expected := expectedCheap, compactSucceeded := true }
+  else
+    let defs := lfDefinitionValuesWithSyntaxDefs lookup
+    if defs.isEmpty then
+      { actual := actualCheap, expected := expectedCheap, compactSucceeded := false }
+    else
+      { actual := normalizeLFExprForTypeComparisonWithDefs defs actual
+        expected := normalizeLFExprForTypeComparisonWithDefs defs expected
+        compactSucceeded := false }
+
 /-- Normalize a pair for diagnostics, unfolding checked LF and syntax definitions only if the
 beta/eta-only compact normal forms do not already match. -/
 def normalizeLFTypeComparisonPairInLookup (lookup : LFCheckLookupContext)
     (actual expected : ObjExpr) : ObjExpr × ObjExpr :=
-  let actualCheap := normalizeLFExprForTypeComparisonWithDefs {} actual
-  let expectedCheap := normalizeLFExprForTypeComparisonWithDefs {} expected
-  if lfExprAlphaEq actualCheap expectedCheap then
-    (actualCheap, expectedCheap)
-  else
-    let defs := lfDefinitionValuesWithSyntaxDefs lookup
-    if defs.isEmpty then
-      (actualCheap, expectedCheap)
-    else
-      (normalizeLFExprForTypeComparisonWithDefs defs actual,
-        normalizeLFExprForTypeComparisonWithDefs defs expected)
+  let result := normalizeLFTypeComparisonPairInLookupDetailed lookup actual expected
+  (result.actual, result.expected)
 
 /-- Shallow beta/eta type comparison using the lookup context's LF-definition map. Checked LF and
 syntax definitions are unfolded only as a fallback after compact comparison fails. -/
@@ -2290,18 +2304,33 @@ def normalizeLFTypeComparisonPairInLookupProfiled (site : String)
   let traceFallbacks ← getBoolOption `internalLean.conversion.traceFallbacks
   if profile || traceFallbacks then
     let start ← IO.monoMsNow
-    let pair := normalizeLFTypeComparisonPairInLookup lookup actual expected
+    let result := normalizeLFTypeComparisonPairInLookupDetailed lookup actual expected
     let stop ← IO.monoMsNow
+    let actual := eraseObjExprScopes actual
+    let expected := eraseObjExprScopes expected
     let defs := lfDefinitionValuesWithSyntaxDefs lookup
-    let entry := lfDefinitionComparisonProfileEntry site owner defs {} actual expected
-    let entry := {
-      entry with
+    let fallbackRan := !result.compactSucceeded
+    let counts :=
+      if fallbackRan then
+        mergeLFConversionNameCounts (countLFDefinitionUnfolds defs {} actual)
+          (countLFDefinitionUnfolds defs {} expected)
+      else
+        {}
+    let entry : LFConversionProfileEntry := {
+      site, owner
+      actualHead? := lfExprHeadIdent? actual
+      expectedHead? := lfExprHeadIdent? expected
+      actualSize := objExprNodeCount actual
+      expectedSize := objExprNodeCount expected
+      normalizedActualSize? := some (objExprNodeCount result.actual)
+      normalizedExpectedSize? := some (objExprNodeCount result.expected)
       elapsedMs? := some (stop - start)
-      accepted := lfExprAlphaEq pair.1 pair.2
-      normalizedActualSize? := some (objExprNodeCount pair.1)
-      normalizedExpectedSize? := some (objExprNodeCount pair.2) }
+      compactSucceeded := result.compactSucceeded
+      fullUnfoldFallback := fallbackRan
+      accepted := lfExprAlphaEq result.actual result.expected
+      unfoldedCounts := counts }
     logLFConversionProfileEntry entry
-    pure pair
+    pure (result.actual, result.expected)
   else
     pure <| normalizeLFTypeComparisonPairInLookup lookup actual expected
 
@@ -2471,13 +2500,30 @@ partial def objExprSourceStringWithDepth : Nat → ObjExpr → String
       s!"({objExprSourceStringWithDepth depth lhs} ≡ " ++
         s!"{objExprSourceStringWithDepth depth rhs})"
 
+/-- Maximum object-expression size rendered with the full recursive `ToString` instance. -/
+def diagnosticObjExprFullRenderNodeLimit : Nat := 120
+
+/-- Depth used when an object expression is too large for full diagnostic rendering. -/
+def diagnosticObjExprLargeRenderDepth : Nat := 8
+
+/-- Budgeted object-expression rendering for diagnostics that avoids rendering huge full terms. -/
+def diagnosticObjExprStringWithBudget (maxChars : Nat) (e : ObjExpr) : String :=
+  let nodes := objExprNodeCount e
+  if nodes ≤ diagnosticObjExprFullRenderNodeLimit then
+    truncateDiagnosticString maxChars (toString e)
+  else
+    let head := (lfExprHeadIdent? e).map (fun n => toString n.eraseMacroScopes) |>.getD "-"
+    let rendered := objExprSourceStringWithDepth diagnosticObjExprLargeRenderDepth e
+    let summary := s!"[truncated diagnostic rendering; nodes={nodes}; head={head}] {rendered}"
+    truncateDiagnosticString maxChars summary
+
 /-- Default budgeted object-expression rendering for diagnostics. -/
 def diagnosticObjExprString (e : ObjExpr) : String :=
-  truncateDiagnosticString 600 (toString e)
+  diagnosticObjExprStringWithBudget 600 e
 
 /-- Shorter one-line object-expression rendering for nested mismatch diagnostics. -/
 def diagnosticObjExprShortString (e : ObjExpr) : String :=
-  truncateDiagnosticString 240 (toString e)
+  diagnosticObjExprStringWithBudget 240 e
 
 /-- Match a rigid object-expression pattern, solving only the listed implicit variables. -/
 partial def matchImplicitObjectPattern (vars : NameSet) (pattern actual : ObjExpr)

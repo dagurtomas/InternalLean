@@ -25,6 +25,17 @@ open InternalLean
   | .ok _ => true
   | .error _ => false
 
+/-- A compact large expression used to guard bounded diagnostic rendering. -/
+def diagnosticAppTower : Nat → ObjExpr
+  | 0 => .ident `x
+  | n + 1 => .app (.ident `f) (diagnosticAppTower n)
+
+#guard objExprNodeCount (diagnosticAppTower 80) > diagnosticObjExprFullRenderNodeLimit
+
+#guard
+  (diagnosticObjExprString (diagnosticAppTower 80)).toList.length <
+    (toString (diagnosticAppTower 80)).toList.length
+
 declare_type_theory LFConversionProfileSmoke where
   syntax_sort Ctx
   syntax_sort Shape (Γ : Ctx)
