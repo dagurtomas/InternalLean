@@ -606,6 +606,33 @@ def checkObjectGoalConversion (sig : HLSignature) (_levels : Array Name) (ctx : 
     .error "unsupported LF conversion: endpoints are not syntactically identical and do not \
       match after bounded checked LF-definition unfolding"
 
+/-- Build a bounded profile entry for the current object-goal conversion checker. -/
+def objectGoalConversionProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
+    (a b : ObjExpr) : LFConversionProfileEntry :=
+  let defs := objectTacticLFDefinitionValues sig
+  let locals := internalObjectLocalNames ctx
+  let a := eraseObjExprScopes a
+  let b := eraseObjExprScopes b
+  let aN := unfoldLFDefinitionsInExprWithLocals defs locals a
+  let bN := unfoldLFDefinitionsInExprWithLocals defs locals b
+  let accepted := objectExprEq a b || lfExprAlphaEq aN bN
+  let counts :=
+    mergeLFConversionNameCounts (countLFDefinitionUnfolds defs locals a)
+      (countLFDefinitionUnfolds defs locals b)
+  {
+    site := "object_goal_conversion"
+    owner := { theoryName := some sig.name }
+    actualHead? := lfExprHeadIdent? a
+    expectedHead? := lfExprHeadIdent? b
+    actualSize := objExprNodeCount a
+    expectedSize := objExprNodeCount b
+    normalizedActualSize? := some (objExprNodeCount aN)
+    normalizedExpectedSize? := some (objExprNodeCount bN)
+    compactSucceeded := objectExprEq a b
+    fullUnfoldFallback := !objectExprEq a b
+    accepted
+    unfoldedCounts := counts }
+
 /-- Check object goals modulo exact syntax and checked LF definitions. -/
 def objectGoalConversionCheck (sig : HLSignature) (levels : Array Name) (ctx : Array HLBinding)
     (a b : ObjExpr) : Except String Unit := do
@@ -641,6 +668,19 @@ def objectGoalNormalizationMismatchString (sig : HLSignature) (ctx : Array HLBin
     s!"LF definitions mentioned before unfolding: {diagnosticNameListString mentioned}",
     s!"LF definitions unfolded: {diagnosticNameListString unfolded}"] ++
       remainingLine
+
+syntax "#print_internal_object_conversion_profile" ident "(" ttExpr ")" "(" ttExpr ")" : command
+
+/-- Print the bounded profile for the current direct-LF object-conversion checker. -/
+elab_rules : command
+  | `(#print_internal_object_conversion_profile $theory:ident ($actual:ttExpr)
+      ($expected:ttExpr)) => do
+      let some sig ← liftCoreM <| getTheory? theory.getId
+        | throwError "unknown type theory '{theory.getId}'"
+      let actual ← elabObjExpr actual
+      let expected ← elabObjExpr expected
+      let entry := objectGoalConversionProfileEntry sig #[] actual expected
+      logInfo m!"{renderLFConversionProfileEntry entry}"
 
 /-- Split an object application into a head and spine. -/
 partial def objectAppHeadAndArgs : ObjExpr → ObjExpr × Array ObjExpr
@@ -915,6 +955,35 @@ def matchObjectSynthesisCandidate? (sig : HLSignature) (ctx : Array HLBinding)
         candidateConclusion
       let expected := unfoldLFDefinitionsInExprWithLocals defs paramLocals expected
       matchObjectPattern paramVars candidateConclusion expected {}
+
+/-- Build a bounded profile entry for candidate-conclusion matching. -/
+def objectCandidateMatchProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
+    (params : Array HLBinding) (candidateConclusion expected : ObjExpr) :
+    LFConversionProfileEntry :=
+  let paramVars := params.foldl (init := {}) fun acc p => acc.insert p.name.eraseMacroScopes
+  let compactSucceeded := (matchObjectPattern paramVars candidateConclusion expected {}).isSome
+  let defs := objectTacticLFDefinitionValues sig
+  let paramLocals := params.foldl (init := internalObjectLocalNames ctx) fun locals b =>
+    locals.insert b.name.eraseMacroScopes
+  let candidateN := unfoldLFDefinitionsInExprWithLocals defs paramLocals candidateConclusion
+  let expectedN := unfoldLFDefinitionsInExprWithLocals defs paramLocals expected
+  let accepted := compactSucceeded || (matchObjectPattern paramVars candidateN expectedN {}).isSome
+  let counts :=
+    mergeLFConversionNameCounts (countLFDefinitionUnfolds defs paramLocals candidateConclusion)
+      (countLFDefinitionUnfolds defs paramLocals expected)
+  {
+    site := "candidate_match"
+    owner := { theoryName := some sig.name }
+    actualHead? := lfExprHeadIdent? candidateConclusion
+    expectedHead? := lfExprHeadIdent? expected
+    actualSize := objExprNodeCount candidateConclusion
+    expectedSize := objExprNodeCount expected
+    normalizedActualSize? := some (objExprNodeCount candidateN)
+    normalizedExpectedSize? := some (objExprNodeCount expectedN)
+    compactSucceeded
+    fullUnfoldFallback := !compactSucceeded
+    accepted
+    unfoldedCounts := counts }
 
 /-- Whether all side conditions of a synthesized helper are discharged by the built-in hook. -/
 def objectSideConditionsAreBuiltinTrivial (sig : HLSignature)
@@ -1413,6 +1482,27 @@ def objectSimpLFDefinitionValues (sig : HLSignature) (config : ObjectSimpConfig)
       defs
     else
       defs.insert d.name.eraseMacroScopes (eraseObjExprScopes d.value)
+
+/-- Build a bounded profile entry for the explicit LF-definition unfolding done by object `simp`. -/
+def objectSimpUnfoldProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
+    (goalTarget : ObjExpr) (config : ObjectSimpConfig := {}) : LFConversionProfileEntry :=
+  let defs := objectSimpLFDefinitionValues sig config
+  let locals := internalObjectLocalNames ctx
+  let goalTarget := eraseObjExprScopes goalTarget
+  let unfolded := unfoldLFDefinitionsInExprWithLocals defs locals goalTarget
+  {
+    site := "object_simp"
+    owner := { theoryName := some sig.name }
+    actualHead? := lfExprHeadIdent? goalTarget
+    expectedHead? := lfExprHeadIdent? unfolded
+    actualSize := objExprNodeCount goalTarget
+    expectedSize := objExprNodeCount goalTarget
+    normalizedActualSize? := some (objExprNodeCount unfolded)
+    normalizedExpectedSize? := some (objExprNodeCount unfolded)
+    compactSucceeded := objectExprEq goalTarget unfolded
+    fullUnfoldFallback := false
+    accepted := true
+    unfoldedCounts := countLFDefinitionUnfolds defs locals goalTarget }
 
 /-- Computation-rule names eligible for the object `simp` rewrite loop. -/
 def objectSimpRewriteNames (target : InternalDefTarget) (sig : HLSignature)

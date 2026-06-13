@@ -920,6 +920,15 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
         structuralStmt structuralDeriv
       pure (structuralDeriv, structuralStmt, checkedStructuralReplay)
     catch _ =>
+      logLFConversionProfileEntry {
+        site := "structural_replay_fallback"
+        owner := {
+          theoryName := some sig.name
+          ownerKind := some "judgment_theorem"
+          ownerName := some t.name }
+        compactSucceeded := false
+        fullUnfoldFallback := true
+        accepted := true }
       let structuralSigExpanded ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' expanded signature" <|
           checkedSignatureToKSignature sig.name checked.lfSyntaxDefs checked.lfOpaqueConsts
@@ -975,6 +984,15 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
         structuralLocalReplayCtx structuralStmt structuralDeriv
       pure (structuralDeriv, structuralStmt, checkedStructuralReplay)
     catch _ =>
+      logLFConversionProfileEntry {
+        site := "structural_replay_fallback"
+        owner := {
+          theoryName := some cache.theoryName
+          ownerKind := some "judgment_theorem"
+          ownerName := some t.name }
+        compactSucceeded := false
+        fullUnfoldFallback := true
+        accepted := true }
       let structuralSigExpanded ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' cached expanded signature" <|
           compiledLFCheckCacheStructuralSignature cache true

@@ -25,6 +25,29 @@ register_option internalLean.profileLFCheckPhases : Bool := {
   descr := "log coarse phase timings for LF object-definition checking"
 }
 
+register_option internalLean.conversion.profile : Bool := {
+  defValue := false
+  descr := "log InternalLean LF/object conversion profile entries"
+}
+
+register_option internalLean.conversion.traceFallbacks : Bool := {
+  defValue := false
+  descr := "log InternalLean LF/object conversion entries that run full unfolding fallback"
+}
+
+register_option internalLean.conversion.slowThresholdMs : Nat := {
+  defValue := 50
+  descr := "elapsed-time threshold for InternalLean conversion profile entries"
+}
+
+register_option internalLean.conversion.sizeGrowthThreshold : Nat := {
+  defValue := 10
+  descr := "normalized-size growth threshold for InternalLean conversion profile entries"
+}
+
+initialize registerTraceClass `InternalLean.conversion
+initialize registerTraceClass `InternalLean.conversion.unfold
+
 /-- Time an LF elaboration/checking phase when `internalLean.profileLFCheckPhases` is enabled. -/
 def profileLFCheckPhase (label : MessageData) (x : CoreM α) : CoreM α := do
   if (← getBoolOption `internalLean.profileLFCheckPhases) then
@@ -1410,6 +1433,29 @@ def substSingleLFParam (x : Name) (value body : ObjExpr) : ObjExpr :=
 /-- Values of checked LF definitions available for definitional unfolding. -/
 abbrev LFDefinitionValueMap := NameMap ObjExpr
 
+/-- Number of object-expression nodes, used only for bounded conversion diagnostics. -/
+partial def objExprNodeCount : ObjExpr → Nat
+  | .ident _ | .sort | .univ _ => 1
+  | .app f a => 1 + objExprNodeCount f + objExprNodeCount a
+  | .arrow _ A B | .funArrow _ A B | .sigma _ A B =>
+      1 + objExprNodeCount A + objExprNodeCount B
+  | .pair a b => 1 + objExprNodeCount a + objExprNodeCount b
+  | .fst e | .snd e => 1 + objExprNodeCount e
+  | .lam _ body => 1 + objExprNodeCount body
+  | .jeq lhs rhs => 1 + objExprNodeCount lhs + objExprNodeCount rhs
+
+/-- Increment one name counter in a conversion-profile map. -/
+def incrementLFConversionNameCount (counts : NameMap Nat) (n : Name) : NameMap Nat :=
+  let n := n.eraseMacroScopes
+  counts.insert n ((counts.find? n).getD 0 + 1)
+
+/-- Merge two conversion-profile name-count maps. -/
+def mergeLFConversionNameCounts (lhs rhs : NameMap Nat) : NameMap Nat := Id.run do
+  let mut out := lhs
+  for (n, count) in rhs.toList do
+    out := out.insert n ((out.find? n).getD 0 + count)
+  return out
+
 /-- Fuel for deterministic LF-definition unfolding. Ordered LF-definition availability rejects
 cycles, but a small explicit bound keeps diagnostics robust if malformed metadata reaches this
 helper through a future path. -/
@@ -1524,6 +1570,43 @@ def unfoldLFDefinitionsInExpr (defs : LFDefinitionValueMap) (e : ObjExpr) : ObjE
 def unfoldLFDefinitionsInExprWithLocals (defs : LFDefinitionValueMap) (locals : NameSet) (e :
   ObjExpr) : ObjExpr :=
   unfoldLFDefinitionsInExprCore defs locals (lfDefinitionUnfoldFuel defs) (eraseObjExprScopes e)
+
+/-- Count LF definitions expanded by the bounded unfolding policy, respecting local binders. -/
+partial def countLFDefinitionUnfoldsCore (defs : LFDefinitionValueMap) (locals : NameSet)
+    (fuel : Nat) (counts : NameMap Nat) : ObjExpr → NameMap Nat
+  | .ident n =>
+      let n := n.eraseMacroScopes
+      if locals.contains n then
+        counts
+      else
+        match fuel, defs.find? n with
+        | 0, _ | _, none => counts
+        | fuel + 1, some value =>
+            countLFDefinitionUnfoldsCore defs locals fuel
+              (incrementLFConversionNameCount counts n) value
+  | .sort | .univ _ => counts
+  | .app f a =>
+      countLFDefinitionUnfoldsCore defs locals fuel
+        (countLFDefinitionUnfoldsCore defs locals fuel counts f) a
+  | .arrow x A B | .funArrow x A B | .sigma x A B =>
+      let counts := countLFDefinitionUnfoldsCore defs locals fuel counts A
+      let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
+      countLFDefinitionUnfoldsCore defs locals fuel counts B
+  | .pair a b =>
+      countLFDefinitionUnfoldsCore defs locals fuel
+        (countLFDefinitionUnfoldsCore defs locals fuel counts a) b
+  | .fst e | .snd e => countLFDefinitionUnfoldsCore defs locals fuel counts e
+  | .lam xs body =>
+      let locals := xs.foldl (fun locals x => locals.insert x.eraseMacroScopes) locals
+      countLFDefinitionUnfoldsCore defs locals fuel counts body
+  | .jeq lhs rhs =>
+      countLFDefinitionUnfoldsCore defs locals fuel
+        (countLFDefinitionUnfoldsCore defs locals fuel counts lhs) rhs
+
+/-- Count LF definitions expanded by the bounded unfolding policy. -/
+def countLFDefinitionUnfolds (defs : LFDefinitionValueMap) (locals : NameSet) (e : ObjExpr) :
+    NameMap Nat :=
+  countLFDefinitionUnfoldsCore defs locals (lfDefinitionUnfoldFuel defs) {} (eraseObjExprScopes e)
 
 /-- LF-definition values declared in a high-level signature, keyed by erased names. -/
 def lfDefinitionValuesOfSignature (sig : HLSignature) : LFDefinitionValueMap := Id.run do
@@ -2057,6 +2140,170 @@ syntax definitions are unfolded only as a fallback after compact comparison fail
 def lfTypeCompareEqInLookup (lookup : LFCheckLookupContext) (actual expected : ObjExpr) : Bool :=
   let (actualN, expectedN) := normalizeLFTypeComparisonPairInLookup lookup actual expected
   lfExprAlphaEq actualN expectedN
+
+/-- Optional owner metadata for LF conversion-profile lines. -/
+structure LFConversionProfileOwner where
+  theoryName : Option Name := none
+  ownerKind : Option String := none
+  ownerName : Option Name := none
+  deriving Inhabited, Repr, BEq
+
+/-- One bounded diagnostic summary for a conversion or unfolding check. -/
+structure LFConversionProfileEntry where
+  site : String
+  owner : LFConversionProfileOwner := {}
+  actualHead? : Option Name := none
+  expectedHead? : Option Name := none
+  actualSize : Nat := 0
+  expectedSize : Nat := 0
+  normalizedActualSize? : Option Nat := none
+  normalizedExpectedSize? : Option Nat := none
+  elapsedMs? : Option Nat := none
+  compactSucceeded : Bool := false
+  fullUnfoldFallback : Bool := false
+  accepted : Bool := true
+  unfoldedCounts : NameMap Nat := {}
+  deriving Inhabited, Repr
+
+/-- Render optional owner metadata for a conversion-profile line. -/
+def renderLFConversionProfileOwner (owner : LFConversionProfileOwner) : String :=
+  let theory := match owner.theoryName with | some n => toString n | none => "-"
+  let kind := owner.ownerKind.getD "-"
+  let name := match owner.ownerName with | some n => toString n | none => "-"
+  s!"theory={theory}, owner={kind}:{name}"
+
+/-- Render a compact name-count list for conversion-profile lines. -/
+def renderLFConversionNameCounts (counts : NameMap Nat) : String :=
+  let items := counts.toList
+  if items.isEmpty then
+    "none"
+  else
+    let items := items.take 8 |>.map fun (n, count) => s!"{n}:{count}"
+    String.intercalate ", " items
+
+/-- Maximum size growth observed by a conversion-profile entry. -/
+def LFConversionProfileEntry.maxSizeGrowth (entry : LFConversionProfileEntry) : Nat :=
+  let actualGrowth := match entry.normalizedActualSize? with
+    | some n => n / (Nat.max 1 entry.actualSize)
+    | none => 0
+  let expectedGrowth := match entry.normalizedExpectedSize? with
+    | some n => n / (Nat.max 1 entry.expectedSize)
+    | none => 0
+  Nat.max actualGrowth expectedGrowth
+
+/-- Render one bounded conversion-profile entry. -/
+def renderLFConversionProfileEntry (entry : LFConversionProfileEntry) : String :=
+  let actualHead := entry.actualHead?.map toString |>.getD "-"
+  let expectedHead := entry.expectedHead?.map toString |>.getD "-"
+  let actualNorm := entry.normalizedActualSize?.map toString |>.getD "-"
+  let expectedNorm := entry.normalizedExpectedSize?.map toString |>.getD "-"
+  let elapsed := entry.elapsedMs?.map (fun n => s!"{n}ms") |>.getD "-"
+  s!"LF conversion profile site={entry.site}, {renderLFConversionProfileOwner entry.owner}, " ++
+    s!"heads={actualHead}/{expectedHead}, sizes={entry.actualSize}/{entry.expectedSize}, " ++
+    s!"normalized_sizes={actualNorm}/{expectedNorm}, elapsed={elapsed}, " ++
+    s!"compact={entry.compactSucceeded}, fallback={entry.fullUnfoldFallback}, " ++
+    s!"accepted={entry.accepted}, unfolded={renderLFConversionNameCounts entry.unfoldedCounts}"
+
+/-- Log a conversion-profile entry when profiling or fallback tracing requests it. -/
+def logLFConversionProfileEntry (entry : LFConversionProfileEntry) : CoreM Unit := do
+  let profile ← getBoolOption `internalLean.conversion.profile
+  let traceFallbacks ← getBoolOption `internalLean.conversion.traceFallbacks
+  let slowThreshold ← getNatOption `internalLean.conversion.slowThresholdMs 50
+  let growthThreshold ← getNatOption `internalLean.conversion.sizeGrowthThreshold 10
+  let slow := match entry.elapsedMs? with
+    | some ms => slowThreshold > 0 && ms >= slowThreshold
+    | none => false
+  let growth := growthThreshold > 0 && entry.maxSizeGrowth >= growthThreshold
+  if profile || (traceFallbacks && (entry.fullUnfoldFallback || slow || growth)) then
+    logInfo m!"{renderLFConversionProfileEntry entry}"
+
+/-- Acceptedness for the current cheap-then-full LF-definition comparison policy. -/
+def lfDefinitionComparisonAccepted (defs : LFDefinitionValueMap) (locals : NameSet)
+    (actual expected : ObjExpr) : Bool :=
+  let actual := eraseObjExprScopes actual
+  let expected := eraseObjExprScopes expected
+  if lfExprAlphaEq actual expected then
+    true
+  else
+    let actualCheap := normalizeLFExprForConversionWithLocals {} locals actual
+    let expectedCheap := normalizeLFExprForConversionWithLocals {} locals expected
+    if lfExprAlphaEq actualCheap expectedCheap then
+      true
+    else
+      lfExprAlphaEq (normalizeLFExprForConversionWithLocals defs locals actual)
+        (normalizeLFExprForConversionWithLocals defs locals expected)
+
+/-- Build a diagnostic entry for the current cheap-then-full comparison policy. -/
+def lfDefinitionComparisonProfileEntry (site : String) (owner : LFConversionProfileOwner)
+    (defs : LFDefinitionValueMap) (locals : NameSet) (actual expected : ObjExpr)
+    (elapsedMs? : Option Nat := none) : LFConversionProfileEntry :=
+  let actual := eraseObjExprScopes actual
+  let expected := eraseObjExprScopes expected
+  let alphaSucceeded := lfExprAlphaEq actual expected
+  let actualCheap := normalizeLFExprForConversionWithLocals {} locals actual
+  let expectedCheap := normalizeLFExprForConversionWithLocals {} locals expected
+  let compactSucceeded := alphaSucceeded || lfExprAlphaEq actualCheap expectedCheap
+  let fallbackRan := !compactSucceeded
+  let (accepted, normActual?, normExpected?, counts) :=
+    if fallbackRan then
+      let actualFull := normalizeLFExprForConversionWithLocals defs locals actual
+      let expectedFull := normalizeLFExprForConversionWithLocals defs locals expected
+      let counts :=
+        mergeLFConversionNameCounts (countLFDefinitionUnfolds defs locals actual)
+          (countLFDefinitionUnfolds defs locals expected)
+      (lfExprAlphaEq actualFull expectedFull, some (objExprNodeCount actualFull),
+        some (objExprNodeCount expectedFull), counts)
+    else
+      (true, none, none, {})
+  {
+    site, owner
+    actualHead? := lfExprHeadIdent? actual
+    expectedHead? := lfExprHeadIdent? expected
+    actualSize := objExprNodeCount actual
+    expectedSize := objExprNodeCount expected
+    normalizedActualSize? := normActual?
+    normalizedExpectedSize? := normExpected?
+    elapsedMs?, compactSucceeded, fullUnfoldFallback := fallbackRan
+    accepted, unfoldedCounts := counts }
+
+/-- Profile one source-level LF-definition comparison without changing acceptance. -/
+def lfExprEqModuloDefinitionsWithLocalsProfiled (site : String)
+    (owner : LFConversionProfileOwner) (defs : LFDefinitionValueMap) (locals : NameSet)
+    (actual expected : ObjExpr) : CoreM Bool := do
+  let profile ← getBoolOption `internalLean.conversion.profile
+  let traceFallbacks ← getBoolOption `internalLean.conversion.traceFallbacks
+  if profile || traceFallbacks then
+    let start ← IO.monoMsNow
+    let entry := lfDefinitionComparisonProfileEntry site owner defs locals actual expected
+    let stop ← IO.monoMsNow
+    let entry := { entry with elapsedMs? := some (stop - start) }
+    logLFConversionProfileEntry entry
+    pure entry.accepted
+  else
+    pure <| lfDefinitionComparisonAccepted defs locals actual expected
+
+/-- Profile a lookup type-comparison pair without changing the returned normalized pair. -/
+def normalizeLFTypeComparisonPairInLookupProfiled (site : String)
+    (owner : LFConversionProfileOwner) (lookup : LFCheckLookupContext)
+    (actual expected : ObjExpr) : CoreM (ObjExpr × ObjExpr) := do
+  let profile ← getBoolOption `internalLean.conversion.profile
+  let traceFallbacks ← getBoolOption `internalLean.conversion.traceFallbacks
+  if profile || traceFallbacks then
+    let start ← IO.monoMsNow
+    let pair := normalizeLFTypeComparisonPairInLookup lookup actual expected
+    let stop ← IO.monoMsNow
+    let defs := lfDefinitionValuesWithSyntaxDefs lookup
+    let entry := lfDefinitionComparisonProfileEntry site owner defs {} actual expected
+    let entry := {
+      entry with
+      elapsedMs? := some (stop - start)
+      accepted := lfExprAlphaEq pair.1 pair.2
+      normalizedActualSize? := some (objExprNodeCount pair.1)
+      normalizedExpectedSize? := some (objExprNodeCount pair.2) }
+    logLFConversionProfileEntry entry
+    pure pair
+  else
+    pure <| normalizeLFTypeComparisonPairInLookup lookup actual expected
 
 /-- Infer a shallow LF/object type using a reusable lookup context.
 

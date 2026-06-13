@@ -54,8 +54,10 @@ def checkLFObjectArtifactsInSignature (sig : HLSignature) (rules : Array Checked
         if let some actualType :=
             inferKnownLFExprTypeWithLookup? lookup knownLFDefTypes d.value then
           let expectedType := eraseObjExprScopes d.typeExpr
-          let (normalizedActualType, normalizedExpectedType) :=
-            normalizeLFTypeComparisonPairInLookup lookup actualType expectedType
+          let (normalizedActualType, normalizedExpectedType) ←
+            normalizeLFTypeComparisonPairInLookupProfiled "source_type_compare"
+              { theoryName := some sig.name, ownerKind := some "lf_def",
+                ownerName := some d.name } lookup actualType expectedType
           if !lfExprAlphaEq normalizedActualType normalizedExpectedType then
             throwError "lf_def '{d.name}' in type theory '{sig.name}' has value LF definition \
               '{valueName}' with type '{diagnosticObjExprString normalizedActualType}', expected \
@@ -486,8 +488,10 @@ def checkLFObjectDefInContext (ctx : IntraBlockLFCheckContext) (d : LFObjectDefD
           '{valueName}' before it is available"
       if let some actualType := inferKnownLFExprTypeWithLookup? lookup knownLFDefTypes d.value then
         let expectedType := eraseObjExprScopes d.typeExpr
-        let (normalizedActualType, normalizedExpectedType) :=
-          normalizeLFTypeComparisonPairInLookup lookup actualType expectedType
+        let (normalizedActualType, normalizedExpectedType) ←
+          normalizeLFTypeComparisonPairInLookupProfiled "source_type_compare"
+            { theoryName := some sig.name, ownerKind := some "lf_def",
+              ownerName := some d.name } lookup actualType expectedType
         if !lfExprAlphaEq normalizedActualType normalizedExpectedType then
           throwError "lf_def '{d.name}' in type theory '{sig.name}' has value LF definition \
             '{valueName}' with type '{diagnosticObjExprString normalizedActualType}', expected \

@@ -159,8 +159,10 @@ partial def checkLFExprHasTypeWithLookup (lookup : LFCheckLookupContext) (sig : 
       match inferKnownLFExprTypeWithLookup? lookup knownTypes expr with
       | some actualType =>
           let actualType := normalizeLFExprBetaOnly actualType
-          let (normalizedActualType, normalizedExpected) :=
-            normalizeLFTypeComparisonPairInLookup lookup actualType expected
+          let (normalizedActualType, normalizedExpected) ←
+            normalizeLFTypeComparisonPairInLookupProfiled "source_type_compare"
+              { theoryName := some sig.name, ownerKind := some ownerKind,
+                ownerName := some ownerName } lookup actualType expected
           if !lfExprAlphaEq normalizedActualType normalizedExpected then
             throwError "{ownerKind} '{ownerName}' in type theory '{sig.name}' has \
               {where_ ()} with type '{diagnosticObjExprString normalizedActualType}', expected \
@@ -1248,18 +1250,7 @@ This keeps LF-definition unfolding lazy: first try literal alpha-equivalence and
 compact normalization, and unfold definitions only if the compact comparison fails. -/
 def lfExprEqModuloDefinitionsWithLocals (defs : LFDefinitionValueMap) (locals : NameSet)
     (a b : ObjExpr) : Bool :=
-  let a := eraseObjExprScopes a
-  let b := eraseObjExprScopes b
-  if lfExprAlphaEq a b then
-    true
-  else
-    let aCheap := normalizeLFExprForConversionWithLocals {} locals a
-    let bCheap := normalizeLFExprForConversionWithLocals {} locals b
-    if lfExprAlphaEq aCheap bCheap then
-      true
-    else
-      lfExprAlphaEq (normalizeLFExprForConversionWithLocals defs locals a)
-        (normalizeLFExprForConversionWithLocals defs locals b)
+  lfDefinitionComparisonAccepted defs locals a b
 
 /-- Equality modulo macro scopes, checked LF-definition unfolding, and structural eta. -/
 def lfExprEqModuloDefinitions (defs : LFDefinitionValueMap) (a b : ObjExpr) : Bool :=
@@ -1336,8 +1327,12 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
       match availableLocalStatements.find? localName.eraseMacroScopes with
       | some actualStatement =>
           let expectedStatement := eraseObjExprScopes expectedStatement
-          if !lfExprEqModuloDefinitionsWithLocals defValues localNames actualStatement
-            expectedStatement then
+          let statementsMatch ← lfExprEqModuloDefinitionsWithLocalsProfiled
+            "theorem_statement_match"
+            { theoryName := some sig.name, ownerKind := some "judgment_theorem",
+              ownerName := some theoremName }
+            defValues localNames actualStatement expectedStatement
+          if !statementsMatch then
             let mentioned :=
               collectLFDefinitionMentions defValues localNames (collectLFDefinitionMentions
                 defValues localNames #[] actualStatement) expectedStatement
@@ -1429,8 +1424,12 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
           premise theorem '{theoremRefName}' with unused proof argument(s)"
       let actualStatement := eraseObjExprScopes (substLFParams subst premiseTheorem.judgmentExpr)
       let expectedStatement := eraseObjExprScopes expectedStatement
-      if !lfExprEqModuloDefinitionsWithLocals defValues localNames actualStatement
-        expectedStatement then
+      let statementsMatch ← lfExprEqModuloDefinitionsWithLocalsProfiled
+        "theorem_statement_match"
+        { theoryName := some sig.name, ownerKind := some "judgment_theorem",
+          ownerName := some theoremName }
+        defValues localNames actualStatement expectedStatement
+      if !statementsMatch then
         let mentioned :=
           collectLFDefinitionMentions defValues localNames (collectLFDefinitionMentions defValues
             localNames #[] actualStatement) expectedStatement
@@ -1479,8 +1478,12 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
         subst := subst.insert param.name (eraseObjExprScopes arg)
       let expectedConclusion := eraseObjExprScopes (substLFParams subst appliedRule.conclusionExpr)
       let actualStatement := eraseObjExprScopes expectedStatement
-      if !lfExprEqModuloDefinitionsWithLocals defValues localNames actualStatement
-        expectedConclusion then
+      let statementsMatch ← lfExprEqModuloDefinitionsWithLocalsProfiled
+        "theorem_statement_match"
+        { theoryName := some sig.name, ownerKind := some "judgment_theorem",
+          ownerName := some theoremName }
+        defValues localNames actualStatement expectedConclusion
+      if !statementsMatch then
         let mentioned :=
           collectLFDefinitionMentions defValues localNames (collectLFDefinitionMentions defValues
             localNames #[] actualStatement) expectedConclusion
