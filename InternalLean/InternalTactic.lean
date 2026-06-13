@@ -599,6 +599,10 @@ def mkObjectGoalConversionSuccess (defs : LFDefinitionValueMap) (locals : NameSe
     remainingDefinitionHeads :=
       remainingObjectConversionDefinitionHeads defs locals normalizedLhs normalizedRhs }
 
+/-- Cheap object-expression equality used before LF-definition unfolding. -/
+def objectGoalCheapEq (a b : ObjExpr) : Bool :=
+  objectExprEq a b || lfExprAlphaEq a b
+
 /-- Check object goals through the direct-LF conversion interface. -/
 def checkObjectGoalConversion (sig : HLSignature) (_levels : Array Name) (ctx : Array HLBinding)
     (a b : ObjExpr) : Except String CheckedLFObjectConversion :=
@@ -606,12 +610,12 @@ def checkObjectGoalConversion (sig : HLSignature) (_levels : Array Name) (ctx : 
   let locals := internalObjectLocalNames ctx
   let a := eraseObjExprScopes a
   let b := eraseObjExprScopes b
-  if lfExprAlphaEq a b then
+  if objectGoalCheapEq a b then
     .ok <| mkObjectGoalConversionSuccess defs locals .syntacticRefl a b a b
   else
     let aCheap := normalizeLFExprForConversionWithLocals {} locals a
     let bCheap := normalizeLFExprForConversionWithLocals {} locals b
-    if lfExprAlphaEq aCheap bCheap then
+    if objectGoalCheapEq aCheap bCheap then
       .ok <| mkObjectGoalConversionSuccess defs locals .compactNormalization a b aCheap bCheap
     else
       let aN := unfoldLFDefinitionsInExprWithLocals defs locals a
@@ -633,10 +637,10 @@ def objectGoalConversionProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
   let locals := internalObjectLocalNames ctx
   let a := eraseObjExprScopes a
   let b := eraseObjExprScopes b
-  let alphaSucceeded := lfExprAlphaEq a b
-  let aCheap := if alphaSucceeded then a else normalizeLFExprForConversionWithLocals {} locals a
-  let bCheap := if alphaSucceeded then b else normalizeLFExprForConversionWithLocals {} locals b
-  let compactSucceeded := alphaSucceeded || lfExprAlphaEq aCheap bCheap
+  let cheapSucceeded := objectGoalCheapEq a b
+  let aCheap := if cheapSucceeded then a else normalizeLFExprForConversionWithLocals {} locals a
+  let bCheap := if cheapSucceeded then b else normalizeLFExprForConversionWithLocals {} locals b
+  let compactSucceeded := cheapSucceeded || objectGoalCheapEq aCheap bCheap
   let (accepted, normActual?, normExpected?, counts) :=
     if compactSucceeded then
       (true, some (objExprNodeCount aCheap), some (objExprNodeCount bCheap), {})

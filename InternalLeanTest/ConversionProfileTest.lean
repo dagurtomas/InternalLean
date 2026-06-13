@@ -17,6 +17,14 @@ Smoke tests for lightweight diagnostics added around LF/object conversion fallba
 
 open InternalLean
 
+#guard
+  let sig : HLSignature := { name := `ArrowFunConversionProfileSmoke }
+  let arrow := ObjExpr.arrow none (.ident `Obj) (.ident `Obj)
+  let funArrow := ObjExpr.funArrow none (.ident `Obj) (.ident `Obj)
+  match checkObjectGoalConversion sig #[] #[] arrow funArrow with
+  | .ok _ => true
+  | .error _ => false
+
 declare_type_theory LFConversionProfileSmoke where
   syntax_sort Ctx
   syntax_sort Shape (Γ : Ctx)
