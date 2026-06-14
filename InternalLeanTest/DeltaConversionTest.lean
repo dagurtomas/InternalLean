@@ -61,6 +61,26 @@ def deltaSmokeDefs : LFDefinitionValueMap :=
   !r.accepted && r.stats.deltaSteps == 0 &&
     r.stats.blockedByLocal.find? `Alias == some 1
 
+/-- Definitions whose free identifiers stress comparison-binder freshness. -/
+def deltaCaptureDefs : LFDefinitionValueMap :=
+  ({} : LFDefinitionValueMap).insert `D (.ident `x)
+
+#guard
+  let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := false }
+  let env : LFDeltaConversionEnv := { defs := deltaCaptureDefs, options }
+  let lhs := ObjExpr.lam #[`x] (.ident `D)
+  let rhs := ObjExpr.lam #[`y] (.ident `y)
+  let r := LFDeltaConversion.convertObjExpr env lhs rhs
+  !r.accepted && r.stats.deltaSteps == 1
+
+#guard
+  let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := false }
+  let env : LFDeltaConversionEnv := { defs := deltaCaptureDefs, options }
+  let lhs := ObjExpr.arrow (some `x) .sort (.ident `D)
+  let rhs := ObjExpr.arrow (some `y) .sort (.ident `y)
+  let r := LFDeltaConversion.convertObjExpr env lhs rhs
+  !r.accepted && r.stats.deltaSteps == 1
+
 #guard
   let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := false }
   let env : LFDeltaConversionEnv := { defs := deltaSmokeDefs, options }

@@ -2643,6 +2643,11 @@ def bumpPairVisit (env : LFDeltaConversionEnv) : M Bool := do
     set { st with stats := { st.stats with pairVisits := visits } }
     pure true
 
+/-- Names a fresh comparison binder must avoid before later checked-definition forcing. -/
+def binderFreshAvoid (env : LFDeltaConversionEnv) (lhsBody rhsBody : ObjExpr) : NameSet :=
+  freeLFObjectIdentifiers lhsBody ++ freeLFObjectIdentifiers rhsBody ++ env.locals ++
+    lfDefinitionValuesFreeIdentifiers env.defs
+
 /-- Compare optional binders by renaming both bodies to a fresh shared local. -/
 def compareBinderBodies (env : LFDeltaConversionEnv) (lhsBinder rhsBinder : Option Name)
     (lhsBody rhsBody : ObjExpr) (k : LFDeltaConversionEnv → ObjExpr → ObjExpr → M Bool) :
@@ -2650,8 +2655,7 @@ def compareBinderBodies (env : LFDeltaConversionEnv) (lhsBinder rhsBinder : Opti
   match lhsBinder, rhsBinder with
   | none, none => k env lhsBody rhsBody
   | some x, some y =>
-      let avoid := freeLFObjectIdentifiers lhsBody ++ freeLFObjectIdentifiers rhsBody ++ env.locals
-      let z := freshLFNameAvoiding x avoid
+      let z := freshLFNameAvoiding x (binderFreshAvoid env lhsBody rhsBody)
       let lhsBody := renameLFBoundOccurrences x.eraseMacroScopes z lhsBody
       let rhsBody := renameLFBoundOccurrences y.eraseMacroScopes z rhsBody
       k { env with locals := env.locals.insert z.eraseMacroScopes } lhsBody rhsBody
@@ -2739,8 +2743,7 @@ partial def compareStructural? (env : LFDeltaConversionEnv) (lhs rhs : ObjExpr)
           for idx in [:xs.size] do
             let x := xs[idx]!.eraseMacroScopes
             let y := ys[idx]!.eraseMacroScopes
-            let avoid := freeLFObjectIdentifiers body ++ freeLFObjectIdentifiers body' ++ env.locals
-            let z := freshLFNameAvoiding x avoid
+            let z := freshLFNameAvoiding x (binderFreshAvoid env body body')
             body := renameLFBoundOccurrences x z body
             body' := renameLFBoundOccurrences y z body'
             env := { env with locals := env.locals.insert z.eraseMacroScopes }
