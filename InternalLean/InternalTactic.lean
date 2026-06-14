@@ -1973,8 +1973,9 @@ partial def autoIntroGoal (goal : InternalObjectGoal) : Array Name × InternalOb
   | .arrow x A B | .funArrow x A B =>
       let n := x.getD (generatedObjectBinderName goal.ctx)
       let goal' := {
-        ctx := goal.ctx.push { name := n, typeExpr := A, visibility := .explicit },
-        target := B }
+        ctx := goal.ctx.push { name := n, typeExpr := A, visibility := .explicit }
+        target := B
+        deltaOptions := goal.deltaOptions }
       let (names, goal') := autoIntroGoal goal'
       (#[n] ++ names, goal')
   | _ => (#[], goal)
@@ -2001,8 +2002,9 @@ def introObjectGoal (goal : InternalObjectGoal) (n : Name) : Except String Inter
   match goal.target with
   | .arrow x A B | .funArrow x A B =>
       pure {
-        ctx := goal.ctx.push { name := n, typeExpr := A, visibility := .explicit },
-        target := renameIntroBinderTarget x n B }
+        ctx := goal.ctx.push { name := n, typeExpr := A, visibility := .explicit }
+        target := renameIntroBinderTarget x n B
+        deltaOptions := goal.deltaOptions }
   | _ =>
       throw <| String.intercalate "\n" [
         s!"object tactic `intro {n}` failed: current goal is not an object arrow",
@@ -2372,7 +2374,8 @@ partial def internalDirectTermTacticArg (e : ObjExpr) : InternalTacticArg :=
 
 /-- Elaborate `_` placeholders in a direct internal term against a known expected type. -/
 def elaborateInternalDirectTermPlaceholders (target : InternalDefTarget) (sig : HLSignature)
-    (ctx : Array HLBinding) (expected value : ObjExpr) : Except String ObjExpr := do
+    (ctx : Array HLBinding) (expected value : ObjExpr)
+    (deltaOptions : LFDeltaConversionOptions := {}) : Except String ObjExpr := do
   let value := eraseObjExprScopes value
   unless internalObjExprMentionsName `_ value do
     return value
@@ -2385,7 +2388,8 @@ def elaborateInternalDirectTermPlaceholders (target : InternalDefTarget) (sig : 
         throw s!"cannot infer direct internal placeholder `_` for expected type\n  \
           {diagnosticObjExprString expected}{contextMsg}"
       else
-        match compileInternalCompleteCandidateArg target sig { ctx := ctx, target := expected } n
+        match compileInternalCompleteCandidateArg target sig {
+            ctx := ctx, target := expected, deltaOptions } n
             (args.map internalDirectTermTacticArg) "direct term" with
         | .ok value => pure value
         | .error err =>
@@ -2404,7 +2408,7 @@ def elaborateInternalDirectTermPlaceholders (target : InternalDefTarget) (sig : 
 def elaborateInternalHaveTermProof (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (expected proof : ObjExpr) (haveName : Name)
     (deltaOptions : LFDeltaConversionOptions := {}) : Except String ObjExpr := do
-  let proof ← elaborateInternalDirectTermPlaceholders target sig ctx expected proof
+  let proof ← elaborateInternalDirectTermPlaceholders target sig ctx expected proof deltaOptions
   let (head, args) := splitObjApp proof
   match head with
   | .ident n =>
@@ -3058,9 +3062,12 @@ def evalInternalNativeResolvedTacticStep (stx : Syntax) (step : InternalNativeTa
   | .skip =>
       pure ()
   | .intro name =>
-      let (_, mvarId, goal) ← getInternalNativeMainGoal stx
+      let (session, mvarId, goal) ← getInternalNativeMainGoal stx
       let goal' ←
-        match introObjectGoal { ctx := goal.ctx, target := goal.targetExpr } name with
+        match introObjectGoal {
+            ctx := goal.ctx
+            target := goal.targetExpr
+            deltaOptions := session.deltaOptions } name with
         | .ok goal' => pure goal'
         | .error err => throwErrorAt stx err
       replaceInternalNativeMainGoal mvarId {
@@ -3069,13 +3076,15 @@ def evalInternalNativeResolvedTacticStep (stx : Syntax) (step : InternalNativeTa
         targetExpr := goal'.target
         frames := goal.frames.push (.lam name) }
   | .intros names =>
-      let (_, mvarId, goal) ← getInternalNativeMainGoal stx
+      let (session, mvarId, goal) ← getInternalNativeMainGoal stx
+      let objectGoal : InternalObjectGoal := {
+        ctx := goal.ctx, target := goal.targetExpr, deltaOptions := session.deltaOptions }
       let (names, goal') ←
         if names.isEmpty then
-          let (names, goal') := autoIntroGoal { ctx := goal.ctx, target := goal.targetExpr }
+          let (names, goal') := autoIntroGoal objectGoal
           pure (names, goal')
         else
-          match introsObjectGoal { ctx := goal.ctx, target := goal.targetExpr } names with
+          match introsObjectGoal objectGoal names with
           | .ok goal' => pure (names, goal')
           | .error err => throwErrorAt stx err
       let frames := names.foldl (fun frames name => frames.push (.lam name)) goal.frames
@@ -3415,6 +3424,7 @@ mutual
         compileInternalObjectGoal target sig levels steps (idx + 1) goal
     | .exactTerm e =>
         let e ← elaborateInternalDirectTermPlaceholders target sig goal.ctx goal.target e
+          goal.deltaOptions
         pure (e, idx + 1)
     | .exactApp n args =>
         let (introNames, innerGoal) := autoIntroGoal goal
@@ -3424,6 +3434,7 @@ mutual
         pure (wrapObjectLambdas introNames termExpr, nextIdx)
     | .refineTerm e =>
         let e ← elaborateInternalDirectTermPlaceholders target sig goal.ctx goal.target e
+          goal.deltaOptions
         pure (e, idx + 1)
     | .refineApp n args =>
         let (introNames, innerGoal) := autoIntroGoal goal

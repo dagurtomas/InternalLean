@@ -115,6 +115,44 @@ def deltaCaptureDefs : LFDefinitionValueMap :=
   | .error _ => false
 
 #guard
+  let options : LFDeltaConversionOptions := {
+    enabled := true
+    compareWithFullFallback := false
+    maxDeltaSteps := 0 }
+  let sig : HLSignature := {
+    name := `DeltaObjectGoalConversionIntroSmoke
+    lfObjectDefs := #[{
+      name := `Alias
+      typeExpr := .ident `Shape
+      value := .ident `payload }] }
+  let goal : InternalObjectGoal := {
+    target := .arrow (some `h) (.ident `Alias) (.ident `payload)
+    deltaOptions := options }
+  let (_, inner) := autoIntroGoal goal
+  inner.deltaOptions.enabled && !inner.deltaOptions.compareWithFullFallback &&
+    (findAssumption? sig #[] inner.ctx inner.target inner.deltaOptions).isNone
+
+#guard
+  let options : LFDeltaConversionOptions := {
+    enabled := true
+    compareWithFullFallback := false
+    maxDeltaSteps := 0 }
+  let sig : HLSignature := {
+    name := `DeltaObjectGoalConversionExplicitIntroSmoke
+    lfObjectDefs := #[{
+      name := `Alias
+      typeExpr := .ident `Shape
+      value := .ident `payload }] }
+  let goal : InternalObjectGoal := {
+    target := .arrow (some `h) (.ident `Alias) (.ident `payload)
+    deltaOptions := options }
+  match introObjectGoal goal `z with
+  | .ok inner =>
+      inner.deltaOptions.enabled && !inner.deltaOptions.compareWithFullFallback &&
+        (findAssumption? sig #[] inner.ctx inner.target inner.deltaOptions).isNone
+  | .error _ => false
+
+#guard
   let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := false }
   let env : LFDeltaConversionEnv := { defs := deltaSmokeDefs, options }
   let r := LFDeltaConversion.convertObjExpr env
