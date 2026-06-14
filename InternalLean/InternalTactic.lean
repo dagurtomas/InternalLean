@@ -717,6 +717,30 @@ elab_rules : command
       let entry := { entry with elapsedMs? := some (stop - start) }
       logInfo m!"{renderLFConversionProfileEntry entry}"
 
+syntax "#print_internal_delta_conversion_profile" ident "(" ttExpr ")" "(" ttExpr ")" : command
+
+/-- Print the bounded profile for the experimental head-directed delta converter. -/
+elab_rules : command
+  | `(#print_internal_delta_conversion_profile $theory:ident ($actual:ttExpr)
+      ($expected:ttExpr)) => do
+      let some sig ← liftCoreM <| getTheory? theory.getId
+        | throwError "unknown type theory '{theory.getId}'"
+      let actual ← elabObjExpr actual
+      let expected ← elabObjExpr expected
+      let options ← liftCoreM getLFDeltaConversionOptions
+      let options := { options with enabled := true }
+      let env : LFDeltaConversionEnv := {
+        defs := objectTacticLFDefinitionValues sig
+        locals := {}
+        options }
+      let start ← IO.monoMsNow
+      let result := LFDeltaConversion.convertObjExprWithFallback env actual expected
+      let stop ← IO.monoMsNow
+      let entry := LFDeltaConversion.profileEntry "delta_conversion"
+        { theoryName := some sig.name } actual expected result
+      let entry := { entry with elapsedMs? := some (stop - start) }
+      logInfo m!"{renderLFConversionProfileEntry entry}"
+
 /-- Split an object application into a head and spine. -/
 partial def objectAppHeadAndArgs : ObjExpr → ObjExpr × Array ObjExpr
   | .app f a =>
@@ -1104,6 +1128,30 @@ elab_rules : command
       let start ← IO.monoMsNow
       let entry := objectCandidateMatchProfileEntry sig #[] #[] candidate expected
       let stop ← IO.monoMsNow
+      let entry := { entry with elapsedMs? := some (stop - start) }
+      logInfo m!"{renderLFConversionProfileEntry entry}"
+
+syntax "#print_internal_delta_candidate_profile" ident "(" ttExpr ")" "(" ttExpr ")" : command
+
+/-- Print the bounded profile for candidate comparison through the experimental delta converter. -/
+elab_rules : command
+  | `(#print_internal_delta_candidate_profile $theory:ident ($candidate:ttExpr)
+      ($expected:ttExpr)) => do
+      let some sig ← liftCoreM <| getTheory? theory.getId
+        | throwError "unknown type theory '{theory.getId}'"
+      let candidate ← elabObjExpr candidate
+      let expected ← elabObjExpr expected
+      let options ← liftCoreM getLFDeltaConversionOptions
+      let options := { options with enabled := true }
+      let env : LFDeltaConversionEnv := {
+        defs := objectTacticLFDefinitionValues sig
+        locals := {}
+        options }
+      let start ← IO.monoMsNow
+      let result := LFDeltaConversion.convertObjExprWithFallback env candidate expected
+      let stop ← IO.monoMsNow
+      let entry := LFDeltaConversion.profileEntry "delta_candidate"
+        { theoryName := some sig.name } candidate expected result
       let entry := { entry with elapsedMs? := some (stop - start) }
       logInfo m!"{renderLFConversionProfileEntry entry}"
 

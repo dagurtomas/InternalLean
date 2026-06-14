@@ -7,6 +7,7 @@ import InternalLeanTest.ConversionProfileTest
 import InternalLeanTest.CorrectnessRegressionTest
 import InternalLeanTest.DocLintTest
 import InternalLeanTest.DiagnosticsPhase2Test
+import InternalLeanTest.DeltaConversionTest
 import InternalLeanTest.EndToEndTinyNatTest
 import InternalLeanTest.EvidencePremiseTest
 import InternalLeanTest.FrontendFallbackProfileTest

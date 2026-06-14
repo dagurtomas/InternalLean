@@ -2215,6 +2215,13 @@ def getLFDeltaConversionOptions : CoreM LFDeltaConversionOptions := do
     includeSyntaxDefs :=
       (← getBoolOption `internalLean.conversion.delta.includeSyntaxDefs) }
 
+/-- Environment for one experimental delta-conversion run. -/
+structure LFDeltaConversionEnv where
+  defs : LFDefinitionValueMap := {}
+  locals : NameSet := {}
+  options : LFDeltaConversionOptions := {}
+  deriving Inhabited
+
 /-- Side of a conversion pair used by diagnostic delta-conversion traces. -/
 inductive LFDeltaConversionSide where
   | lhs
@@ -2279,6 +2286,40 @@ structure LFDeltaConversionResult where
   steps : Array LFDeltaConversionStep := #[]
   stats : LFDeltaConversionStats := {}
   fallbackUsed : Bool := false
+  fuelExhausted? : Option String := none
+  deriving Inhabited, Repr
+
+/-- Cache key for weak-head reduction in one delta-conversion run. -/
+structure LFDeltaWhnfKey where
+  locals : Array Name := #[]
+  expr : ObjExpr := .sort
+  deriving Inhabited, Repr, BEq
+
+/-- Weak-head reduction result cached by the delta converter. -/
+structure LFDeltaWhnfResult where
+  expr : ObjExpr := .sort
+  deriving Inhabited, Repr, BEq
+
+/-- Cache key for one checked-definition forcing step. -/
+structure LFDeltaKey where
+  locals : Array Name := #[]
+  expr : ObjExpr := .sort
+  deriving Inhabited, Repr, BEq
+
+/-- Cache key for one conversion pair. -/
+structure LFDeltaPairKey where
+  locals : Array Name := #[]
+  lhs : ObjExpr := .sort
+  rhs : ObjExpr := .sort
+  deriving Inhabited, Repr, BEq
+
+/-- Mutable state for one experimental delta-conversion run. -/
+structure LFDeltaConversionState where
+  whnfCache : Array (LFDeltaWhnfKey × LFDeltaWhnfResult) := #[]
+  deltaCache : Array (LFDeltaKey × ObjExpr) := #[]
+  pairCache : Array (LFDeltaPairKey × Bool) := #[]
+  steps : Array LFDeltaConversionStep := #[]
+  stats : LFDeltaConversionStats := {}
   fuelExhausted? : Option String := none
   deriving Inhabited, Repr
 
@@ -2418,6 +2459,398 @@ ordinary messages. -/
 def emitLFConversionProgressEntry (entry : LFConversionProgressEntry) : CoreM Unit := do
   if (← lfConversionProgressEnabled) then
     IO.eprintln (renderLFConversionProgressEntry entry)
+
+namespace LFDeltaConversion
+
+abbrev M := StateM LFDeltaConversionState
+
+/-- Deterministic local-context fingerprint for cache keys. -/
+def localKey (locals : NameSet) : Array Name :=
+  locals.toList.map Name.eraseMacroScopes |>.toArray
+
+/-- Find a value in a small per-call association-list cache. -/
+def findCached? [BEq α] (key : α) (xs : Array (α × β)) : Option β :=
+  match xs.find? (fun item => item.1 == key) with
+  | some item => some item.2
+  | none => none
+
+/-- Modify the statistics component of the current delta-conversion state. -/
+def modifyStats (f : LFDeltaConversionStats → LFDeltaConversionStats) : M Unit := do
+  let st ← get
+  set { st with stats := f st.stats }
+
+/-- Record a diagnostic trace step. -/
+def recordStep (step : LFDeltaConversionStep) : M Unit := do
+  let st ← get
+  set { st with steps := st.steps.push step }
+
+/-- Record that a fuel bound was exhausted, preserving the first such reason. -/
+def recordFuelExhausted (kind : String) : M Unit := do
+  let st ← get
+  if st.fuelExhausted?.isNone then
+    set { st with fuelExhausted? := some kind }
+
+/-- Split an object application into a head and argument spine. -/
+partial def appHeadAndArgs : ObjExpr → ObjExpr × Array ObjExpr
+  | .app f a =>
+      let (head, args) := appHeadAndArgs f
+      (head, args.push a)
+  | e => (e, #[])
+
+/-- Rebuild an application from a head and argument spine. -/
+def mkApps (head : ObjExpr) (args : Array ObjExpr) : ObjExpr :=
+  args.foldl (fun acc arg => .app acc arg) head
+
+/-- Instantiate as many lambda binders as the supplied spine demands. -/
+partial def instantiateLambdaSpine (body : ObjExpr) (args : Array ObjExpr) (idx : Nat := 0) :
+    ObjExpr :=
+  if h : idx < args.size then
+    match body with
+    | .lam xs lamBody =>
+        if hx : 0 < xs.size then
+          let x := xs[0]
+          let rest := xs.extract 1 xs.size
+          let target := if rest.isEmpty then lamBody else .lam rest lamBody
+          instantiateLambdaSpine (substSingleLFParam x args[idx] target) args (idx + 1)
+        else
+          mkApps body (args.extract idx args.size)
+    | _ => mkApps body (args.extract idx args.size)
+  else
+    body
+
+/-- Record one input-size observation. -/
+def recordInputSizes (lhs rhs : ObjExpr) : M Unit := do
+  let size := Nat.max (objExprNodeCount lhs) (objExprNodeCount rhs)
+  modifyStats fun stats => { stats with maxInputSize := Nat.max stats.maxInputSize size }
+
+/-- Cache and return one weak-head result. -/
+def cacheWhnf (key : LFDeltaWhnfKey) (result : LFDeltaWhnfResult) : M LFDeltaWhnfResult := do
+  let st ← get
+  set { st with whnfCache := st.whnfCache.push (key, result) }
+  modifyStats fun stats =>
+    { stats with maxWhnfSize := Nat.max stats.maxWhnfSize (objExprNodeCount result.expr) }
+  pure result
+
+/-- Weak-head reduction for beta/projection redexes, without delta unfolding. -/
+partial def whnf (env : LFDeltaConversionEnv) (e : ObjExpr) (fuel : Nat) :
+    M LFDeltaWhnfResult := do
+  let e := eraseObjExprScopes e
+  let key : LFDeltaWhnfKey := { locals := localKey env.locals, expr := e }
+  let st ← get
+  if let some cached := findCached? key st.whnfCache then
+    modifyStats fun stats => { stats with whnfCacheHits := stats.whnfCacheHits + 1 }
+    return cached
+  if fuel == 0 then
+    recordFuelExhausted "whnf"
+    return ← cacheWhnf key { expr := e }
+  let result ←
+    match e with
+    | .app f a => do
+        let fW ← whnf env f (fuel - 1)
+        match fW.expr with
+        | .lam xs body =>
+            if h : 0 < xs.size then
+              let x := xs[0]
+              let rest := xs.extract 1 xs.size
+              let target := if rest.isEmpty then body else .lam rest body
+              whnf env (substSingleLFParam x a target) (fuel - 1)
+            else
+              pure { expr := .app fW.expr (eraseObjExprScopes a) }
+        | _ => pure { expr := .app fW.expr (eraseObjExprScopes a) }
+    | .fst p => do
+        let pW ← whnf env p (fuel - 1)
+        match pW.expr with
+        | .pair a _ => whnf env a (fuel - 1)
+        | _ => pure { expr := .fst pW.expr }
+    | .snd p => do
+        let pW ← whnf env p (fuel - 1)
+        match pW.expr with
+        | .pair _ b => whnf env b (fuel - 1)
+        | _ => pure { expr := .snd pW.expr }
+    | .ident n => pure { expr := .ident n.eraseMacroScopes }
+    | .sort => pure { expr := .sort }
+    | .univ u => pure { expr := .univ u }
+    | .arrow x A B => pure { expr := .arrow (x.map Name.eraseMacroScopes) A B }
+    | .funArrow x A B => pure { expr := .funArrow (x.map Name.eraseMacroScopes) A B }
+    | .sigma x A B => pure { expr := .sigma (x.map Name.eraseMacroScopes) A B }
+    | .pair a b => pure { expr := .pair a b }
+    | .lam xs body => pure { expr := .lam (xs.map Name.eraseMacroScopes) body }
+    | .jeq lhs rhs => pure { expr := .jeq lhs rhs }
+  cacheWhnf key result
+
+/-- Force an unfoldable checked-definition head at the outer application spine. -/
+def forceHead? (env : LFDeltaConversionEnv) (side : LFDeltaConversionSide) (e : ObjExpr) :
+    M (Option ObjExpr) := do
+  let e := eraseObjExprScopes e
+  let key : LFDeltaKey := { locals := localKey env.locals, expr := e }
+  let st ← get
+  if let some cached := findCached? key st.deltaCache then
+    modifyStats fun stats => { stats with deltaCacheHits := stats.deltaCacheHits + 1 }
+    return some cached
+  if st.stats.deltaSteps >= env.options.maxDeltaSteps then
+    recordFuelExhausted "delta"
+    return none
+  let (head, args) := appHeadAndArgs e
+  match head with
+  | .ident n =>
+      let n := n.eraseMacroScopes
+      if env.locals.contains n then
+        if env.defs.contains n then
+          modifyStats fun stats =>
+            { stats with blockedByLocal := incrementLFConversionNameCount stats.blockedByLocal n }
+        return none
+      match env.defs.find? n with
+      | none => return none
+      | some value =>
+          let forced := instantiateLambdaSpine (eraseObjExprScopes value) args
+          modifyStats fun stats => stats.recordForced side n
+          recordStep (.delta side n)
+          let st ← get
+          set { st with deltaCache := st.deltaCache.push (key, forced) }
+          return some forced
+  | _ => return none
+
+/-- Force the head demanded by an eliminator, if there is one. -/
+def forceDemanded? (env : LFDeltaConversionEnv) (side : LFDeltaConversionSide) (e : ObjExpr) :
+    M (Option ObjExpr) := do
+  match ← forceHead? env side e with
+  | some forced => pure (some forced)
+  | none =>
+      match eraseObjExprScopes e with
+      | .fst p =>
+          match ← forceHead? env side p with
+          | some p' => pure (some (.fst p'))
+          | none => pure none
+      | .snd p =>
+          match ← forceHead? env side p with
+          | some p' => pure (some (.snd p'))
+          | none => pure none
+      | _ => pure none
+
+/-- Cache one final pair-conversion answer. -/
+def cachePair (key : LFDeltaPairKey) (accepted : Bool) : M Unit := do
+  let st ← get
+  set { st with pairCache := st.pairCache.push (key, accepted) }
+
+/-- Register one pair visit, returning false if the configured visit budget is exhausted. -/
+def bumpPairVisit (env : LFDeltaConversionEnv) : M Bool := do
+  let st ← get
+  let visits := st.stats.pairVisits + 1
+  if visits > env.options.maxPairVisits then
+    recordFuelExhausted "pair"
+    pure false
+  else
+    set { st with stats := { st.stats with pairVisits := visits } }
+    pure true
+
+/-- Compare optional binders by renaming both bodies to a fresh shared local. -/
+def compareBinderBodies (env : LFDeltaConversionEnv) (lhsBinder rhsBinder : Option Name)
+    (lhsBody rhsBody : ObjExpr) (k : LFDeltaConversionEnv → ObjExpr → ObjExpr → M Bool) :
+    M Bool := do
+  match lhsBinder, rhsBinder with
+  | none, none => k env lhsBody rhsBody
+  | some x, some y =>
+      let avoid := freeLFObjectIdentifiers lhsBody ++ freeLFObjectIdentifiers rhsBody ++ env.locals
+      let z := freshLFNameAvoiding x avoid
+      let lhsBody := renameLFBoundOccurrences x.eraseMacroScopes z lhsBody
+      let rhsBody := renameLFBoundOccurrences y.eraseMacroScopes z rhsBody
+      k { env with locals := env.locals.insert z.eraseMacroScopes } lhsBody rhsBody
+  | none, some y =>
+      if freeLFObjectIdentifiers rhsBody |>.contains y.eraseMacroScopes then
+        pure false
+      else
+        k env lhsBody rhsBody
+  | some x, none =>
+      if freeLFObjectIdentifiers lhsBody |>.contains x.eraseMacroScopes then
+        pure false
+      else
+        k env lhsBody rhsBody
+
+/-- Try a structural congruence comparison at exposed weak-head constructors. -/
+partial def compareStructural? (env : LFDeltaConversionEnv) (lhs rhs : ObjExpr)
+    (go : LFDeltaConversionEnv → ObjExpr → ObjExpr → M Bool) : M (Option Bool) := do
+  match lhs, rhs with
+  | .sort, .sort =>
+      recordStep (.congr "sort")
+      pure (some true)
+  | .univ u, .univ v =>
+      recordStep (.congr "univ")
+      pure (some (u == v))
+  | .ident n, .ident m =>
+      if n.eraseMacroScopes == m.eraseMacroScopes then
+        recordStep (.sameHead n.eraseMacroScopes)
+        pure (some true)
+      else
+        pure none
+  | .app f a, .app g b =>
+      if ← go env f g then
+        recordStep (.congr "app")
+        pure (some (← go env a b))
+      else
+        pure (some false)
+  | .arrow x A B, .arrow y C D =>
+      if ← go env A C then
+        let ok ← compareBinderBodies env x y B D go
+        recordStep (.congr "arrow")
+        pure (some ok)
+      else
+        pure (some false)
+  | .funArrow x A B, .funArrow y C D =>
+      if ← go env A C then
+        let ok ← compareBinderBodies env x y B D go
+        recordStep (.congr "funArrow")
+        pure (some ok)
+      else
+        pure (some false)
+  | .arrow x A B, .funArrow y C D | .funArrow x A B, .arrow y C D =>
+      if ← go env A C then
+        let ok ← compareBinderBodies env x y B D go
+        recordStep (.congr "arrow")
+        pure (some ok)
+      else
+        pure (some false)
+  | .sigma x A B, .sigma y C D =>
+      if ← go env A C then
+        let ok ← compareBinderBodies env x y B D go
+        recordStep (.congr "sigma")
+        pure (some ok)
+      else
+        pure (some false)
+  | .pair a b, .pair c d =>
+      if ← go env a c then
+        recordStep (.congr "pair")
+        pure (some (← go env b d))
+      else
+        pure (some false)
+  | .fst a, .fst b =>
+      recordStep (.congr "fst")
+      pure (some (← go env a b))
+  | .snd a, .snd b =>
+      recordStep (.congr "snd")
+      pure (some (← go env a b))
+  | .lam xs body, .lam ys body' =>
+      if xs.size != ys.size then
+        pure (some false)
+      else
+        let (body, body', env) := Id.run do
+          let mut body := body
+          let mut body' := body'
+          let mut env := env
+          for idx in [:xs.size] do
+            let x := xs[idx]!.eraseMacroScopes
+            let y := ys[idx]!.eraseMacroScopes
+            let avoid := freeLFObjectIdentifiers body ++ freeLFObjectIdentifiers body' ++ env.locals
+            let z := freshLFNameAvoiding x avoid
+            body := renameLFBoundOccurrences x z body
+            body' := renameLFBoundOccurrences y z body'
+            env := { env with locals := env.locals.insert z.eraseMacroScopes }
+          (body, body', env)
+        recordStep (.congr "lam")
+        pure (some (← go env body body'))
+  | .jeq a b, .jeq c d =>
+      if ← go env a c then
+        recordStep (.congr "jeq")
+        pure (some (← go env b d))
+      else
+        pure (some false)
+  | _, _ => pure none
+
+/-- Core head-directed delta conversion. -/
+partial def convertCore (env : LFDeltaConversionEnv) (lhs rhs : ObjExpr) : M Bool := do
+  let lhs := eraseObjExprScopes lhs
+  let rhs := eraseObjExprScopes rhs
+  recordInputSizes lhs rhs
+  if lfExprAlphaEq lhs rhs then
+    recordStep .alpha
+    return true
+  let key : LFDeltaPairKey := { locals := localKey env.locals, lhs, rhs }
+  let st ← get
+  if let some cached := findCached? key st.pairCache then
+    modifyStats fun stats => { stats with pairCacheHits := stats.pairCacheHits + 1 }
+    return cached
+  if !(← bumpPairVisit env) then
+    cachePair key false
+    return false
+  let lhsW ← whnf env lhs env.options.maxWhnfDepth
+  let rhsW ← whnf env rhs env.options.maxWhnfDepth
+  if lfExprAlphaEq lhsW.expr rhsW.expr then
+    recordStep .compactBetaEta
+    cachePair key true
+    return true
+  let structural? ← compareStructural? env lhsW.expr rhsW.expr convertCore
+  if structural?.getD false then
+    cachePair key true
+    return true
+  match ← forceDemanded? env .lhs lhsW.expr with
+  | some lhs' =>
+      if ← convertCore env lhs' rhsW.expr then
+        cachePair key true
+        return true
+  | none => pure ()
+  match ← forceDemanded? env .rhs rhsW.expr with
+  | some rhs' =>
+      if ← convertCore env lhsW.expr rhs' then
+        cachePair key true
+        return true
+  | none => pure ()
+  recordStep (.failed "stuck")
+  cachePair key false
+  return false
+
+/-- Run the core converter without recursive full-unfold fallback. -/
+def convertObjExpr (env : LFDeltaConversionEnv) (lhs rhs : ObjExpr) : LFDeltaConversionResult :=
+  let ((accepted, st)) := (convertCore env lhs rhs).run {}
+  {
+    accepted
+    lhsDisplay := eraseObjExprScopes lhs
+    rhsDisplay := eraseObjExprScopes rhs
+    steps := st.steps
+    stats := st.stats
+    fallbackUsed := false
+    fuelExhausted? := st.fuelExhausted? }
+
+/-- Run the core converter and, if configured, preserve compatibility by trying full unfolding
+when delta conversion rejects. -/
+def convertObjExprWithFallback (env : LFDeltaConversionEnv) (lhs rhs : ObjExpr) :
+    LFDeltaConversionResult :=
+  let result := convertObjExpr env lhs rhs
+  if result.accepted || !env.options.compareWithFullFallback then
+    result
+  else
+    let lhsFull := normalizeLFExprForConversionWithLocals env.defs env.locals lhs
+    let rhsFull := normalizeLFExprForConversionWithLocals env.defs env.locals rhs
+    let accepted := lfExprAlphaEq lhsFull rhsFull
+    { result with
+      accepted
+      lhsDisplay := lhsFull
+      rhsDisplay := rhsFull
+      steps := result.steps.push .fullFallback
+      stats := { result.stats with fullFallbacks := result.stats.fullFallbacks + 1 }
+      fallbackUsed := true }
+
+/-- Build a normal conversion-profile entry from a delta-conversion result. -/
+def profileEntry (site : String) (owner : LFConversionProfileOwner)
+    (lhs rhs : ObjExpr) (result : LFDeltaConversionResult) : LFConversionProfileEntry :=
+  let lhs := eraseObjExprScopes lhs
+  let rhs := eraseObjExprScopes rhs
+  {
+    site, owner
+    actualHead? := lfExprHeadIdent? lhs
+    expectedHead? := lfExprHeadIdent? rhs
+    actualSize := objExprNodeCount lhs
+    expectedSize := objExprNodeCount rhs
+    normalizedActualSize? := some (objExprNodeCount result.lhsDisplay)
+    normalizedExpectedSize? := some (objExprNodeCount result.rhsDisplay)
+    compactSucceeded := result.accepted && result.stats.deltaSteps == 0 && !result.fallbackUsed
+    fullUnfoldFallback := result.fallbackUsed
+    accepted := result.accepted
+    unfoldedCounts := {}
+    deltaEnabled := true
+    deltaAccepted? := some result.accepted
+    deltaStats? := some result.stats
+    deltaFuelExhausted? := result.fuelExhausted? }
+
+end LFDeltaConversion
 
 /-- Acceptedness for the current cheap-then-full LF-definition comparison policy. -/
 def lfDefinitionComparisonAccepted (defs : LFDefinitionValueMap) (locals : NameSet)
