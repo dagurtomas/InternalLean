@@ -63,7 +63,7 @@ internal theorem LFConversionProfileSmoke.big_change : shapeIncl emptyCtx Big Bi
 
 /--
 info: LF conversion profile site=object_goal_conversion, theory=LFConversionProfileSmoke,
-owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=-,
+owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=0ms,
 compact=true, fallback=false, accepted=true, unfolded=none
 -/
 #guard_msgs (whitespace := lax) in
@@ -72,7 +72,7 @@ compact=true, fallback=false, accepted=true, unfolded=none
 
 /--
 info: LF conversion profile site=object_goal_conversion, theory=LFConversionProfileSmoke,
-owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=-,
+owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=0ms,
 compact=false, fallback=true, accepted=true, unfolded=Alias:2
 -/
 #guard_msgs (whitespace := lax) in
@@ -81,7 +81,7 @@ compact=false, fallback=true, accepted=true, unfolded=Alias:2
 
 /--
 info: LF conversion profile site=candidate_match, theory=LFConversionProfileSmoke,
-owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=-,
+owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=0ms,
 compact=true, fallback=false, accepted=true, unfolded=none
 -/
 #guard_msgs (whitespace := lax) in
@@ -90,7 +90,7 @@ compact=true, fallback=false, accepted=true, unfolded=none
 
 /--
 info: LF conversion profile site=candidate_match, theory=LFConversionProfileSmoke,
-owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=-,
+owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=0ms,
 compact=false, fallback=true, accepted=true, unfolded=Alias:2
 -/
 #guard_msgs (whitespace := lax) in

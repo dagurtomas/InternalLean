@@ -1894,12 +1894,46 @@ def elabInternalNativeResolvedSteps (target : InternalDefTarget) (sig : HLSignat
     [{ ctx, target := targetExpr }] steps
   pure resolved
 
-/-- Run a native tactic block and return its finalized LF proof/body term. -/
+/-- Emit one immediate progress line around native object-tactic elaboration. -/
+def emitInternalNativeTacticProgress (target : InternalDefTarget) (targetExpr : ObjExpr)
+    (stepCount : Nat) (message : String) : CommandElabM Unit := do
+  liftCoreM <| emitLFConversionProgressEntry {
+    site := "native_tactic_compile"
+    owner := {
+      theoryName := some target.theoryName
+      ownerKind := some "internal"
+      ownerName := some target.localName }
+    targetHead? := lfExprHeadIdent? targetExpr
+    targetSize := objExprNodeCount targetExpr
+    stepCount? := some stepCount
+    message }
+
+/-- Emit immediate progress before a native tactic target expression has been elaborated. -/
+def emitInternalNativeTacticPrepareProgress (target : InternalDefTarget)
+    (stepCount : Nat) (message : String) : CommandElabM Unit := do
+  liftCoreM <| emitLFConversionProgressEntry {
+    site := "native_tactic_prepare"
+    owner := {
+      theoryName := some target.theoryName
+      ownerKind := some "internal"
+      ownerName := some target.localName }
+    stepCount? := some stepCount
+    message }
+
+/-- Elaborate a native object-tactic block to an object proof term. -/
 def elabInternalNativeByTerm (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (targetExpr : ObjExpr) (bodyStx : Syntax)
     (steps : Array Syntax) : CommandElabM ObjExpr := do
+  emitInternalNativeTacticProgress target targetExpr steps.size "start"
+  let start ← IO.monoMsNow
   let resolved ← elabInternalNativeResolvedSteps target sig levels ctx targetExpr steps
+  let resolvedAt ← IO.monoMsNow
+  emitInternalNativeTacticProgress target targetExpr steps.size
+    s!"resolved elapsed={resolvedAt - start}ms"
   let result ← runInternalNativeResolvedTactic target sig levels ctx targetExpr resolved
+  let finishedAt ← IO.monoMsNow
+  emitInternalNativeTacticProgress target targetExpr steps.size
+    s!"done elapsed={finishedAt - start}ms"
   finalizeInternalNativeTacticResult target bodyStx result
 
 /-- Elaborate a canonical checked `internal def` Lean-term body through the quoted frontend. -/
@@ -1911,9 +1945,14 @@ def elabCanonicalLeanQuotedDefChecked (doc? : Option (TSyntax ``Parser.Command.d
     elabInternalDefSorryWithBinders doc? declNameStx declName #[] binders typeStx
     return ()
   let target ← resolveInternalDefTarget declName
+  if bodyStx.raw.isOfKind `Lean.Parser.Term.byTactic then
+    emitInternalNativeTacticPrepareProgress target 0 "scan"
+  let nativeSteps? := internalNativeLeanBySteps? bodyStx.raw
+  if let some steps := nativeSteps? then
+    emitInternalNativeTacticPrepareProgress target steps.size "start"
   let typeExpr ← elabObjExpr typeStx
   let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
-  if let some steps := internalNativeLeanBySteps? bodyStx.raw then
+  if let some steps := nativeSteps? then
     if internalNativeStepsContainDirectSorry steps then
       elabInternalDefSorryWithBinders doc? declNameStx declName #[] binders typeStx
       return ()
@@ -1948,9 +1987,14 @@ def elabCanonicalLeanQuotedTheoremChecked (doc? : Option (TSyntax ``Parser.Comma
     elabInternalTheoremSorryWithBinders doc? declNameStx declName #[] binders typeStx
     return ()
   let target ← resolveInternalDefTarget declName
+  if bodyStx.raw.isOfKind `Lean.Parser.Term.byTactic then
+    emitInternalNativeTacticPrepareProgress target 0 "scan"
+  let nativeSteps? := internalNativeLeanBySteps? bodyStx.raw
+  if let some steps := nativeSteps? then
+    emitInternalNativeTacticPrepareProgress target steps.size "start"
   let typeExpr ← elabObjExpr typeStx
   let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
-  if let some steps := internalNativeLeanBySteps? bodyStx.raw then
+  if let some steps := nativeSteps? then
     if internalNativeStepsContainDirectSorry steps then
       elabInternalTheoremSorryWithBinders doc? declNameStx declName #[] binders typeStx
       return ()
@@ -1980,6 +2024,7 @@ def elabNativeInternalDefByFromParsedTactics
     elabInternalDefSorryWithBinders doc? declNameStx declName levels binders typeStx
     return ()
   let target ← resolveInternalDefTarget declName
+  emitInternalNativeTacticPrepareProgress target stepSyntax.size "start"
   let params ← binders.mapM elabHLBinding
   let typeExpr ← elabObjExpr typeStx
   let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr

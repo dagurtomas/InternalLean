@@ -711,7 +711,10 @@ elab_rules : command
         | throwError "unknown type theory '{theory.getId}'"
       let actual ← elabObjExpr actual
       let expected ← elabObjExpr expected
+      let start ← IO.monoMsNow
       let entry := objectGoalConversionProfileEntry sig #[] actual expected
+      let stop ← IO.monoMsNow
+      let entry := { entry with elapsedMs? := some (stop - start) }
       logInfo m!"{renderLFConversionProfileEntry entry}"
 
 /-- Split an object application into a head and spine. -/
@@ -1098,7 +1101,10 @@ elab_rules : command
         | throwError "unknown type theory '{theory.getId}'"
       let candidate ← elabObjExpr candidate
       let expected ← elabObjExpr expected
+      let start ← IO.monoMsNow
       let entry := objectCandidateMatchProfileEntry sig #[] #[] candidate expected
+      let stop ← IO.monoMsNow
+      let entry := { entry with elapsedMs? := some (stop - start) }
       logInfo m!"{renderLFConversionProfileEntry entry}"
 
 /-- Whether all side conditions of a synthesized helper are discharged by the built-in hook. -/
@@ -3813,12 +3819,29 @@ mutual
     pure (mkObjectApps (.ident cand.name) args, nextIdx)
 end
 
+/-- Emit one immediate progress line before a pure object-tactic compilation run. -/
+def emitInternalObjectTacticCompileProgress (target : InternalDefTarget)
+    (goal : InternalObjectGoal) (steps : Array InternalTacticStep) (message : String) :
+    CommandElabM Unit := do
+  liftCoreM <| emitLFConversionProgressEntry {
+    site := "object_tactic_compile"
+    owner := {
+      theoryName := some target.theoryName
+      ownerKind := some "internal"
+      ownerName := some target.localName }
+    targetHead? := lfExprHeadIdent? goal.target
+    targetSize := objExprNodeCount goal.target
+    stepCount? := some steps.size
+    message }
+
 /-- Compile a minimal object tactic script into an object term for the given initial goal. -/
 def compileInternalObjectTacticsWithGoal (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (goal : InternalObjectGoal) (steps : Array InternalTacticStep)
     (stepStxs : Array Syntax := #[]) : CommandElabM ObjExpr := do
   if steps.isEmpty then
     throwError "empty object tactic script in `internal def {target.anchorName}`"
+  emitInternalObjectTacticCompileProgress target goal steps "start"
+  let start ← IO.monoMsNow
   let errorRef := stepStxs[0]?.getD (← getRef)
   match compileInternalObjectGoal target sig levels steps 0 goal with
   | .error err =>
@@ -3833,6 +3856,8 @@ def compileInternalObjectTacticsWithGoal (target : InternalDefTarget) (sig : HLS
         withRef errorRef <|
           throwError "object tactic script for `internal def {target.anchorName}` left unused \
             tactic step(s) starting at index {nextIdx}"
+      let stop ← IO.monoMsNow
+      emitInternalObjectTacticCompileProgress target goal steps s!"done elapsed={stop - start}ms"
       pure termExpr
 
 /-- Compile a minimal object tactic script into an object term. -/

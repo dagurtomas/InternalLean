@@ -45,8 +45,44 @@ register_option internalLean.conversion.sizeGrowthThreshold : Nat := {
   descr := "normalized-size growth threshold for InternalLean conversion profile entries"
 }
 
+register_option internalLean.conversion.delta : Bool := {
+  defValue := false
+  descr := "enable experimental head-directed LF delta conversion paths"
+}
+
+register_option internalLean.conversion.delta.compareFallback : Bool := {
+  defValue := true
+  descr := "allow full recursive unfolding fallback after experimental delta conversion fails"
+}
+
+register_option internalLean.conversion.delta.profile : Bool := {
+  defValue := false
+  descr := "log experimental head-directed LF delta conversion profile entries"
+}
+
+register_option internalLean.conversion.delta.maxPairVisits : Nat := {
+  defValue := 200000
+  descr := "maximum pair visits for experimental head-directed LF delta conversion"
+}
+
+register_option internalLean.conversion.delta.maxDeltaSteps : Nat := {
+  defValue := 100000
+  descr := "maximum definition-unfolding steps for experimental LF delta conversion"
+}
+
+register_option internalLean.conversion.delta.maxWhnfDepth : Nat := {
+  defValue := 100000
+  descr := "maximum weak-head reduction depth for experimental LF delta conversion"
+}
+
+register_option internalLean.conversion.delta.includeSyntaxDefs : Bool := {
+  defValue := false
+  descr := "include checked syntax_def bodies in experimental LF delta conversion environments"
+}
+
 initialize registerTraceClass `InternalLean.conversion
 initialize registerTraceClass `InternalLean.conversion.unfold
+initialize registerTraceClass `InternalLean.conversion.delta
 
 /-- Time an LF elaboration/checking phase when `internalLean.profileLFCheckPhases` is enabled. -/
 def profileLFCheckPhase (label : MessageData) (x : CoreM α) : CoreM α := do
@@ -2155,6 +2191,97 @@ def lfTypeCompareEqInLookup (lookup : LFCheckLookupContext) (actual expected : O
   let (actualN, expectedN) := normalizeLFTypeComparisonPairInLookup lookup actual expected
   lfExprAlphaEq actualN expectedN
 
+/-- Options for the experimental head-directed LF delta converter. -/
+structure LFDeltaConversionOptions where
+  enabled : Bool := false
+  compareWithFullFallback : Bool := true
+  trace : Bool := false
+  maxPairVisits : Nat := 200000
+  maxDeltaSteps : Nat := 100000
+  maxWhnfDepth : Nat := 100000
+  includeSyntaxDefs : Bool := false
+  deriving Inhabited, Repr
+
+/-- Read delta-conversion options from Lean options. -/
+def getLFDeltaConversionOptions : CoreM LFDeltaConversionOptions := do
+  return {
+    enabled := (← getBoolOption `internalLean.conversion.delta)
+    compareWithFullFallback :=
+      (← getBoolOption `internalLean.conversion.delta.compareFallback)
+    trace := (← getBoolOption `internalLean.conversion.delta.profile)
+    maxPairVisits := (← getNatOption `internalLean.conversion.delta.maxPairVisits 200000)
+    maxDeltaSteps := (← getNatOption `internalLean.conversion.delta.maxDeltaSteps 100000)
+    maxWhnfDepth := (← getNatOption `internalLean.conversion.delta.maxWhnfDepth 100000)
+    includeSyntaxDefs :=
+      (← getBoolOption `internalLean.conversion.delta.includeSyntaxDefs) }
+
+/-- Side of a conversion pair used by diagnostic delta-conversion traces. -/
+inductive LFDeltaConversionSide where
+  | lhs
+  | rhs
+  deriving Inhabited, Repr, BEq
+
+namespace LFDeltaConversionSide
+
+/-- User-facing label for a conversion-pair side. -/
+def label : LFDeltaConversionSide → String
+  | .lhs => "lhs"
+  | .rhs => "rhs"
+
+end LFDeltaConversionSide
+
+/-- One diagnostic step in a future head-directed delta-conversion trace. -/
+inductive LFDeltaConversionStep where
+  | alpha
+  | compactBetaEta
+  | congr (constructor : String)
+  | sameHead (name : Name)
+  | delta (side : LFDeltaConversionSide) (name : Name)
+  | fullFallback
+  | failed (reason : String)
+  deriving Inhabited, Repr, BEq
+
+/-- Statistics gathered by experimental head-directed LF delta conversion. -/
+structure LFDeltaConversionStats where
+  pairVisits : Nat := 0
+  pairCacheHits : Nat := 0
+  whnfCacheHits : Nat := 0
+  deltaCacheHits : Nat := 0
+  deltaSteps : Nat := 0
+  forcedByName : NameMap Nat := {}
+  forcedLhs : Nat := 0
+  forcedRhs : Nat := 0
+  fullFallbacks : Nat := 0
+  blockedByLocal : NameMap Nat := {}
+  maxInputSize : Nat := 0
+  maxWhnfSize : Nat := 0
+  deriving Inhabited, Repr
+
+/-- Add one forced-name observation to delta-conversion statistics. -/
+def LFDeltaConversionStats.recordForced (stats : LFDeltaConversionStats)
+    (side : LFDeltaConversionSide) (name : Name) : LFDeltaConversionStats :=
+  let forcedByName := incrementLFConversionNameCount stats.forcedByName name
+  match side with
+  | .lhs => { stats with
+      deltaSteps := stats.deltaSteps + 1
+      forcedByName
+      forcedLhs := stats.forcedLhs + 1 }
+  | .rhs => { stats with
+      deltaSteps := stats.deltaSteps + 1
+      forcedByName
+      forcedRhs := stats.forcedRhs + 1 }
+
+/-- Result scaffold for experimental head-directed LF delta conversion. -/
+structure LFDeltaConversionResult where
+  accepted : Bool := false
+  lhsDisplay : ObjExpr := .sort
+  rhsDisplay : ObjExpr := .sort
+  steps : Array LFDeltaConversionStep := #[]
+  stats : LFDeltaConversionStats := {}
+  fallbackUsed : Bool := false
+  fuelExhausted? : Option String := none
+  deriving Inhabited, Repr
+
 /-- Optional owner metadata for LF conversion-profile lines. -/
 structure LFConversionProfileOwner where
   theoryName : Option Name := none
@@ -2177,6 +2304,10 @@ structure LFConversionProfileEntry where
   fullUnfoldFallback : Bool := false
   accepted : Bool := true
   unfoldedCounts : NameMap Nat := {}
+  deltaEnabled : Bool := false
+  deltaAccepted? : Option Bool := none
+  deltaStats? : Option LFDeltaConversionStats := none
+  deltaFuelExhausted? : Option String := none
   deriving Inhabited, Repr
 
 /-- Render optional owner metadata for a conversion-profile line. -/
@@ -2194,6 +2325,26 @@ def renderLFConversionNameCounts (counts : NameMap Nat) : String :=
   else
     let items := items.take 8 |>.map fun (n, count) => s!"{n}:{count}"
     String.intercalate ", " items
+
+/-- Render a bounded diagnostic suffix for delta-conversion statistics. -/
+def renderLFDeltaConversionStats (stats : LFDeltaConversionStats) : String :=
+  s!"delta_steps={stats.deltaSteps}, pair_visits={stats.pairVisits}, " ++
+    s!"pair_cache_hits={stats.pairCacheHits}, whnf_cache_hits={stats.whnfCacheHits}, " ++
+    s!"delta_cache_hits={stats.deltaCacheHits}, " ++
+    s!"forced={renderLFConversionNameCounts stats.forcedByName}, " ++
+    s!"forced_lhs={stats.forcedLhs}, forced_rhs={stats.forcedRhs}, " ++
+    s!"full_fallbacks={stats.fullFallbacks}"
+
+/-- Render optional delta-conversion data attached to a conversion-profile entry. -/
+def renderLFDeltaConversionProfileSuffix (entry : LFConversionProfileEntry) : String :=
+  if !entry.deltaEnabled && entry.deltaAccepted?.isNone && entry.deltaStats?.isNone &&
+      entry.deltaFuelExhausted?.isNone then
+    ""
+  else
+    let accepted := entry.deltaAccepted?.map toString |>.getD "-"
+    let stats := entry.deltaStats?.map renderLFDeltaConversionStats |>.getD "delta_steps=-"
+    let fuel := entry.deltaFuelExhausted?.getD "-"
+    s!", delta=true, delta_accepted={accepted}, {stats}, fuel_exhausted={fuel}"
 
 /-- Maximum size growth observed by a conversion-profile entry. -/
 def LFConversionProfileEntry.maxSizeGrowth (entry : LFConversionProfileEntry) : Nat :=
@@ -2216,20 +2367,57 @@ def renderLFConversionProfileEntry (entry : LFConversionProfileEntry) : String :
     s!"heads={actualHead}/{expectedHead}, sizes={entry.actualSize}/{entry.expectedSize}, " ++
     s!"normalized_sizes={actualNorm}/{expectedNorm}, elapsed={elapsed}, " ++
     s!"compact={entry.compactSucceeded}, fallback={entry.fullUnfoldFallback}, " ++
-    s!"accepted={entry.accepted}, unfolded={renderLFConversionNameCounts entry.unfoldedCounts}"
+    s!"accepted={entry.accepted}, unfolded={renderLFConversionNameCounts entry.unfoldedCounts}" ++
+    renderLFDeltaConversionProfileSuffix entry
 
 /-- Log a conversion-profile entry when profiling or fallback tracing requests it. -/
 def logLFConversionProfileEntry (entry : LFConversionProfileEntry) : CoreM Unit := do
   let profile ← getBoolOption `internalLean.conversion.profile
   let traceFallbacks ← getBoolOption `internalLean.conversion.traceFallbacks
+  let deltaProfile ← getBoolOption `internalLean.conversion.delta.profile
   let slowThreshold ← getNatOption `internalLean.conversion.slowThresholdMs 50
   let growthThreshold ← getNatOption `internalLean.conversion.sizeGrowthThreshold 10
   let slow := match entry.elapsedMs? with
     | some ms => slowThreshold > 0 && ms >= slowThreshold
     | none => false
   let growth := growthThreshold > 0 && entry.maxSizeGrowth >= growthThreshold
-  if profile || (traceFallbacks && (entry.fullUnfoldFallback || slow || growth)) then
+  let delta := entry.deltaEnabled || entry.deltaAccepted?.isSome || entry.deltaStats?.isSome
+  if profile || deltaProfile ||
+      (traceFallbacks && (entry.fullUnfoldFallback || slow || growth || delta)) then
     logInfo m!"{renderLFConversionProfileEntry entry}"
+
+/-- One bounded progress line for long-running conversion-heavy elaboration paths. -/
+structure LFConversionProgressEntry where
+  site : String
+  owner : LFConversionProfileOwner := {}
+  targetHead? : Option Name := none
+  targetSize : Nat := 0
+  stepIndex? : Option Nat := none
+  stepCount? : Option Nat := none
+  message : String := ""
+  deriving Inhabited, Repr
+
+/-- Render one bounded conversion-progress line. -/
+def renderLFConversionProgressEntry (entry : LFConversionProgressEntry) : String :=
+  let targetHead := entry.targetHead?.map toString |>.getD "-"
+  let stepIndex := entry.stepIndex?.map toString |>.getD "-"
+  let stepCount := entry.stepCount?.map toString |>.getD "-"
+  s!"LF conversion progress site={entry.site}, {renderLFConversionProfileOwner entry.owner}, " ++
+    s!"target_head={targetHead}, target_size={entry.targetSize}, " ++
+    s!"step={stepIndex}/{stepCount}, message={entry.message}"
+
+/-- Whether conversion-progress lines should be emitted immediately. -/
+def lfConversionProgressEnabled : CoreM Bool := do
+  let profile ← getBoolOption `internalLean.conversion.profile
+  let traceFallbacks ← getBoolOption `internalLean.conversion.traceFallbacks
+  let deltaProfile ← getBoolOption `internalLean.conversion.delta.profile
+  pure (profile || traceFallbacks || deltaProfile)
+
+/-- Emit a bounded progress line immediately for paths that may time out before Lean flushes
+ordinary messages. -/
+def emitLFConversionProgressEntry (entry : LFConversionProgressEntry) : CoreM Unit := do
+  if (← lfConversionProgressEnabled) then
+    IO.eprintln (renderLFConversionProgressEntry entry)
 
 /-- Acceptedness for the current cheap-then-full LF-definition comparison policy. -/
 def lfDefinitionComparisonAccepted (defs : LFDefinitionValueMap) (locals : NameSet)
