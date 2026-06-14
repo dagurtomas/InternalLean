@@ -1031,10 +1031,10 @@ def objectRewriteConversionFailureMessage (app : LFObjectRewriteApplication)
 
 /-- Check one direct-LF object-level rewrite candidate against a goal target. -/
 def checkObjectRewrite (target : InternalDefTarget) (sig : HLSignature) (levels : Array Name)
-    (ctx : Array HLBinding) (goalTarget : ObjExpr) (rawName : Name) (symm : Bool) :
-    Except String CheckedLFObjectRewrite := do
+    (ctx : Array HLBinding) (goalTarget : ObjExpr) (rawName : Name) (symm : Bool)
+    (deltaOptions : LFDeltaConversionOptions := {}) : Except String CheckedLFObjectRewrite := do
   let app ← findObjectRewriteApplication target sig goalTarget rawName symm
-  match checkObjectGoalConversion sig levels ctx goalTarget app.newGoal with
+  match checkObjectGoalConversion sig levels ctx goalTarget app.newGoal deltaOptions with
   | .ok conversion =>
       pure {
         candidateName := app.candidate.name, lhs := app.lhs, rhs := app.rhs,
@@ -1095,6 +1095,94 @@ def objectCandidateLocalNames (ctx params : Array HLBinding) : NameSet :=
 def objectExprMentionsAnyPatternVar (paramVars : NameSet) (e : ObjExpr) : Bool :=
   (freeLFObjectIdentifiers e).toList.any fun n => paramVars.contains n.eraseMacroScopes
 
+/-- Candidate matching through the delta engine returns the old substitution plus diagnostics. -/
+structure ObjectCandidateDeltaMatchResult where
+  subst? : Option (NameMap ObjExpr) := none
+  deltaResult : LFDeltaConversionResult := {}
+  deriving Inhabited, Repr
+
+/-- Build a delta-conversion result from the shared candidate-matcher state. -/
+def objectCandidateDeltaResultOfState (accepted : Bool) (candidate expected : ObjExpr)
+    (st : LFDeltaConversionState) : LFDeltaConversionResult :=
+  let steps := if accepted then st.steps else st.steps.push (.failed "candidate_match")
+  {
+    accepted
+    lhsDisplay := eraseObjExprScopes candidate
+    rhsDisplay := eraseObjExprScopes expected
+    steps
+    stats := st.stats
+    fallbackUsed := false
+    fuelExhausted? := st.fuelExhausted? }
+
+/-- Delta-aware candidate matcher.
+
+Pattern variables are assigned only by the existing structural pattern-matching rule.  Delta
+conversion is used only for subcomparisons whose candidate side contains no pattern variable, so
+unfolding a checked definition never creates a new hidden pattern-variable assignment. -/
+partial def matchObjectCandidateDeltaCore (env : LFDeltaConversionEnv) (paramVars : NameSet)
+    (candidate expected : ObjExpr) (subst : NameMap ObjExpr) : LFDeltaConversion.M
+      (Option (NameMap ObjExpr)) := do
+  let candidate := eraseObjExprScopes candidate
+  let expected := eraseObjExprScopes expected
+  match matchObjectPattern paramVars candidate expected subst with
+  | some subst => return some subst
+  | none => pure ()
+  unless objectExprMentionsAnyPatternVar paramVars candidate do
+    if ← LFDeltaConversion.convertCore env candidate expected then
+      return some subst
+    else
+      return none
+  match candidate, expected with
+  | .app f a, .app g b =>
+      match ← matchObjectCandidateDeltaCore env paramVars f g subst with
+      | some subst => matchObjectCandidateDeltaCore env paramVars a b subst
+      | none => return none
+  | .arrow x A B, .arrow y A' B' | .arrow x A B, .funArrow y A' B'
+  | .funArrow x A B, .arrow y A' B' | .funArrow x A B, .funArrow y A' B' =>
+      if x.map (·.eraseMacroScopes) == y.map (·.eraseMacroScopes) then
+        match ← matchObjectCandidateDeltaCore env paramVars A A' subst with
+        | some subst => matchObjectCandidateDeltaCore env paramVars B B' subst
+        | none => return none
+      else
+        return none
+  | .sigma x A B, .sigma y A' B' =>
+      if x.map (·.eraseMacroScopes) == y.map (·.eraseMacroScopes) then
+        match ← matchObjectCandidateDeltaCore env paramVars A A' subst with
+        | some subst => matchObjectCandidateDeltaCore env paramVars B B' subst
+        | none => return none
+      else
+        return none
+  | .pair a b, .pair a' b' =>
+      match ← matchObjectCandidateDeltaCore env paramVars a a' subst with
+      | some subst => matchObjectCandidateDeltaCore env paramVars b b' subst
+      | none => return none
+  | .fst e, .fst e' | .snd e, .snd e' =>
+      matchObjectCandidateDeltaCore env paramVars e e' subst
+  | .lam xs body, .lam ys body' =>
+      if xs.map (·.eraseMacroScopes) == ys.map (·.eraseMacroScopes) then
+        matchObjectCandidateDeltaCore env paramVars body body' subst
+      else
+        return none
+  | .jeq l r, .jeq l' r' =>
+      match ← matchObjectCandidateDeltaCore env paramVars l l' subst with
+      | some subst => matchObjectCandidateDeltaCore env paramVars r r' subst
+      | none => return none
+  | _, _ => return none
+
+/-- Run candidate matching through the delta engine and retain bounded diagnostics. -/
+def matchObjectCandidateDeltaResult (defs : LFDefinitionValueMap) (locals paramVars : NameSet)
+    (candidate expected : ObjExpr) (options : LFDeltaConversionOptions) :
+    ObjectCandidateDeltaMatchResult :=
+  let env : LFDeltaConversionEnv := { defs, locals, options }
+  let candidate := eraseObjExprScopes candidate
+  let expected := eraseObjExprScopes expected
+  let (substOpt, st) :=
+    (matchObjectCandidateDeltaCore env paramVars candidate expected {}).run {}
+  let accepted := substOpt.isSome
+  {
+    subst? := substOpt
+    deltaResult := objectCandidateDeltaResultOfState accepted candidate expected st }
+
 /-- Match same-head checked LF-definition applications without unfolding their bodies. -/
 def matchSameCheckedDefinitionHead? (defs : LFDefinitionValueMap) (locals paramVars : NameSet)
     (candidate expected : ObjExpr) (subst : NameMap ObjExpr) : Option (NameMap ObjExpr) :=
@@ -1146,24 +1234,38 @@ def matchObjectCandidateFullUnfold? (defs : LFDefinitionValueMap) (locals paramV
 
 /-- Candidate-conclusion match with compact checks before full LF-definition unfolding. -/
 def matchObjectCandidateCheapFirst? (defs : LFDefinitionValueMap) (locals paramVars : NameSet)
-    (candidateConclusion expected : ObjExpr) : Option (NameMap ObjExpr) :=
+    (candidateConclusion expected : ObjExpr) (deltaOptions : LFDeltaConversionOptions := {}) :
+    Option (NameMap ObjExpr) :=
   match matchObjectCandidateCompact? defs locals paramVars candidateConclusion expected with
   | some subst => some subst
-  | none => matchObjectCandidateFullUnfold? defs locals paramVars candidateConclusion expected
+  | none =>
+      if deltaOptions.enabled then
+        let delta := matchObjectCandidateDeltaResult defs locals paramVars candidateConclusion
+          expected deltaOptions
+        match delta.subst? with
+        | some subst => some subst
+        | none =>
+            if deltaOptions.compareWithFullFallback then
+              matchObjectCandidateFullUnfold? defs locals paramVars candidateConclusion expected
+            else
+              none
+      else
+        matchObjectCandidateFullUnfold? defs locals paramVars candidateConclusion expected
 
 /-- Match a no-user-input candidate conclusion against a premise to synthesize. -/
 def matchObjectSynthesisCandidate? (sig : HLSignature) (ctx : Array HLBinding)
-    (params : Array HLBinding) (candidateConclusion expected : ObjExpr) :
-    Option (NameMap ObjExpr) :=
+    (params : Array HLBinding) (candidateConclusion expected : ObjExpr)
+    (deltaOptions : LFDeltaConversionOptions := {}) : Option (NameMap ObjExpr) :=
   let defs := objectTacticLFDefinitionValues sig
   let paramVars := objectCandidateParamVars params
   let paramLocals := objectCandidateLocalNames ctx params
   matchObjectCandidateCheapFirst? defs paramLocals paramVars candidateConclusion expected
+    deltaOptions
 
 /-- Build a bounded profile entry for candidate-conclusion matching. -/
 def objectCandidateMatchProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
-    (params : Array HLBinding) (candidateConclusion expected : ObjExpr) :
-    LFConversionProfileEntry :=
+    (params : Array HLBinding) (candidateConclusion expected : ObjExpr)
+    (deltaOptions : LFDeltaConversionOptions := {}) : LFConversionProfileEntry :=
   let defs := objectTacticLFDefinitionValues sig
   let paramVars := objectCandidateParamVars params
   let paramLocals := objectCandidateLocalNames ctx params
@@ -1173,9 +1275,27 @@ def objectCandidateMatchProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
     (matchObjectCandidateCompact? defs paramLocals paramVars candidateConclusion expected).isSome
   let candidateCheap := normalizeLFExprForConversionWithLocals {} paramLocals candidateConclusion
   let expectedCheap := normalizeLFExprForConversionWithLocals {} paramLocals expected
-  let (accepted, normActual?, normExpected?, counts) :=
-    if compactSucceeded then
-      (true, some (objExprNodeCount candidateCheap), some (objExprNodeCount expectedCheap), {})
+  if compactSucceeded then
+    {
+      site := "candidate_match"
+      owner := { theoryName := some sig.name }
+      actualHead? := lfExprHeadIdent? candidateConclusion
+      expectedHead? := lfExprHeadIdent? expected
+      actualSize := objExprNodeCount candidateConclusion
+      expectedSize := objExprNodeCount expected
+      normalizedActualSize? := some (objExprNodeCount candidateCheap)
+      normalizedExpectedSize? := some (objExprNodeCount expectedCheap)
+      compactSucceeded := true
+      fullUnfoldFallback := false
+      accepted := true
+      unfoldedCounts := {} }
+  else if deltaOptions.enabled then
+    let delta := matchObjectCandidateDeltaResult defs paramLocals paramVars candidateConclusion
+      expected deltaOptions
+    if delta.deltaResult.accepted || !deltaOptions.compareWithFullFallback then
+      let entry := LFDeltaConversion.profileEntry "candidate_match" { theoryName := some sig.name }
+        candidateConclusion expected delta.deltaResult
+      { entry with compactSucceeded := false, fullUnfoldFallback := false }
     else
       let candidateN := unfoldLFDefinitionsInExprWithLocals defs paramLocals candidateConclusion
       let expectedN := unfoldLFDefinitionsInExprWithLocals defs paramLocals expected
@@ -1183,20 +1303,44 @@ def objectCandidateMatchProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
       let counts :=
         mergeLFConversionNameCounts (countLFDefinitionUnfolds defs paramLocals candidateConclusion)
           (countLFDefinitionUnfolds defs paramLocals expected)
-      (accepted, some (objExprNodeCount candidateN), some (objExprNodeCount expectedN), counts)
-  {
-    site := "candidate_match"
-    owner := { theoryName := some sig.name }
-    actualHead? := lfExprHeadIdent? candidateConclusion
-    expectedHead? := lfExprHeadIdent? expected
-    actualSize := objExprNodeCount candidateConclusion
-    expectedSize := objExprNodeCount expected
-    normalizedActualSize? := normActual?
-    normalizedExpectedSize? := normExpected?
-    compactSucceeded
-    fullUnfoldFallback := !compactSucceeded
-    accepted
-    unfoldedCounts := counts }
+      {
+        site := "candidate_match"
+        owner := { theoryName := some sig.name }
+        actualHead? := lfExprHeadIdent? candidateConclusion
+        expectedHead? := lfExprHeadIdent? expected
+        actualSize := objExprNodeCount candidateConclusion
+        expectedSize := objExprNodeCount expected
+        normalizedActualSize? := some (objExprNodeCount candidateN)
+        normalizedExpectedSize? := some (objExprNodeCount expectedN)
+        compactSucceeded := false
+        fullUnfoldFallback := true
+        accepted
+        unfoldedCounts := counts
+        deltaEnabled := true
+        deltaAccepted? := some false
+        deltaStats? := some { delta.deltaResult.stats with
+          fullFallbacks := delta.deltaResult.stats.fullFallbacks + 1 }
+        deltaFuelExhausted? := delta.deltaResult.fuelExhausted? }
+  else
+    let candidateN := unfoldLFDefinitionsInExprWithLocals defs paramLocals candidateConclusion
+    let expectedN := unfoldLFDefinitionsInExprWithLocals defs paramLocals expected
+    let accepted := (matchObjectPattern paramVars candidateN expectedN {}).isSome
+    let counts :=
+      mergeLFConversionNameCounts (countLFDefinitionUnfolds defs paramLocals candidateConclusion)
+        (countLFDefinitionUnfolds defs paramLocals expected)
+    {
+      site := "candidate_match"
+      owner := { theoryName := some sig.name }
+      actualHead? := lfExprHeadIdent? candidateConclusion
+      expectedHead? := lfExprHeadIdent? expected
+      actualSize := objExprNodeCount candidateConclusion
+      expectedSize := objExprNodeCount expected
+      normalizedActualSize? := some (objExprNodeCount candidateN)
+      normalizedExpectedSize? := some (objExprNodeCount expectedN)
+      compactSucceeded := false
+      fullUnfoldFallback := true
+      accepted
+      unfoldedCounts := counts }
 
 syntax "#print_internal_candidate_match_profile" ident "(" ttExpr ")" "(" ttExpr ")" : command
 
@@ -1208,8 +1352,9 @@ elab_rules : command
         | throwError "unknown type theory '{theory.getId}'"
       let candidate ← elabObjExpr candidate
       let expected ← elabObjExpr expected
+      let options ← liftCoreM getLFDeltaConversionOptions
       let start ← IO.monoMsNow
-      let entry := objectCandidateMatchProfileEntry sig #[] #[] candidate expected
+      let entry := objectCandidateMatchProfileEntry sig #[] #[] candidate expected options
       let stop ← IO.monoMsNow
       let entry := { entry with elapsedMs? := some (stop - start) }
       logInfo m!"{renderLFConversionProfileEntry entry}"
@@ -1266,17 +1411,17 @@ def checkRewriteHelperSideConditions (rawName helperKind helperName : Name)
 
 /-- Try to synthesize a premise proof from locals and simple already-declared LF facts. -/
 partial def synthesizeObjectPremiseProof? (target : InternalDefTarget) (sig : HLSignature)
-    (levels : Array Name) (ctx : Array HLBinding) (expected : ObjExpr) (fuel : Nat := 2) :
-    Except String (Option ObjExpr) := do
+    (levels : Array Name) (ctx : Array HLBinding) (expected : ObjExpr) (fuel : Nat := 2)
+    (deltaOptions : LFDeltaConversionOptions := {}) : Except String (Option ObjExpr) := do
   for h in ctx.reverse do
-    if objectGoalsConvertible sig levels ctx h.typeExpr expected then
+    if objectGoalsConvertible sig levels ctx h.typeExpr expected deltaOptions then
       return some (.ident h.name)
   if fuel == 0 then
     return none
   for d in sig.lfObjectDefs do
     let (params, conclusionExpr) := splitObjectTelescope d.typeExpr
     if let some subst :=
-        matchObjectSynthesisCandidate? sig ctx params conclusionExpr expected then
+        matchObjectSynthesisCandidate? sig ctx params conclusionExpr expected deltaOptions then
       let mut args := #[]
       let mut ok := true
       for param in params do
@@ -1289,7 +1434,7 @@ partial def synthesizeObjectPremiseProof? (target : InternalDefTarget) (sig : HL
     if let some typeExpr := c.typeExpr? then
       let (params, conclusionExpr) := splitObjectTelescope typeExpr
       if let some subst :=
-          matchObjectSynthesisCandidate? sig ctx params conclusionExpr expected then
+          matchObjectSynthesisCandidate? sig ctx params conclusionExpr expected deltaOptions then
         let mut args := #[]
         let mut ok := true
         for param in params do
@@ -1300,7 +1445,7 @@ partial def synthesizeObjectPremiseProof? (target : InternalDefTarget) (sig : HL
           return some (mkObjectApps (.ident c.name) args)
   for thm in sig.lfJudgmentTheorems do
     if let some subst0 := matchObjectSynthesisCandidate? sig ctx thm.binders
-        thm.judgmentExpr expected then
+        thm.judgmentExpr expected deltaOptions then
       let mut subst := subst0
       let mut args := #[]
       let mut ok := true
@@ -1309,7 +1454,8 @@ partial def synthesizeObjectPremiseProof? (target : InternalDefTarget) (sig : HL
         | some arg => args := args.push arg
         | none =>
             let binderType := substObjectVars subst binder.typeExpr
-            match ← synthesizeObjectPremiseProof? target sig levels ctx binderType (fuel - 1) with
+            match ← synthesizeObjectPremiseProof? target sig levels ctx binderType (fuel - 1)
+                deltaOptions with
             | some proof =>
                 args := args.push proof
                 subst := subst.insert binder.name.eraseMacroScopes proof
@@ -1320,7 +1466,7 @@ partial def synthesizeObjectPremiseProof? (target : InternalDefTarget) (sig : HL
     if !objectSideConditionsAreBuiltinTrivial sig ruleDecl.sideConditions then
       continue
     if let some subst0 := matchObjectSynthesisCandidate? sig ctx ruleDecl.params
-        ruleDecl.conclusionExpr expected then
+        ruleDecl.conclusionExpr expected deltaOptions then
       let mut subst := subst0
       let mut args := #[]
       let mut ok := true
@@ -1332,7 +1478,7 @@ partial def synthesizeObjectPremiseProof? (target : InternalDefTarget) (sig : HL
         if ok then
           let premiseExpected := substObjectVars subst prem.judgmentExpr
           match ← synthesizeObjectPremiseProof? target sig levels ctx premiseExpected
-              (fuel - 1) with
+              (fuel - 1) deltaOptions with
           | some proof =>
               args := args.push proof
               subst := subst.insert prem.name.eraseMacroScopes proof
@@ -1344,8 +1490,9 @@ partial def synthesizeObjectPremiseProof? (target : InternalDefTarget) (sig : HL
 /-- Synthesize an extra rewrite-helper premise or report the missing obligation. -/
 def synthesizeRewriteHelperPremise (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (rawName helperKind helperName : Name)
-    (premName : Name) (expected : ObjExpr) : Except String ObjExpr := do
-  match ← synthesizeObjectPremiseProof? target sig levels ctx expected with
+    (premName : Name) (expected : ObjExpr) (deltaOptions : LFDeltaConversionOptions := {}) :
+    Except String ObjExpr := do
+  match ← synthesizeObjectPremiseProof? target sig levels ctx expected 2 deltaOptions with
   | some proof => pure proof
   | none =>
       throw <| String.intercalate "\n" [
@@ -1369,7 +1516,8 @@ def objectRewriteEvidenceTerm (app : LFObjectRewriteApplication) : Except String
 def objectRewriteSymmetryRuleTerm? (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (rawName : Name)
     (_app : LFObjectRewriteApplication)
-    (symm : LFRewriteSymmetryDecl) (ruleDecl : RuleDecl) (directTerm directActual : ObjExpr) :
+    (symm : LFRewriteSymmetryDecl) (ruleDecl : RuleDecl) (directTerm directActual : ObjExpr)
+    (deltaOptions : LFDeltaConversionOptions := {}) :
     Except String (Option (ObjExpr × ObjExpr)) := do
   let some evPremise := ruleDecl.premises.find? (fun p =>
       p.name.eraseMacroScopes == symm.evidenceParam.eraseMacroScopes)
@@ -1394,7 +1542,7 @@ def objectRewriteSymmetryRuleTerm? (target : InternalDefTarget) (sig : HLSignatu
     else
       let expected := substObjectVars subst prem.judgmentExpr
       let proof ← synthesizeRewriteHelperPremise target sig levels ctx rawName `rewrite_symmetry
-        symm.symmetryName prem.name expected
+        symm.symmetryName prem.name expected deltaOptions
       args := args.push proof
       subst := subst.insert prem.name.eraseMacroScopes proof
   checkRewriteHelperSideConditions rawName `rewrite_symmetry symm.symmetryName
@@ -1407,7 +1555,8 @@ def objectRewriteSymmetryTheoremTerm? (target : InternalDefTarget) (sig : HLSign
     (levels : Array Name) (ctx : Array HLBinding) (_rawName : Name)
     (_app : LFObjectRewriteApplication)
     (symm : LFRewriteSymmetryDecl) (thm : LFJudgmentTheoremDecl)
-    (directTerm directActual : ObjExpr) : Except String (Option (ObjExpr × ObjExpr)) := do
+    (directTerm directActual : ObjExpr) (deltaOptions : LFDeltaConversionOptions := {}) :
+    Except String (Option (ObjExpr × ObjExpr)) := do
   let some evBinder := thm.binders.find? (fun b =>
       b.name.eraseMacroScopes == symm.evidenceParam.eraseMacroScopes)
     | pure none
@@ -1428,7 +1577,7 @@ def objectRewriteSymmetryTheoremTerm? (target : InternalDefTarget) (sig : HLSign
       | some arg => args := args.push arg
       | none =>
           let expected := substObjectVars subst binder.typeExpr
-          match ← synthesizeObjectPremiseProof? target sig levels ctx expected with
+          match ← synthesizeObjectPremiseProof? target sig levels ctx expected 2 deltaOptions with
           | some proof =>
               args := args.push proof
               subst := subst.insert binder.name.eraseMacroScopes proof
@@ -1441,7 +1590,8 @@ def objectRewriteSymmetryTheoremTerm? (target : InternalDefTarget) (sig : HLSign
 def objectRewriteCongruenceRuleTerm? (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (rawName : Name)
     (congr : LFRewriteCongruenceDecl)
-    (ruleDecl : RuleDecl) (sourceTerm sourceActual : ObjExpr) :
+    (ruleDecl : RuleDecl) (sourceTerm sourceActual : ObjExpr)
+    (deltaOptions : LFDeltaConversionOptions := {}) :
     Except String (Option (ObjExpr × ObjExpr)) := do
   let some evPremise := ruleDecl.premises.find? (fun p =>
       p.name.eraseMacroScopes == congr.evidenceParam.eraseMacroScopes)
@@ -1465,7 +1615,7 @@ def objectRewriteCongruenceRuleTerm? (target : InternalDefTarget) (sig : HLSigna
       subst := subst.insert prem.name.eraseMacroScopes sourceTerm
     else
       let expected := substObjectVars subst prem.judgmentExpr
-      match ← synthesizeObjectPremiseProof? target sig levels ctx expected with
+      match ← synthesizeObjectPremiseProof? target sig levels ctx expected 2 deltaOptions with
       | some proof =>
           args := args.push proof
           subst := subst.insert prem.name.eraseMacroScopes proof
@@ -1481,7 +1631,8 @@ def objectRewriteCongruenceRuleTerm? (target : InternalDefTarget) (sig : HLSigna
 def objectRewriteCongruenceTheoremTerm? (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (_rawName : Name)
     (congr : LFRewriteCongruenceDecl)
-    (thm : LFJudgmentTheoremDecl) (sourceTerm sourceActual : ObjExpr) :
+    (thm : LFJudgmentTheoremDecl) (sourceTerm sourceActual : ObjExpr)
+    (deltaOptions : LFDeltaConversionOptions := {}) :
     Except String (Option (ObjExpr × ObjExpr)) := do
   let some evBinder := thm.binders.find? (fun b =>
       b.name.eraseMacroScopes == congr.evidenceParam.eraseMacroScopes)
@@ -1503,7 +1654,7 @@ def objectRewriteCongruenceTheoremTerm? (target : InternalDefTarget) (sig : HLSi
       | some arg => args := args.push arg
       | none =>
           let expected := substObjectVars subst binder.typeExpr
-          match ← synthesizeObjectPremiseProof? target sig levels ctx expected with
+          match ← synthesizeObjectPremiseProof? target sig levels ctx expected 2 deltaOptions with
           | some proof =>
               args := args.push proof
               subst := subst.insert binder.name.eraseMacroScopes proof
@@ -1515,7 +1666,8 @@ def objectRewriteCongruenceTheoremTerm? (target : InternalDefTarget) (sig : HLSi
 /-- Generate relation evidence candidates by repeatedly applying congruence metadata. -/
 partial def objectRewriteEvidenceCongruenceCandidates (target : InternalDefTarget)
     (sig : HLSignature) (levels : Array Name) (ctx : Array HLBinding) (rawName relationName : Name)
-    (fuel : Nat) (sourceTerm sourceActual : ObjExpr) :
+    (fuel : Nat) (sourceTerm sourceActual : ObjExpr)
+    (deltaOptions : LFDeltaConversionOptions := {}) :
     Except String (Array (ObjExpr × ObjExpr)) := do
   let mut out := #[(sourceTerm, sourceActual)]
   if fuel == 0 then
@@ -1527,17 +1679,17 @@ partial def objectRewriteEvidenceCongruenceCandidates (target : InternalDefTarge
       if let some ruleDecl := sig.rules.find? (fun r =>
           sameObjectName r.name congr.congruenceName) then
         objectRewriteCongruenceRuleTerm? target sig levels ctx rawName congr ruleDecl
-          sourceTerm sourceActual
+          sourceTerm sourceActual deltaOptions
       else if let some thm := sig.lfJudgmentTheorems.find? (fun t =>
           sameObjectName t.name congr.congruenceName) then
         objectRewriteCongruenceTheoremTerm? target sig levels ctx rawName congr thm
-          sourceTerm sourceActual
+          sourceTerm sourceActual deltaOptions
       else
         pure none
     match lifted? with
     | some (term, actual) =>
         let nested ← objectRewriteEvidenceCongruenceCandidates target sig levels ctx rawName
-          relationName (fuel - 1) term actual
+          relationName (fuel - 1) term actual deltaOptions
         out := out ++ nested
     | none => pure ()
   return out
@@ -1545,7 +1697,8 @@ partial def objectRewriteEvidenceCongruenceCandidates (target : InternalDefTarge
 /-- Build oriented relation evidence for a transport rule, applying symmetry if needed. -/
 def objectRewriteOrientedEvidenceForTransport (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (app : LFObjectRewriteApplication)
-    (rawName : Name) : Except String (ObjExpr × ObjExpr) := do
+    (rawName : Name) (deltaOptions : LFDeltaConversionOptions := {}) :
+    Except String (ObjExpr × ObjExpr) := do
   let directTerm ← objectRewriteEvidenceTerm app
   let directActual := substObjectVars app.rewriteSubst app.candidate.evidenceExpr
   if !app.reversed then
@@ -1562,13 +1715,13 @@ def objectRewriteOrientedEvidenceForTransport (target : InternalDefTarget) (sig 
   for symm in symmetries do
     if let some ruleDecl := sig.rules.find? (fun r => sameObjectName r.name symm.symmetryName) then
       match ← objectRewriteSymmetryRuleTerm? target sig levels ctx rawName app symm ruleDecl
-          directTerm directActual with
+          directTerm directActual deltaOptions with
       | some out => return out
       | none => pure ()
     else if let some thm := sig.lfJudgmentTheorems.find? (fun t =>
         sameObjectName t.name symm.symmetryName) then
       match ← objectRewriteSymmetryTheoremTerm? target sig levels ctx rawName app symm thm
-          directTerm directActual with
+          directTerm directActual deltaOptions with
       | some out => return out
       | none => pure ()
   throw <| String.intercalate "\n" [
@@ -1579,7 +1732,8 @@ def objectRewriteOrientedEvidenceForTransport (target : InternalDefTarget) (sig 
 /-- Try to wrap a proof of the rewritten goal with a declared transport rule. -/
 def buildObjectRewriteTransportTerm (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (app : LFObjectRewriteApplication)
-    (rawName : Name) (sourceProof : ObjExpr) : Except String ObjExpr := do
+    (rawName : Name) (sourceProof : ObjExpr) (deltaOptions : LFDeltaConversionOptions := {}) :
+    Except String ObjExpr := do
   let some relationName := objectAppHeadName? app.candidate.evidenceExpr
     | throw s!"object tactic `rw {rawName}` found rewrite evidence, but its statement is \
         not headed by a relation identifier"
@@ -1594,9 +1748,9 @@ def buildObjectRewriteTransportTerm (target : InternalDefTarget) (sig : HLSignat
       s!"object tactic `rw {rawName}` found rewrite evidence for '{relationName}'",
       "but no `transport_rule` metadata is declared for that relation"]
   let (baseEvidenceTerm, baseEvidenceActual) ←
-    objectRewriteOrientedEvidenceForTransport target sig levels ctx app rawName
+    objectRewriteOrientedEvidenceForTransport target sig levels ctx app rawName deltaOptions
   let evidenceCandidates ← objectRewriteEvidenceCongruenceCandidates target sig levels ctx rawName
-    relationName 4 baseEvidenceTerm baseEvidenceActual
+    relationName 4 baseEvidenceTerm baseEvidenceActual deltaOptions
   for tr in transports do
     let some ruleDecl := sig.rules.find? (fun r => sameObjectName r.name tr.ruleName)
       | continue
@@ -1642,7 +1796,7 @@ def buildObjectRewriteTransportTerm (target : InternalDefTarget) (sig : HLSignat
       else
         let expected := substObjectVars substArgs prem.judgmentExpr
         let proof ← synthesizeRewriteHelperPremise target sig levels ctx rawName
-          `transport_rule tr.ruleName prem.name expected
+          `transport_rule tr.ruleName prem.name expected deltaOptions
         args := args.push proof
         substArgs := substArgs.insert prem.name.eraseMacroScopes proof
     checkRewriteHelperSideConditions rawName `transport_rule tr.ruleName ruleDecl.sideConditions
@@ -1662,41 +1816,42 @@ def buildObjectRewriteTransportTerm (target : InternalDefTarget) (sig : HLSignat
 /-- Check that a rewrite step is usable by conversion or by declared transport metadata. -/
 def rewriteObjectGoalForTactic (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (goalTarget : ObjExpr) (rawName : Name)
-    (symm : Bool) : Except String ObjExpr := do
+    (symm : Bool) (deltaOptions : LFDeltaConversionOptions := {}) : Except String ObjExpr := do
   let app ← findObjectRewriteApplication target sig goalTarget rawName symm
-  match checkObjectGoalConversion sig levels ctx goalTarget app.newGoal with
+  match checkObjectGoalConversion sig levels ctx goalTarget app.newGoal deltaOptions with
   | .ok _ => pure app.newGoal
   | .error _ =>
       discard <| buildObjectRewriteTransportTerm target sig levels ctx app rawName
-        (.ident (.str .anonymous "?rw_source"))
+        (.ident (.str .anonymous "?rw_source")) deltaOptions
       pure app.newGoal
 
 /-- Apply a sequence of tactic-usable object rewrites to a goal target. -/
 def rewriteObjectGoalSeqForTactic (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (goalTarget : ObjExpr)
-    (items : Array (Name × Bool)) : Except String ObjExpr := do
+    (items : Array (Name × Bool)) (deltaOptions : LFDeltaConversionOptions := {}) :
+    Except String ObjExpr := do
   if items.isEmpty then
     throw "object tactic `rw []` failed: rewrite list is empty"
   let mut goal := goalTarget
   for (rawName, symm) in items do
-    goal ← rewriteObjectGoalForTactic target sig levels ctx goal rawName symm
+    goal ← rewriteObjectGoalForTactic target sig levels ctx goal rawName symm deltaOptions
   pure goal
 
 /-- Apply one checked direct-LF object-level rewrite candidate to a goal target. -/
 def rewriteObjectGoal (target : InternalDefTarget) (sig : HLSignature) (levels : Array Name)
-    (ctx : Array HLBinding) (goalTarget : ObjExpr) (rawName : Name) (symm : Bool) :
-    Except String ObjExpr := do
-  return (← checkObjectRewrite target sig levels ctx goalTarget rawName symm).newGoal
+    (ctx : Array HLBinding) (goalTarget : ObjExpr) (rawName : Name) (symm : Bool)
+    (deltaOptions : LFDeltaConversionOptions := {}) : Except String ObjExpr := do
+  return (← checkObjectRewrite target sig levels ctx goalTarget rawName symm deltaOptions).newGoal
 
 /-- Apply a sequence of checked direct-LF object rewrite candidates to a goal target. -/
 def rewriteObjectGoalSeq (target : InternalDefTarget) (sig : HLSignature) (levels : Array Name)
-    (ctx : Array HLBinding) (goalTarget : ObjExpr) (items : Array (Name × Bool)) :
-    Except String ObjExpr := do
+    (ctx : Array HLBinding) (goalTarget : ObjExpr) (items : Array (Name × Bool))
+    (deltaOptions : LFDeltaConversionOptions := {}) : Except String ObjExpr := do
   if items.isEmpty then
     throw "object tactic `rw []` failed: rewrite list is empty"
   let mut goal := goalTarget
   for (rawName, symm) in items do
-    goal ← rewriteObjectGoal target sig levels ctx goal rawName symm
+    goal ← rewriteObjectGoal target sig levels ctx goal rawName symm deltaOptions
   pure goal
 
 /-- One rewrite or conversion-plugin step selected by object `simp`. -/
@@ -1897,7 +2052,7 @@ def findObjectSimpRewrite? (target : InternalDefTarget) (sig : HLSignature)
         | .ok _ => return some { rawName, newGoal := app.newGoal, app? := some app }
         | .error _ =>
             match buildObjectRewriteTransportTerm target sig levels ctx app rawName
-                (.ident (.str .anonymous "?simp_source")) with
+                (.ident (.str .anonymous "?simp_source")) deltaOptions with
             | .ok _ =>
                 return some {
                   rawName, newGoal := app.newGoal, app? := some app, needsTransport := true }
@@ -1946,13 +2101,15 @@ def simpObjectGoal (target : InternalDefTarget) (sig : HLSignature) (levels : Ar
 /-- Wrap a proof of a simplified goal with transport evidence used by object `simp`. -/
 def wrapObjectSimpTransports (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (steps : Array ObjectSimpRewriteStep)
-    (sourceProof : ObjExpr) : Except String ObjExpr := do
+    (sourceProof : ObjExpr) (deltaOptions : LFDeltaConversionOptions := {}) :
+    Except String ObjExpr := do
   let mut proof := sourceProof
   for step in steps.reverse do
     if step.needsTransport then
       match step.app? with
       | some app =>
           proof ← buildObjectRewriteTransportTerm target sig levels ctx app step.rawName proof
+            deltaOptions
       | none => throw "internal error: object simp transport step has no rewrite application"
   return proof
 
@@ -2055,12 +2212,13 @@ partial def internalObjExprMentionsName (needle : Name) : ObjExpr → Bool
 
 /-- Match a candidate conclusion against a goal, unfolding checked LF definitions if needed. -/
 def matchInternalCandidateConclusion? (sig : HLSignature) (ctx : Array HLBinding)
-    (params : Array HLBinding) (candidateConclusion goalTarget : ObjExpr) :
-    Option (NameMap ObjExpr) :=
+    (params : Array HLBinding) (candidateConclusion goalTarget : ObjExpr)
+    (deltaOptions : LFDeltaConversionOptions := {}) : Option (NameMap ObjExpr) :=
   let defs := objectTacticLFDefinitionValues sig
   let paramVars := objectCandidateParamVars params
   let paramLocals := objectCandidateLocalNames ctx params
   matchObjectCandidateCheapFirst? defs paramLocals paramVars candidateConclusion goalTarget
+    deltaOptions
 
 /-- Label for diagnostics shared by object tactics and term-mode placeholder elaboration. -/
 def internalElaborationActionLabel (tacticName : String) : String :=
@@ -2260,7 +2418,7 @@ mutual
         theory '{target.theoryName}'"
     checkInternalCandidateAppArity tacticName rawName suppliedArgs.size cand
     let some subst0 := matchInternalCandidateConclusion? sig goal.ctx cand.params
-        cand.conclusionExpr goal.target
+        cand.conclusionExpr goal.target goal.deltaOptions
       | throw <| s!"{appLabel} failed: " ++
           internalCandidateConclusionMismatchMessage sig goal.ctx cand.conclusionExpr goal.target
     let mut outArgs : Array ObjExpr := #[]
@@ -3015,7 +3173,7 @@ def nativeRewriteGoalUpdate (target : InternalDefTarget) (sig : HLSignature)
   | .ok _ => pure (app.newGoal, none)
   | .error _ =>
       discard <| buildObjectRewriteTransportTerm target sig levels ctx app rawName
-        (.ident (.str .anonymous "?rw_source"))
+        (.ident (.str .anonymous "?rw_source")) deltaOptions
       pure (app.newGoal, some (.rwTransport ctx rawName app))
 
 /-- Apply one or more native rewrite steps to the focused LF goal. -/
@@ -3487,7 +3645,7 @@ mutual
         let (sourceProof, nextIdx) ← compileInternalObjectGoal target sig levels steps (idx + 1)
           { goal with target := simpResult.newGoal }
         let proof ← wrapObjectSimpTransports target sig levels goal.ctx simpResult.rewrites
-          sourceProof
+          sourceProof goal.deltaOptions
         pure (proof, nextIdx)
     | .simpRules names onlyMode =>
         let simpResult ← simpObjectGoalDetailed target sig levels goal.ctx goal.target
@@ -3495,7 +3653,7 @@ mutual
         let (sourceProof, nextIdx) ← compileInternalObjectGoal target sig levels steps (idx + 1)
           { goal with target := simpResult.newGoal }
         let proof ← wrapObjectSimpTransports target sig levels goal.ctx simpResult.rewrites
-          sourceProof
+          sourceProof goal.deltaOptions
         pure (proof, nextIdx)
     | .assumption =>
         let (introNames, innerGoal) := autoIntroGoal goal
@@ -3571,7 +3729,7 @@ mutual
           { goal with target := app.newGoal }
     | .error _ =>
         match buildObjectRewriteTransportTerm target sig levels goal.ctx app rawName
-            (.ident (.str .anonymous "?rw_source")) with
+            (.ident (.str .anonymous "?rw_source")) goal.deltaOptions with
         | .error transportError =>
             throw <| String.intercalate "\n" [
               objectRewriteConversionFailureMessage app rawName symm,
@@ -3581,7 +3739,7 @@ mutual
             let (sourceProof, nextIdx') ← compileInternalObjectGoal target sig levels steps
               nextIdx { goal with target := app.newGoal }
             let transported ← buildObjectRewriteTransportTerm target sig levels goal.ctx app rawName
-              sourceProof
+              sourceProof goal.deltaOptions
             pure (transported, nextIdx')
 
   /-- Compile the continuation after a `rw [...]` sequence, wrapping transports inside-out. -/
@@ -3600,7 +3758,7 @@ mutual
           { goal with target := app.newGoal } items (itemIdx + 1)
     | .error _ =>
         match buildObjectRewriteTransportTerm target sig levels goal.ctx app rawName
-            (.ident (.str .anonymous "?rw_source")) with
+            (.ident (.str .anonymous "?rw_source")) goal.deltaOptions with
         | .error transportError =>
             throw <| String.intercalate "\n" [
               objectRewriteConversionFailureMessage app rawName symm,
@@ -3610,7 +3768,7 @@ mutual
             let (sourceProof, nextIdx') ← compileInternalObjectRwSeq target sig levels steps
               nextIdx { goal with target := app.newGoal } items (itemIdx + 1)
             let transported ← buildObjectRewriteTransportTerm target sig levels goal.ctx app rawName
-              sourceProof
+              sourceProof goal.deltaOptions
             pure (transported, nextIdx')
 
   /-- Consume one `refine` hole, preserving the surrounding focus-bullet discipline. -/
@@ -3664,7 +3822,7 @@ mutual
         unknown rule or internal declaration '{rawName}' in type theory '{target.theoryName}'"
     checkInternalCandidateAppArity tacticName rawName suppliedArgs.size cand
     let some subst0 := matchInternalCandidateConclusion? sig goal.ctx cand.params
-        cand.conclusionExpr goal.target
+        cand.conclusionExpr goal.target goal.deltaOptions
       | throw <| s!"object tactic `{tacticName}` failed to elaborate nested application " ++
           s!"`{rawName}`: " ++
           internalCandidateConclusionMismatchMessage sig goal.ctx cand.conclusionExpr goal.target
@@ -3790,7 +3948,7 @@ mutual
         declaration '{rawName}' in type theory '{target.theoryName}'"
     checkInternalCandidateAppArity tacticName rawName suppliedArgs.size cand
     let some subst0 := matchInternalCandidateConclusion? sig goal.ctx cand.params
-        cand.conclusionExpr goal.target
+        cand.conclusionExpr goal.target goal.deltaOptions
       | throw <| s!"object tactic `{tacticName} {rawName}` failed: " ++
           internalCandidateConclusionMismatchMessage sig goal.ctx cand.conclusionExpr goal.target
     let mut args : Array ObjExpr := #[]
@@ -3934,7 +4092,7 @@ mutual
       | throw s!"object tactic `apply {rawName}` failed: unknown rule or internal declaration \
         '{rawName}' in type theory '{target.theoryName}'"
     let some subst := matchInternalCandidateConclusion? sig goal.ctx cand.params
-        cand.conclusionExpr goal.target
+        cand.conclusionExpr goal.target goal.deltaOptions
       | throw <| s!"object tactic `apply {rawName}` failed: " ++
           internalCandidateConclusionMismatchMessage sig goal.ctx cand.conclusionExpr goal.target
     let mut args := #[]

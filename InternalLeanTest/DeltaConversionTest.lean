@@ -10,8 +10,8 @@ public import InternalLean.Command
 /-!
 # Head-directed delta conversion smoke tests
 
-Focused tests for the option-gated delta-conversion engine.  These tests call the new engine and
-manual profile commands directly; ordinary checker/tactic acceptance is integrated in later phases.
+Focused tests for the option-gated delta-conversion engine and its object-tactic integration.
+These tests keep the LF checker as the final acceptance gate.
 -/
 
 @[expose] public section
@@ -161,6 +161,45 @@ def deltaCaptureDefs : LFDefinitionValueMap :=
 
 #guard
   let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := false }
+  let sig : HLSignature := {
+    name := `DeltaCandidateMatchSmoke
+    lfObjectDefs := #[{
+      name := `Alias
+      typeExpr := .ident `Shape
+      value := .ident `payload }] }
+  let defs := objectTacticLFDefinitionValues sig
+  let candidate := ObjExpr.app (.app (.ident `Rel) (.ident `payload)) (.ident `payload)
+  let expected := ObjExpr.app (.app (.ident `Rel) (.ident `Alias)) (.ident `Alias)
+  let result := matchObjectCandidateDeltaResult defs {} {} candidate expected options
+  result.deltaResult.accepted && result.deltaResult.stats.deltaSteps == 1 &&
+    !result.deltaResult.fallbackUsed
+
+#guard
+  let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := false }
+  let sig : HLSignature := {
+    name := `DeltaCandidatePatternSafetySmoke
+    lfObjectDefs := #[{
+      name := `Hidden
+      typeExpr := .ident `Shape
+      value := .ident `x }] }
+  let defs := objectTacticLFDefinitionValues sig
+  (matchObjectCandidateCheapFirst? defs {} ({`x} : NameSet) (.ident `Hidden) (.ident `payload)
+    options).isNone
+
+#guard
+  let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := true }
+  let sig : HLSignature := {
+    name := `DeltaCandidateFallbackCompatibilitySmoke
+    lfObjectDefs := #[{
+      name := `Hidden
+      typeExpr := .ident `Shape
+      value := .ident `x }] }
+  let defs := objectTacticLFDefinitionValues sig
+  (matchObjectCandidateCheapFirst? defs {} ({`x} : NameSet) (.ident `Hidden) (.ident `payload)
+    options).isSome
+
+#guard
+  let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := false }
   let env : LFDeltaConversionEnv := { defs := deltaSmokeDefs, options }
   let r := LFDeltaConversion.convertObjExpr env (.fst (.pair (.ident `payload)
     (.ident `other))) (.ident `payload)
@@ -244,10 +283,25 @@ declare_type_theory DeltaObjectGoalConversionSmoke where
 set_option internalLean.conversion.delta true
 set_option internalLean.conversion.delta.compareFallback false
 
+internal theorem DeltaObjectGoalConversionSmoke.delta_apply :
+    shapeIncl emptyCtx Alias Alias := by
+  apply payload_refl
+
 internal theorem DeltaObjectGoalConversionSmoke.delta_change :
     shapeIncl emptyCtx Alias Alias := by
   change shapeIncl emptyCtx payload payload
   exact payload_refl
+
+/--
+info: LF conversion profile site=candidate_match, theory=DeltaObjectGoalConversionSmoke,
+owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=0ms,
+compact=false, fallback=false, accepted=true, unfolded=none, delta=true, delta_accepted=true,
+delta_steps=1, pair_visits=3, pair_cache_hits=1, whnf_cache_hits=3, delta_cache_hits=0,
+forced=Alias:1, forced_lhs=0, forced_rhs=1, full_fallbacks=0, fuel_exhausted=-
+-/
+#guard_msgs (whitespace := lax) in
+#print_internal_candidate_match_profile DeltaObjectGoalConversionSmoke
+  (shapeIncl emptyCtx payload payload) (shapeIncl emptyCtx Alias Alias)
 
 /--
 info: LF conversion profile site=object_goal_conversion, theory=DeltaObjectGoalConversionSmoke,
