@@ -279,6 +279,9 @@ declare_type_theory DeltaObjectGoalConversionSmoke where
     conclusion : shapeIncl emptyCtx S S
   judgment_theorem payload_refl : shapeIncl emptyCtx payload payload :=
     shape_refl payload
+  judgment_theorem payload_refl_with_arg (S : Shape emptyCtx) :
+      shapeIncl emptyCtx payload payload :=
+    shape_refl payload
 
 set_option internalLean.conversion.delta true
 set_option internalLean.conversion.delta.compareFallback false
@@ -317,12 +320,58 @@ forced=Alias:1, forced_lhs=1, forced_rhs=0, full_fallbacks=0, fuel_exhausted=-
 set_option internalLean.conversion.delta.maxDeltaSteps 0
 
 /--
-error: unsupported LF conversion: head-directed delta conversion rejected the endpoints and full
-checked LF-definition unfolding fallback is disabled
+error: native tactic `change` cannot replace the current object goal
+  shapeIncl emptyCtx Alias Alias
+with
+  shapeIncl emptyCtx payload payload
+
+The endpoints are not judgmentally convertible in the active object theory.
+This tactic checks object conversion evidence; it does not use Lean equality or an internal equality
+proof.
+
+conversion failure: unsupported LF conversion: head-directed delta conversion rejected the endpoints
+and full checked LF-definition unfolding fallback is disabled
 delta_steps=0, pair_visits=3, forced=none, fuel_exhausted=delta
+
+normalized actual: shapeIncl emptyCtx payload payload
+normalized expected: shapeIncl emptyCtx payload payload
+LF definitions mentioned before unfolding: Alias
+LF definitions unfolded: Alias
 -/
 #guard_msgs (whitespace := lax) in
 internal theorem DeltaObjectGoalConversionSmoke.delta_change_fuel_failure :
     shapeIncl emptyCtx Alias Alias := by
   change shapeIncl emptyCtx payload payload
   exact payload_refl
+
+/--
+error: native tactic `apply payload_refl` failed: conclusion
+  shapeIncl emptyCtx payload payload
+does not match current goal
+  shapeIncl emptyCtx Alias Alias
+
+normalized actual: shapeIncl emptyCtx payload payload
+normalized expected: shapeIncl emptyCtx payload payload
+LF definitions mentioned before unfolding: Alias
+LF definitions unfolded: Alias
+-/
+#guard_msgs (whitespace := lax) in
+internal theorem DeltaObjectGoalConversionSmoke.delta_native_apply_fuel_failure :
+    shapeIncl emptyCtx Alias Alias := by
+  apply payload_refl
+
+/--
+error: native tactic `refine payload_refl_with_arg` failed: conclusion
+  shapeIncl emptyCtx payload payload
+does not match current goal
+  shapeIncl emptyCtx Alias Alias
+
+normalized actual: shapeIncl emptyCtx payload payload
+normalized expected: shapeIncl emptyCtx payload payload
+LF definitions mentioned before unfolding: Alias
+LF definitions unfolded: Alias
+-/
+#guard_msgs (whitespace := lax) in
+internal theorem DeltaObjectGoalConversionSmoke.delta_native_refine_fuel_failure :
+    shapeIncl emptyCtx Alias Alias := by
+  refine payload_refl_with_arg payload

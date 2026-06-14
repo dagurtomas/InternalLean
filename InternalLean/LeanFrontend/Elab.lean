@@ -1301,6 +1301,7 @@ def elabExtendInternalLeanQuoted (doc? : Option (TSyntax ``Parser.Command.docCom
 structure InternalNativePreElabGoal where
   ctx : Array HLBinding := #[]
   target : ObjExpr
+  deltaOptions : LFDeltaConversionOptions := {}
 
 /-- Parse one legacy `internalTactic` source span as a Lean tactic. -/
 def parseInternalNativeLeanTacticFromSource (stx : Syntax) : CommandElabM (TSyntax `tactic) := do
@@ -1359,11 +1360,11 @@ def mkInternalNativeApplyPlan (target : InternalDefTarget) (sig : HLSignature)
     (goal : InternalNativePreElabGoal) (rawName : Name) (ref : Syntax) :
     CommandElabM (InternalNativeApplyPlan × Array InternalNativePreElabGoal) := do
   let some cand := findInternalApplyCandidate? target sig rawName
-    | throwErrorAt ref "native tactic `apply {rawName}` failed: unknown rule or internal \
+    | throwErrorAt ref s!"native tactic `apply {rawName}` failed: unknown rule or internal \
         declaration '{rawName}' in type theory '{target.theoryName}'"
   let some subst0 := matchInternalCandidateConclusion? sig goal.ctx cand.params
-      cand.conclusionExpr goal.target
-    | throwErrorAt ref ("native tactic `apply {rawName}` failed: " ++
+      cand.conclusionExpr goal.target goal.deltaOptions
+    | throwErrorAt ref (s!"native tactic `apply {rawName}` failed: " ++
         internalCandidateConclusionMismatchMessage sig goal.ctx cand.conclusionExpr goal.target)
   let mut subst := subst0
   let mut args : Array InternalNativeApplyArg := #[]
@@ -1375,12 +1376,12 @@ def mkInternalNativeApplyPlan (target : InternalDefTarget) (sig : HLSignature)
     | none =>
         let paramTy := substObjectVars subst param.typeExpr
         args := args.push (.subgoal paramTy)
-        newGoals := newGoals.push { ctx := goal.ctx, target := paramTy }
+        newGoals := newGoals.push { goal with target := paramTy }
         subst := subst.insert key (internalObjectGoalPlaceholder param.name)
   for premiseTarget in cand.subgoalTargets do
     let premiseTarget := substObjectVars subst premiseTarget
     args := args.push (.subgoal premiseTarget)
-    newGoals := newGoals.push { ctx := goal.ctx, target := premiseTarget }
+    newGoals := newGoals.push { goal with target := premiseTarget }
   for sc in cand.sideConditions do
     let scInput := substObjectVars subst sc.input
     match classifySideConditionHook sc.solver sig.levelNormalizerProfiles with
@@ -1486,7 +1487,7 @@ mutual
     discard <| throwInternalNativeObjectTacticErrorAt ref <|
       checkInternalCandidateAppArity tacticName rawName suppliedArgs.size cand
     let some subst0 := matchInternalCandidateConclusion? sig goal.ctx cand.params
-        cand.conclusionExpr goal.target
+        cand.conclusionExpr goal.target goal.deltaOptions
       | throwErrorAt ref (s!"native tactic `{tacticName} {rawName}` failed: " ++
           internalCandidateConclusionMismatchMessage sig goal.ctx cand.conclusionExpr goal.target)
     let mut planArgs : Array InternalNativeApplyArg := #[]
@@ -1536,7 +1537,7 @@ mutual
           | .expr e =>
               match subst.find? key with
               | some inferred =>
-                  unless objectGoalsConvertible sig levels goal.ctx e inferred do
+                  unless objectGoalsConvertible sig levels goal.ctx e inferred goal.deltaOptions do
                     throwErrorAt ref (internalArgumentMismatchMessage tacticName rawName
                       param.name e inferred)
               | none => subst := subst.insert key e
@@ -1550,7 +1551,8 @@ mutual
               match subst.find? key with
               | some inferred =>
                   unless internalNativeApplyArgHasSubgoal planArg do
-                    unless objectGoalsConvertible sig levels goal.ctx diag inferred do
+                    unless objectGoalsConvertible sig levels goal.ctx diag inferred
+                        goal.deltaOptions do
                       throwErrorAt ref (internalArgumentMismatchMessage tacticName rawName
                         param.name diag inferred true)
               | none => subst := subst.insert key diag
@@ -1578,7 +1580,7 @@ mutual
       | .expr e =>
           discard <| throwInternalNativeObjectTacticErrorAt ref <|
             checkInternalPremiseProofExpr target sig levels goal.ctx e premiseGoal tacticName
-              rawName
+              rawName goal.deltaOptions
           planArgs := planArgs.push (.closed e)
           diagArgs := diagArgs.push e
       | .app _ _ =>
@@ -1707,10 +1709,10 @@ def internalNativeSimpConfig? (stx : Syntax) : Option ObjectSimpConfig :=
 
 /-- Check and normalize a native `exact`/`have` proof term against an LF target. -/
 def checkInternalNativeProofTerm (target : InternalDefTarget) (sig : HLSignature)
-    (ctx : Array HLBinding) (expected proof : ObjExpr) (tacticName : String) (ref : Syntax) :
-    CommandElabM ObjExpr := withRef ref do
+    (ctx : Array HLBinding) (expected proof : ObjExpr) (tacticName : String) (ref : Syntax)
+    (deltaOptions : LFDeltaConversionOptions := {}) : CommandElabM ObjExpr := withRef ref do
   let proof ←
-    match elaborateInternalDirectTermPlaceholders target sig ctx expected proof with
+    match elaborateInternalDirectTermPlaceholders target sig ctx expected proof deltaOptions with
     | .ok proof => pure proof
     | .error err => throwError err
   try
@@ -1732,12 +1734,13 @@ mutual
         (Array InternalNativeResolvedStep × Array InternalNativePreElabGoal) :=
       pure (#[{ stx, step := .evalLeanForAudit }], #[goal])
     if let some bodySteps := internalNativeFocusBodySteps? stx then
-      let (body, _) ← elabInternalNativeResolvedStepsForGoals target sig levels
-        [{ ctx := goal.ctx, target := goal.target }] bodySteps
+      let (body, _) ← elabInternalNativeResolvedStepsForGoals target sig levels [goal]
+        bodySteps
       return (#[{ stx, step := .focus body }], #[])
     if let some items := internalNativeRwItems? stx then
       let newTarget ← throwInternalNativeObjectTacticErrorAt stx <|
         rewriteObjectGoalSeqForTactic target sig levels goal.ctx goal.target items
+          goal.deltaOptions
       let step :=
         match items[0]?, items.size with
         | some (rawName, symm), 1 => .rwRule rawName symm
@@ -1745,7 +1748,7 @@ mutual
       return (#[{ stx, step }], #[{ goal with target := newTarget }])
     if let some config := internalNativeSimpConfig? stx then
       let result ← throwInternalNativeObjectTacticErrorAt stx <|
-        simpObjectGoalDetailed target sig levels goal.ctx goal.target config
+        simpObjectGoalDetailed target sig levels goal.ctx goal.target config 8 goal.deltaOptions
       let step :=
         if config.names.isEmpty && !config.onlyMode then
           .simp
@@ -1758,28 +1761,36 @@ mutual
     | `(tactic| skip) => pure (#[{ stx, step := .skip }], #[goal])
     | `(tactic| intro $name:ident) =>
         let goal' ←
-          match introObjectGoal { ctx := goal.ctx, target := goal.target } name.getId with
+          match introObjectGoal {
+              ctx := goal.ctx, target := goal.target,
+              deltaOptions := goal.deltaOptions } name.getId with
           | .ok goal' => pure goal'
           | .error err => throwErrorAt stx err
         pure (#[{ stx, step := .intro name.getId }],
-          #[{ ctx := goal'.ctx, target := goal'.target }])
+          #[{ ctx := goal'.ctx, target := goal'.target,
+              deltaOptions := goal'.deltaOptions }])
     | `(tactic| intros $names:ident*) =>
         let rawNames := names.map (·.getId)
         let (introNames, goal') ←
           if rawNames.isEmpty then
-            let (introNames, goal') := autoIntroGoal { ctx := goal.ctx, target := goal.target }
+            let (introNames, goal') := autoIntroGoal {
+              ctx := goal.ctx, target := goal.target,
+              deltaOptions := goal.deltaOptions }
             pure (introNames, goal')
           else
-            match introsObjectGoal { ctx := goal.ctx, target := goal.target } rawNames with
+            match introsObjectGoal {
+                ctx := goal.ctx, target := goal.target,
+                deltaOptions := goal.deltaOptions } rawNames with
             | .ok goal' => pure (rawNames, goal')
             | .error err => throwErrorAt stx err
         pure (#[{ stx, step := .intros introNames }],
-          #[{ ctx := goal'.ctx, target := goal'.target }])
+          #[{ ctx := goal'.ctx, target := goal'.target,
+              deltaOptions := goal'.deltaOptions }])
     | `(tactic| exact $proof:term) =>
         let proofExpr ← withRef proof.raw <|
           elabInternalNativeQuotedTerm target sig goal.ctx (some goal.target) proof
         let proofExpr ← checkInternalNativeProofTerm target sig goal.ctx goal.target proofExpr
-          "exact" proof.raw
+          "exact" proof.raw goal.deltaOptions
         pure (#[{ stx, step := .exact proofExpr }], #[])
     | `(tactic| refine $proof:term) =>
         let arg ← elabInternalNativeTacticArgSyntax target sig goal.ctx proof.raw
@@ -1790,13 +1801,13 @@ mutual
             pure (#[{ stx, step := .applyPlan plan }], newGoals)
         | .expr proofExpr =>
             let proofExpr ← checkInternalNativeProofTerm target sig goal.ctx goal.target proofExpr
-              "refine" proof.raw
+              "refine" proof.raw goal.deltaOptions
             pure (#[{ stx, step := .exact proofExpr }], #[])
         | .inferPlaceholder | .refineHole =>
             throwErrorAt proof.raw "native tactic `refine` needs a proof term or an application \
               headed by an object rule, theorem, or declaration"
     | `(tactic| assumption) =>
-        let some _ := findAssumption? sig levels goal.ctx goal.target
+        let some _ := findAssumption? sig levels goal.ctx goal.target goal.deltaOptions
           | throwErrorAt stx (String.intercalate "\n" [
               "native tactic `assumption` failed for object goal",
               s!"  {diagnosticObjExprString goal.target}",
@@ -1807,7 +1818,8 @@ mutual
     | `(tactic| show $newTarget:term) =>
         let newTargetExpr ← withRef newTarget.raw <|
           elabInternalNativeQuotedTerm target sig goal.ctx none newTarget
-        unless objectGoalsConvertible sig levels goal.ctx goal.target newTargetExpr do
+        unless objectGoalsConvertible sig levels goal.ctx goal.target newTargetExpr
+            goal.deltaOptions do
           throwErrorAt newTarget.raw (String.intercalate "\n" [
             "native tactic `show` cannot replace the current object goal",
             s!"  {diagnosticObjExprString goal.target}",
@@ -1820,12 +1832,14 @@ mutual
     | `(tactic| change $newTarget:term) =>
         let newTargetExpr ← withRef newTarget.raw <|
           elabInternalNativeQuotedTerm target sig goal.ctx none newTarget
-        match objectGoalConversionCheck sig levels goal.ctx goal.target newTargetExpr with
+        match objectGoalConversionCheck sig levels goal.ctx goal.target newTargetExpr
+            goal.deltaOptions with
         | .ok _ =>
             pure (#[{ stx, step := .changeGoal newTargetExpr }],
               #[{ goal with target := newTargetExpr }])
         | .error err =>
-            if objectGoalsConvertible sig levels goal.ctx goal.target newTargetExpr then
+            if objectGoalsConvertible sig levels goal.ctx goal.target newTargetExpr
+                goal.deltaOptions then
               pure (#[{ stx, step := .changeGoal newTargetExpr }],
                 #[{ goal with target := newTargetExpr }])
             else
@@ -1849,10 +1863,11 @@ mutual
           elabInternalNativeQuotedTerm target sig goal.ctx none typeTerm
         let goal' := {
           ctx := goal.ctx.push { name := name.getId, typeExpr, visibility := .explicit }
-          target := goal.target }
+          target := goal.target
+          deltaOptions := goal.deltaOptions }
         if let some proofSteps := internalNativeLeanBySteps? proofTerm.raw then
           let (proofResolved, _) ← elabInternalNativeResolvedStepsForGoals target sig levels
-            [{ ctx := goal.ctx, target := typeExpr }] proofSteps
+            [{ goal with target := typeExpr }] proofSteps
           pure (#[]
             |>.push { stx, step := .haveStart name.getId typeExpr }
             |>.push { stx := proofTerm.raw, step := .focus proofResolved }, #[goal'])
@@ -1860,7 +1875,7 @@ mutual
           let proofExpr ← withRef proofTerm.raw <|
             elabInternalNativeQuotedTerm target sig goal.ctx (some typeExpr) proofTerm
           let proofExpr ← checkInternalNativeProofTerm target sig goal.ctx typeExpr proofExpr
-            "have" proofTerm.raw
+            "have" proofTerm.raw goal.deltaOptions
           pure (#[{ stx, step := .haveTerm name.getId typeExpr proofExpr }], #[goal'])
     | `(tactic| apply $candidate:term) =>
         let some rawName := internalNativeApplyTermName? candidate
@@ -1890,8 +1905,9 @@ end
 def elabInternalNativeResolvedSteps (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (targetExpr : ObjExpr)
     (steps : Array Syntax) : CommandElabM (Array InternalNativeResolvedStep) := do
+  let deltaOptions ← liftCoreM getLFDeltaConversionOptions
   let (resolved, _) ← elabInternalNativeResolvedStepsForGoals target sig levels
-    [{ ctx, target := targetExpr }] steps
+    [{ ctx, target := targetExpr, deltaOptions }] steps
   pure resolved
 
 /-- Emit one immediate progress line around native object-tactic elaboration. -/
