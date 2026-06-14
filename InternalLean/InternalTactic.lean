@@ -539,6 +539,8 @@ inductive LFObjectConversionStepKind where
   | compactNormalization
   /-- Endpoints agree after bounded unfolding of checked LF definitions. -/
   | lfDefinitionUnfolding
+  /-- Endpoints agree by head-directed checked-definition delta conversion. -/
+  | deltaConversion
   deriving Inhabited, Repr, BEq
 
 namespace LFObjectConversionStepKind
@@ -548,6 +550,7 @@ def label : LFObjectConversionStepKind → String
   | .syntacticRefl => "syntactic_refl"
   | .compactNormalization => "compact_normalization"
   | .lfDefinitionUnfolding => "lf_definition_unfolding"
+  | .deltaConversion => "delta_conversion"
 
 end LFObjectConversionStepKind
 
@@ -603,9 +606,37 @@ def mkObjectGoalConversionSuccess (defs : LFDefinitionValueMap) (locals : NameSe
 def objectGoalCheapEq (a b : ObjExpr) : Bool :=
   objectExprEq a b || lfExprAlphaEq a b
 
+/-- Definition names forced by one delta-conversion run, for object-conversion reporting. -/
+def forcedLFDeltaDefinitionNames (stats : LFDeltaConversionStats) : Array Name :=
+  stats.forcedByName.toList.map (fun item => item.1) |>.toArray
+
+/-- Full recursive checked-definition fallback for object-goal conversion. -/
+def checkObjectGoalConversionFullFallback (defs : LFDefinitionValueMap) (locals : NameSet)
+    (a b : ObjExpr) : Except String CheckedLFObjectConversion :=
+  let aN := unfoldLFDefinitionsInExprWithLocals defs locals a
+  let bN := unfoldLFDefinitionsInExprWithLocals defs locals b
+  if lfExprAlphaEq aN bN then
+    let unfolded := collectLFDefinitionUnfolds defs locals #[] a
+    let unfolded := collectLFDefinitionUnfolds defs locals unfolded b
+    .ok <| mkObjectGoalConversionSuccess defs locals .lfDefinitionUnfolding a b aN bN
+      unfolded
+  else
+    .error "unsupported LF conversion: endpoints are not syntactically identical, do not \
+      match after beta/eta-only compact normalization, and do not match after bounded \
+      checked LF-definition unfolding"
+
+/-- Compact delta-conversion failure summary for object-tactic diagnostics. -/
+def objectGoalDeltaFailureSummary (result : LFDeltaConversionResult) : String :=
+  String.intercalate ", " [
+    s!"delta_steps={result.stats.deltaSteps}",
+    s!"pair_visits={result.stats.pairVisits}",
+    s!"forced={renderLFConversionNameCounts result.stats.forcedByName}",
+    s!"fuel_exhausted={result.fuelExhausted?.getD "-"}"]
+
 /-- Check object goals through the direct-LF conversion interface. -/
 def checkObjectGoalConversion (sig : HLSignature) (_levels : Array Name) (ctx : Array HLBinding)
-    (a b : ObjExpr) : Except String CheckedLFObjectConversion :=
+    (a b : ObjExpr) (deltaOptions : LFDeltaConversionOptions := {}) :
+    Except String CheckedLFObjectConversion :=
   let defs := objectTacticLFDefinitionValues sig
   let locals := internalObjectLocalNames ctx
   let a := eraseObjExprScopes a
@@ -617,22 +648,32 @@ def checkObjectGoalConversion (sig : HLSignature) (_levels : Array Name) (ctx : 
     let bCheap := normalizeLFExprForConversionWithLocals {} locals b
     if objectGoalCheapEq aCheap bCheap then
       .ok <| mkObjectGoalConversionSuccess defs locals .compactNormalization a b aCheap bCheap
-    else
-      let aN := unfoldLFDefinitionsInExprWithLocals defs locals a
-      let bN := unfoldLFDefinitionsInExprWithLocals defs locals b
-      if lfExprAlphaEq aN bN then
-        let unfolded := collectLFDefinitionUnfolds defs locals #[] a
-        let unfolded := collectLFDefinitionUnfolds defs locals unfolded b
-        .ok <| mkObjectGoalConversionSuccess defs locals .lfDefinitionUnfolding a b aN bN
-          unfolded
+    else if deltaOptions.enabled then
+      let env : LFDeltaConversionEnv := { defs, locals, options := deltaOptions }
+      let deltaResult := LFDeltaConversion.convertObjExpr env a b
+      if deltaResult.accepted then
+        .ok <| mkObjectGoalConversionSuccess defs locals .deltaConversion a b
+          deltaResult.lhsDisplay deltaResult.rhsDisplay
+          (forcedLFDeltaDefinitionNames deltaResult.stats)
+      else if deltaOptions.compareWithFullFallback then
+        match checkObjectGoalConversionFullFallback defs locals a b with
+        | .ok conversion => .ok conversion
+        | .error err =>
+            .error <| String.intercalate "\n" [
+              err,
+              "head-directed delta conversion also rejected the endpoints",
+              objectGoalDeltaFailureSummary deltaResult]
       else
-        .error "unsupported LF conversion: endpoints are not syntactically identical, do not \
-          match after beta/eta-only compact normalization, and do not match after bounded \
-          checked LF-definition unfolding"
+        .error <| String.intercalate "\n" [
+          "unsupported LF conversion: head-directed delta conversion rejected the endpoints and \
+            full checked LF-definition unfolding fallback is disabled",
+          objectGoalDeltaFailureSummary deltaResult]
+    else
+      checkObjectGoalConversionFullFallback defs locals a b
 
 /-- Build a bounded profile entry for the current object-goal conversion checker. -/
 def objectGoalConversionProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
-    (a b : ObjExpr) : LFConversionProfileEntry :=
+    (a b : ObjExpr) (deltaOptions : LFDeltaConversionOptions := {}) : LFConversionProfileEntry :=
   let defs := objectTacticLFDefinitionValues sig
   let locals := internalObjectLocalNames ctx
   let a := eraseObjExprScopes a
@@ -641,39 +682,80 @@ def objectGoalConversionProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
   let aCheap := if cheapSucceeded then a else normalizeLFExprForConversionWithLocals {} locals a
   let bCheap := if cheapSucceeded then b else normalizeLFExprForConversionWithLocals {} locals b
   let compactSucceeded := cheapSucceeded || objectGoalCheapEq aCheap bCheap
-  let (accepted, normActual?, normExpected?, counts) :=
-    if compactSucceeded then
-      (true, some (objExprNodeCount aCheap), some (objExprNodeCount bCheap), {})
+  if compactSucceeded then
+    {
+      site := "object_goal_conversion"
+      owner := { theoryName := some sig.name }
+      actualHead? := lfExprHeadIdent? a
+      expectedHead? := lfExprHeadIdent? b
+      actualSize := objExprNodeCount a
+      expectedSize := objExprNodeCount b
+      normalizedActualSize? := some (objExprNodeCount aCheap)
+      normalizedExpectedSize? := some (objExprNodeCount bCheap)
+      compactSucceeded := true
+      fullUnfoldFallback := false
+      accepted := true
+      unfoldedCounts := {} }
+  else if deltaOptions.enabled then
+    let env : LFDeltaConversionEnv := { defs, locals, options := deltaOptions }
+    let deltaResult := LFDeltaConversion.convertObjExpr env a b
+    if deltaResult.accepted || !deltaOptions.compareWithFullFallback then
+      let entry := LFDeltaConversion.profileEntry "object_goal_conversion"
+        { theoryName := some sig.name } a b deltaResult
+      { entry with compactSucceeded := false, fullUnfoldFallback := false }
     else
       let aN := unfoldLFDefinitionsInExprWithLocals defs locals a
       let bN := unfoldLFDefinitionsInExprWithLocals defs locals b
       let counts :=
         mergeLFConversionNameCounts (countLFDefinitionUnfolds defs locals a)
           (countLFDefinitionUnfolds defs locals b)
-      (lfExprAlphaEq aN bN, some (objExprNodeCount aN), some (objExprNodeCount bN), counts)
-  {
-    site := "object_goal_conversion"
-    owner := { theoryName := some sig.name }
-    actualHead? := lfExprHeadIdent? a
-    expectedHead? := lfExprHeadIdent? b
-    actualSize := objExprNodeCount a
-    expectedSize := objExprNodeCount b
-    normalizedActualSize? := normActual?
-    normalizedExpectedSize? := normExpected?
-    compactSucceeded
-    fullUnfoldFallback := !compactSucceeded
-    accepted
-    unfoldedCounts := counts }
+      {
+        site := "object_goal_conversion"
+        owner := { theoryName := some sig.name }
+        actualHead? := lfExprHeadIdent? a
+        expectedHead? := lfExprHeadIdent? b
+        actualSize := objExprNodeCount a
+        expectedSize := objExprNodeCount b
+        normalizedActualSize? := some (objExprNodeCount aN)
+        normalizedExpectedSize? := some (objExprNodeCount bN)
+        compactSucceeded := false
+        fullUnfoldFallback := true
+        accepted := lfExprAlphaEq aN bN
+        unfoldedCounts := counts
+        deltaEnabled := true
+        deltaAccepted? := some false
+        deltaStats? := some { deltaResult.stats with
+          fullFallbacks := deltaResult.stats.fullFallbacks + 1 }
+        deltaFuelExhausted? := deltaResult.fuelExhausted? }
+  else
+    let aN := unfoldLFDefinitionsInExprWithLocals defs locals a
+    let bN := unfoldLFDefinitionsInExprWithLocals defs locals b
+    let counts :=
+      mergeLFConversionNameCounts (countLFDefinitionUnfolds defs locals a)
+        (countLFDefinitionUnfolds defs locals b)
+    {
+      site := "object_goal_conversion"
+      owner := { theoryName := some sig.name }
+      actualHead? := lfExprHeadIdent? a
+      expectedHead? := lfExprHeadIdent? b
+      actualSize := objExprNodeCount a
+      expectedSize := objExprNodeCount b
+      normalizedActualSize? := some (objExprNodeCount aN)
+      normalizedExpectedSize? := some (objExprNodeCount bN)
+      compactSucceeded := false
+      fullUnfoldFallback := true
+      accepted := lfExprAlphaEq aN bN
+      unfoldedCounts := counts }
 
 /-- Check object goals modulo exact syntax and checked LF definitions. -/
 def objectGoalConversionCheck (sig : HLSignature) (levels : Array Name) (ctx : Array HLBinding)
-    (a b : ObjExpr) : Except String Unit := do
-  discard <| checkObjectGoalConversion sig levels ctx a b
+    (a b : ObjExpr) (deltaOptions : LFDeltaConversionOptions := {}) : Except String Unit := do
+  discard <| checkObjectGoalConversion sig levels ctx a b deltaOptions
 
 /-- Compare object goals modulo exact syntax and checked LF definitions. -/
 def objectGoalsConvertible (sig : HLSignature) (levels : Array Name) (ctx : Array HLBinding)
-    (a b : ObjExpr) : Bool :=
-  match checkObjectGoalConversion sig levels ctx a b with
+    (a b : ObjExpr) (deltaOptions : LFDeltaConversionOptions := {}) : Bool :=
+  match checkObjectGoalConversion sig levels ctx a b deltaOptions with
   | .ok _ => true
   | .error _ => false
 
@@ -711,8 +793,9 @@ elab_rules : command
         | throwError "unknown type theory '{theory.getId}'"
       let actual ← elabObjExpr actual
       let expected ← elabObjExpr expected
+      let options ← liftCoreM getLFDeltaConversionOptions
       let start ← IO.monoMsNow
-      let entry := objectGoalConversionProfileEntry sig #[] actual expected
+      let entry := objectGoalConversionProfileEntry sig #[] actual expected options
       let stop ← IO.monoMsNow
       let entry := { entry with elapsedMs? := some (stop - start) }
       logInfo m!"{renderLFConversionProfileEntry entry}"
@@ -1804,12 +1887,13 @@ def objectSimpRewriteTrace (steps : Array ObjectSimpRewriteStep) : String :=
 /-- Try one computation rewrite that is justified by conversion or declared transport. -/
 def findObjectSimpRewrite? (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (config : ObjectSimpConfig)
-    (goalTarget : ObjExpr) : Except String (Option ObjectSimpRewriteStep) := do
+    (goalTarget : ObjExpr) (deltaOptions : LFDeltaConversionOptions := {}) :
+    Except String (Option ObjectSimpRewriteStep) := do
   for rawName in objectSimpRewriteNames target sig config do
     match findObjectRewriteApplication target sig goalTarget rawName false with
     | .error _ => pure ()
     | .ok app =>
-        match checkObjectGoalConversion sig levels ctx goalTarget app.newGoal with
+        match checkObjectGoalConversion sig levels ctx goalTarget app.newGoal deltaOptions with
         | .ok _ => return some { rawName, newGoal := app.newGoal, app? := some app }
         | .error _ =>
             match buildObjectRewriteTransportTerm target sig levels ctx app rawName
@@ -1823,7 +1907,8 @@ def findObjectSimpRewrite? (target : InternalDefTarget) (sig : HLSignature)
 /-- Bounded object simplification over LF definitions, then computation rewrite rules. -/
 partial def simpObjectGoalDetailed (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (goalTarget : ObjExpr)
-    (config : ObjectSimpConfig := {}) (fuel : Nat := 8) : Except String ObjectSimpResult := do
+    (config : ObjectSimpConfig := {}) (fuel : Nat := 8)
+    (deltaOptions : LFDeltaConversionOptions := {}) : Except String ObjectSimpResult := do
   let defs := objectSimpLFDefinitionValues sig config
   let locals := internalObjectLocalNames ctx
   let unfolded := unfoldLFDefinitionsInExprWithLocals defs locals goalTarget
@@ -1833,7 +1918,7 @@ partial def simpObjectGoalDetailed (target : InternalDefTarget) (sig : HLSignatu
   let findStep? (goal : ObjExpr) : Except String (Option ObjectSimpRewriteStep) := do
     match ← findObjectSimpPluginStep? sig ctx config goal with
     | some step => pure (some step)
-    | none => findObjectSimpRewrite? target sig levels ctx config goal
+    | none => findObjectSimpRewrite? target sig levels ctx config goal deltaOptions
   let rec loop (fuel : Nat) (goal : ObjExpr) (rewrites : Array ObjectSimpRewriteStep) :
       Except String ObjectSimpResult := do
     if fuel == 0 then
@@ -1854,9 +1939,9 @@ partial def simpObjectGoalDetailed (target : InternalDefTarget) (sig : HLSignatu
 
 /-- One bounded object simplification pass over LF definitions and computation rewrite rules. -/
 def simpObjectGoal (target : InternalDefTarget) (sig : HLSignature) (levels : Array Name)
-    (ctx : Array HLBinding) (goalTarget : ObjExpr) (config : ObjectSimpConfig := {}) :
-    Except String ObjExpr := do
-  pure (← simpObjectGoalDetailed target sig levels ctx goalTarget config).newGoal
+    (ctx : Array HLBinding) (goalTarget : ObjExpr) (config : ObjectSimpConfig := {})
+    (deltaOptions : LFDeltaConversionOptions := {}) : Except String ObjExpr := do
+  pure (← simpObjectGoalDetailed target sig levels ctx goalTarget config 8 deltaOptions).newGoal
 
 /-- Wrap a proof of a simplified goal with transport evidence used by object `simp`. -/
 def wrapObjectSimpTransports (target : InternalDefTarget) (sig : HLSignature)
@@ -1875,6 +1960,7 @@ def wrapObjectSimpTransports (target : InternalDefTarget) (sig : HLSignature)
 structure InternalObjectGoal where
   ctx : Array HLBinding := #[]
   target : ObjExpr
+  deltaOptions : LFDeltaConversionOptions := {}
   deriving Inhabited, Repr
 
 /-- Generate a deterministic name for an anonymous auto-introduced object binder. -/
@@ -2055,20 +2141,21 @@ def internalOpaqueSideConditionMessage (tacticName : String) (rawName candName :
 
 /-- Find a local hypothesis whose type matches a goal. -/
 def findAssumption? (sig : HLSignature) (levels : Array Name) (ctx : Array HLBinding) (target :
-  ObjExpr) : Option Name := Id.run do
+  ObjExpr) (deltaOptions : LFDeltaConversionOptions := {}) : Option Name := Id.run do
   for h in ctx.reverse do
-    if objectGoalsConvertible sig levels ctx h.typeExpr target then
+    if objectGoalsConvertible sig levels ctx h.typeExpr target deltaOptions then
       return some h.name
   return none
 
 /-- Check a named premise proof against its expected premise when the name is resolvable. -/
 def checkInternalPremiseProofExpr (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (proof expected : ObjExpr)
-    (tacticName : String) (rawName : Name) : Except String Unit := do
+    (tacticName : String) (rawName : Name) (deltaOptions : LFDeltaConversionOptions := {}) :
+    Except String Unit := do
   match proof with
   | .ident n =>
       if let some h := ctx.find? (fun h => sameObjectName h.name n) then
-        unless objectGoalsConvertible sig levels ctx h.typeExpr expected do
+        unless objectGoalsConvertible sig levels ctx h.typeExpr expected deltaOptions do
           throw <| String.intercalate "\n" [
             s!"object tactic `{tacticName} {rawName}` supplied local hypothesis '{n}'",
             s!"with type\n  {diagnosticObjExprString h.typeExpr}",
@@ -2077,7 +2164,7 @@ def checkInternalPremiseProofExpr (target : InternalDefTarget) (sig : HLSignatur
             objectGoalNormalizationMismatchString sig ctx h.typeExpr expected]
       else if let some cand := findInternalApplyCandidate? target sig n then
         if cand.params.isEmpty && cand.subgoalTargets.isEmpty && cand.sideConditions.isEmpty then
-          unless objectGoalsConvertible sig levels ctx cand.conclusionExpr expected do
+          unless objectGoalsConvertible sig levels ctx cand.conclusionExpr expected deltaOptions do
             throw <| String.intercalate "\n" [
               s!"object tactic `{tacticName} {rawName}` supplied proof '{n}'",
               s!"with statement\n  {diagnosticObjExprString cand.conclusionExpr}",
@@ -2209,7 +2296,7 @@ mutual
           | .expr e =>
               match subst.find? key with
               | some inferred =>
-                  unless objectGoalsConvertible sig #[] goal.ctx e inferred do
+                  unless objectGoalsConvertible sig #[] goal.ctx e inferred goal.deltaOptions do
                     throw <| internalArgumentMismatchMessage tacticName rawName param.name e
                       inferred
               | none => subst := subst.insert key e
@@ -2219,7 +2306,7 @@ mutual
                 argSpec tacticName
               match subst.find? key with
               | some inferred =>
-                  unless objectGoalsConvertible sig #[] goal.ctx arg inferred do
+                  unless objectGoalsConvertible sig #[] goal.ctx arg inferred goal.deltaOptions do
                     throw <| internalArgumentMismatchMessage tacticName rawName param.name arg
                       inferred true
               | none => subst := subst.insert key arg
@@ -2239,6 +2326,7 @@ mutual
               argument"
       | .expr e =>
           checkInternalPremiseProofExpr target sig #[] goal.ctx e premiseGoal tacticName rawName
+            goal.deltaOptions
           outArgs := outArgs.push e
       | .app _ _ =>
           outArgs :=
@@ -2314,18 +2402,19 @@ def elaborateInternalDirectTermPlaceholders (target : InternalDefTarget) (sig : 
 
 /-- Elaborate and check a term-mode `have` proof against its annotated internal type. -/
 def elaborateInternalHaveTermProof (target : InternalDefTarget) (sig : HLSignature)
-    (levels : Array Name) (ctx : Array HLBinding) (expected proof : ObjExpr) (haveName : Name) :
-    Except String ObjExpr := do
+    (levels : Array Name) (ctx : Array HLBinding) (expected proof : ObjExpr) (haveName : Name)
+    (deltaOptions : LFDeltaConversionOptions := {}) : Except String ObjExpr := do
   let proof ← elaborateInternalDirectTermPlaceholders target sig ctx expected proof
   let (head, args) := splitObjApp proof
   match head with
   | .ident n =>
       if let some cand := findInternalApplyCandidate? target sig n then
         let proof ←
-          compileInternalCompleteCandidateArg target sig { ctx := ctx, target := expected } n
+          compileInternalCompleteCandidateArg target sig {
+              ctx := ctx, target := expected, deltaOptions } n
             (args.map fun arg => InternalTacticArg.expr arg) "have"
         if let some actual := internalCandidateConclusionFromCompiledApp? cand proof then
-          unless objectGoalsConvertible sig levels ctx actual expected do
+          unless objectGoalsConvertible sig levels ctx actual expected deltaOptions do
             throw <| String.intercalate "\n" [
               s!"object tactic `have {haveName}` supplied proof '{n}'",
               s!"with statement\n  {diagnosticObjExprString actual}",
@@ -2335,6 +2424,7 @@ def elaborateInternalHaveTermProof (target : InternalDefTarget) (sig : HLSignatu
         pure proof
       else
         checkInternalPremiseProofExpr target sig levels ctx proof expected "have" haveName
+          deltaOptions
         pure proof
   | _ => pure proof
 
@@ -2579,6 +2669,8 @@ structure InternalNativeTacticSession where
   sig : HLSignature
   /-- Declaration-local universe parameters. -/
   levels : Array Name := #[]
+  /-- Object-conversion options captured for this native tactic block. -/
+  deltaOptions : LFDeltaConversionOptions := {}
   /-- Goal-display fallbacks created while running this native block. -/
   fallbacks : Array InternalGoalDisplayFallback := #[]
   /-- Counter for fresh native holes. -/
@@ -2912,9 +3004,10 @@ def closeInternalNativeMainGoal (mvarId : MVarId) (goal : InternalNativeGoal)
 /-- Compute one native rewrite target update and any transport wrapper it needs. -/
 def nativeRewriteGoalUpdate (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (goalTarget : ObjExpr) (rawName : Name)
-    (symm : Bool) : Except String (ObjExpr × Option InternalNativeFrame) := do
+    (symm : Bool) (deltaOptions : LFDeltaConversionOptions := {}) :
+    Except String (ObjExpr × Option InternalNativeFrame) := do
   let app ← findObjectRewriteApplication target sig goalTarget rawName symm
-  match checkObjectGoalConversion sig levels ctx goalTarget app.newGoal with
+  match checkObjectGoalConversion sig levels ctx goalTarget app.newGoal deltaOptions with
   | .ok _ => pure (app.newGoal, none)
   | .error _ =>
       discard <| buildObjectRewriteTransportTerm target sig levels ctx app rawName
@@ -2932,7 +3025,7 @@ def rewriteInternalNativeMainGoal (stx : Syntax) (mvarId : MVarId)
   for (rawName, symm) in items do
     let (newTarget, frame?) ←
       match nativeRewriteGoalUpdate goal.target session.sig session.levels goal.ctx targetExpr
-          rawName symm with
+          rawName symm session.deltaOptions with
       | .ok out => pure out
       | .error err => throwErrorAt stx err
     targetExpr := newTarget
@@ -2946,7 +3039,7 @@ def simpInternalNativeMainGoal (stx : Syntax) (mvarId : MVarId)
   let session ← getInternalNativeTacticSessionInTactic
   let result ←
     match simpObjectGoalDetailed goal.target session.sig session.levels goal.ctx goal.targetExpr
-        config with
+        config 8 session.deltaOptions with
     | .ok result => pure result
     | .error err => throwErrorAt stx err
   let frames :=
@@ -2997,6 +3090,7 @@ def evalInternalNativeResolvedTacticStep (stx : Syntax) (step : InternalNativeTa
   | .assumption =>
       let (session, mvarId, goal) ← getInternalNativeMainGoal stx
       let some hypName := findAssumption? session.sig session.levels goal.ctx goal.targetExpr
+          session.deltaOptions
         | throwErrorAt stx (String.intercalate "\n" [
             "native tactic `assumption` failed for object goal",
             s!"  {diagnosticObjExprString goal.targetExpr}",
@@ -3005,8 +3099,11 @@ def evalInternalNativeResolvedTacticStep (stx : Syntax) (step : InternalNativeTa
             renderInternalObjectContext goal.ctx])
       closeInternalNativeMainGoal mvarId goal (.ident hypName)
   | .showGoal targetExpr | .changeGoal targetExpr =>
-      let (_, mvarId, goal) ← getInternalNativeMainGoal stx
-      replaceInternalNativeMainGoal mvarId { goal with targetExpr }
+      let (session, mvarId, goal) ← getInternalNativeMainGoal stx
+      match objectGoalConversionCheck session.sig session.levels goal.ctx goal.targetExpr
+          targetExpr session.deltaOptions with
+      | .ok _ => replaceInternalNativeMainGoal mvarId { goal with targetExpr }
+      | .error err => throwErrorAt stx err
   | .rwRule rawName symm =>
       let (_, mvarId, goal) ← getInternalNativeMainGoal stx
       rewriteInternalNativeMainGoal stx mvarId goal #[(rawName, symm)]
@@ -3117,6 +3214,7 @@ def runInternalNativeTacticStep (goal : MVarId) (stx : Syntax) :
 def mkInitialInternalNativeTacticSession (target : InternalDefTarget) (sig : HLSignature)
     (levels : Array Name) (ctx : Array HLBinding) (targetExpr : ObjExpr) :
     Term.TermElabM (InternalNativeTacticSession × MVarId × Array InternalGoalDisplayFallback) := do
+  let deltaOptions ← getLFDeltaConversionOptions
   let displayCtx ← prepareInternalGoalDisplayContext target
   let displayGoal := mkInternalGoalDisplayGoal ctx targetExpr
   let (mvarId, fallbacks) ← mkLiveInternalGoalDisplayMVarWithContext target displayCtx displayGoal
@@ -3129,6 +3227,7 @@ def mkInitialInternalNativeTacticSession (target : InternalDefTarget) (sig : HLS
     displayCtx
     sig
     levels
+    deltaOptions
     fallbacks }
   pure (session, mvarId, fallbacks)
 
@@ -3333,7 +3432,7 @@ mutual
             "refine"
         pure (wrapObjectLambdas introNames termExpr, nextIdx)
     | .showGoal newGoal =>
-        unless objectGoalsConvertible sig levels goal.ctx goal.target newGoal do
+        unless objectGoalsConvertible sig levels goal.ctx goal.target newGoal goal.deltaOptions do
           throw <| String.intercalate "\n" [
             "object tactic `show` cannot replace goal",
             s!"  {diagnosticObjExprString goal.target}",
@@ -3343,12 +3442,13 @@ mutual
             "This is object judgmental conversion, not Lean equality."]
         compileInternalObjectGoal target sig levels steps (idx + 1) { goal with target := newGoal }
     | .changeGoal newGoal =>
-        match objectGoalConversionCheck sig levels goal.ctx goal.target newGoal with
+        match objectGoalConversionCheck sig levels goal.ctx goal.target newGoal
+            goal.deltaOptions with
         | .ok _ =>
           compileInternalObjectGoal target sig levels steps (idx + 1) { goal with target :=
           newGoal }
         | .error err =>
-            if objectGoalsConvertible sig levels goal.ctx goal.target newGoal then
+            if objectGoalsConvertible sig levels goal.ctx goal.target newGoal goal.deltaOptions then
               compileInternalObjectGoal target sig levels steps (idx + 1) { goal with target :=
                 newGoal }
             else
@@ -3371,7 +3471,8 @@ mutual
           throw "object tactic `rw []` failed: rewrite list is empty"
         compileInternalObjectRwSeq target sig levels steps (idx + 1) goal items 0
     | .simp =>
-        let simpResult ← simpObjectGoalDetailed target sig levels goal.ctx goal.target
+        let simpResult ← simpObjectGoalDetailed target sig levels goal.ctx goal.target {} 8
+          goal.deltaOptions
         let (sourceProof, nextIdx) ← compileInternalObjectGoal target sig levels steps (idx + 1)
           { goal with target := simpResult.newGoal }
         let proof ← wrapObjectSimpTransports target sig levels goal.ctx simpResult.rewrites
@@ -3379,7 +3480,7 @@ mutual
         pure (proof, nextIdx)
     | .simpRules names onlyMode =>
         let simpResult ← simpObjectGoalDetailed target sig levels goal.ctx goal.target
-          { names, onlyMode }
+          { names, onlyMode } 8 goal.deltaOptions
         let (sourceProof, nextIdx) ← compileInternalObjectGoal target sig levels steps (idx + 1)
           { goal with target := simpResult.newGoal }
         let proof ← wrapObjectSimpTransports target sig levels goal.ctx simpResult.rewrites
@@ -3388,6 +3489,7 @@ mutual
     | .assumption =>
         let (introNames, innerGoal) := autoIntroGoal goal
         let some hypName := findAssumption? sig levels innerGoal.ctx innerGoal.target
+            innerGoal.deltaOptions
           | throw <| String.intercalate "\n" [
               "object tactic `assumption` failed for goal",
               s!"  {diagnosticObjExprString innerGoal.target}",
@@ -3429,6 +3531,7 @@ mutual
           throw <| s!"object tactic `have {n}` failed: local name '{n}' is already " ++
             "in the object context"
         let proofExpr ← elaborateInternalHaveTermProof target sig levels goal.ctx type proof n
+          goal.deltaOptions
         let nextGoal := {
           goal with ctx := goal.ctx.push { name := n, typeExpr := type, visibility := .explicit } }
         let (termExpr, nextIdx) ← compileInternalObjectGoal target sig levels steps (idx + 1)
@@ -3450,7 +3553,8 @@ mutual
       (goal : InternalObjectGoal) (rawName : Name) (symm : Bool) :
       InternalObjectTacticCompileM (ObjExpr × Nat) := do
     let app ← findObjectRewriteApplication target sig goal.target rawName symm
-    match checkObjectGoalConversion sig levels goal.ctx goal.target app.newGoal with
+    match checkObjectGoalConversion sig levels goal.ctx goal.target app.newGoal
+        goal.deltaOptions with
     | .ok _ =>
         compileInternalObjectGoal target sig levels steps nextIdx
           { goal with target := app.newGoal }
@@ -3478,7 +3582,8 @@ mutual
       | compileInternalObjectGoal target sig levels steps nextIdx goal
     let (rawName, symm) := item
     let app ← findObjectRewriteApplication target sig goal.target rawName symm
-    match checkObjectGoalConversion sig levels goal.ctx goal.target app.newGoal with
+    match checkObjectGoalConversion sig levels goal.ctx goal.target app.newGoal
+        goal.deltaOptions with
     | .ok _ =>
         compileInternalObjectRwSeq target sig levels steps nextIdx
           { goal with target := app.newGoal } items (itemIdx + 1)
@@ -3593,7 +3698,7 @@ mutual
               useBullets? := useBullets'
               match subst.find? key with
               | some inferred =>
-                  unless objectGoalsConvertible sig #[] goal.ctx arg inferred do
+                  unless objectGoalsConvertible sig #[] goal.ctx arg inferred goal.deltaOptions do
                     throw <| internalRefineHoleMismatchMessage tacticName rawName param.name arg
                       inferred
               | none => pure ()
@@ -3602,7 +3707,7 @@ mutual
           | .expr e =>
               match subst.find? key with
               | some inferred =>
-                  unless objectGoalsConvertible sig #[] goal.ctx e inferred do
+                  unless objectGoalsConvertible sig #[] goal.ctx e inferred goal.deltaOptions do
                     throw <| internalArgumentMismatchMessage tacticName rawName param.name e
                       inferred
               | none => subst := subst.insert key e
@@ -3615,7 +3720,7 @@ mutual
               useBullets? := useBullets'
               match subst.find? key with
               | some inferred =>
-                  unless objectGoalsConvertible sig #[] goal.ctx arg inferred do
+                  unless objectGoalsConvertible sig #[] goal.ctx arg inferred goal.deltaOptions do
                     throw <| internalArgumentMismatchMessage tacticName rawName param.name arg
                       inferred true
               | none => subst := subst.insert key arg
@@ -3642,6 +3747,7 @@ mutual
           outArgs := outArgs.push arg
       | .expr e =>
           checkInternalPremiseProofExpr target sig levels goal.ctx e premiseGoal tacticName rawName
+            goal.deltaOptions
           outArgs := outArgs.push e
       | .app _ _ =>
           let (arg, nextIdx', useBullets') ←
@@ -3709,7 +3815,7 @@ mutual
           | .expr e =>
               match subst.find? key with
               | some inferred =>
-                  unless objectGoalsConvertible sig #[] goal.ctx e inferred do
+                  unless objectGoalsConvertible sig #[] goal.ctx e inferred goal.deltaOptions do
                     throw <| internalArgumentMismatchMessage tacticName rawName param.name e
                       inferred
               | none => subst := subst.insert key e
@@ -3728,7 +3834,7 @@ mutual
                     argSpec tacticName
               match subst.find? key with
               | some inferred =>
-                  unless objectGoalsConvertible sig #[] goal.ctx arg inferred do
+                  unless objectGoalsConvertible sig #[] goal.ctx arg inferred goal.deltaOptions do
                     throw <| internalArgumentMismatchMessage tacticName rawName param.name arg
                       inferred true
               | none => subst := subst.insert key arg
@@ -3750,7 +3856,7 @@ mutual
               nextIdx := nextIdx'
               match subst.find? key with
               | some inferred =>
-                  unless objectGoalsConvertible sig #[] goal.ctx arg inferred do
+                  unless objectGoalsConvertible sig #[] goal.ctx arg inferred goal.deltaOptions do
                     throw <| internalRefineHoleMismatchMessage tacticName rawName param.name arg
                       inferred
               | none => pure ()
@@ -3768,6 +3874,7 @@ mutual
               `?_`.\n\n{internalObjectTacticPlaceholderAdvice tacticName}"
       | .expr e =>
           checkInternalPremiseProofExpr target sig levels goal.ctx e premiseGoal tacticName rawName
+            goal.deltaOptions
           args := args.push e
       | .app _ _ =>
           let arg ←
@@ -3888,6 +3995,8 @@ def compileInternalObjectTacticsWithGoal (target : InternalDefTarget) (sig : HLS
     (stepStxs : Array Syntax := #[]) : CommandElabM ObjExpr := do
   if steps.isEmpty then
     throwError "empty object tactic script in `internal def {target.anchorName}`"
+  let deltaOptions ← liftCoreM getLFDeltaConversionOptions
+  let goal := { goal with deltaOptions }
   emitInternalObjectTacticCompileProgress target goal steps "start"
   let start ← IO.monoMsNow
   let errorRef := stepStxs[0]?.getD (← getRef)

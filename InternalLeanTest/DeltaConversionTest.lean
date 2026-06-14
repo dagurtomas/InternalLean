@@ -83,6 +83,39 @@ def deltaCaptureDefs : LFDefinitionValueMap :=
 
 #guard
   let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := false }
+  let sig : HLSignature := {
+    name := `DeltaObjectGoalConversionDirectSmoke
+    lfObjectDefs := #[{
+      name := `Alias
+      typeExpr := .ident `Shape
+      value := .ident `payload }] }
+  match checkObjectGoalConversion sig #[] #[] (.ident `Alias) (.ident `payload) options with
+  | .ok conversion =>
+      match conversion.steps[0]? with
+      | some step => step.kind == .deltaConversion && step.unfoldedDefinitions.contains `Alias
+      | none => false
+  | .error _ => false
+
+#guard
+  let options : LFDeltaConversionOptions := {
+    enabled := true
+    compareWithFullFallback := true
+    maxDeltaSteps := 0 }
+  let sig : HLSignature := {
+    name := `DeltaObjectGoalConversionFallbackSmoke
+    lfObjectDefs := #[{
+      name := `Alias
+      typeExpr := .ident `Shape
+      value := .ident `payload }] }
+  match checkObjectGoalConversion sig #[] #[] (.ident `Alias) (.ident `payload) options with
+  | .ok conversion =>
+      match conversion.steps[0]? with
+      | some step => step.kind == .lfDefinitionUnfolding
+      | none => false
+  | .error _ => false
+
+#guard
+  let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := false }
   let env : LFDeltaConversionEnv := { defs := deltaSmokeDefs, options }
   let r := LFDeltaConversion.convertObjExpr env
     (.app (.lam #[`x] (.ident `x)) (.ident `payload)) (.ident `payload)
@@ -157,3 +190,47 @@ forced=Alias:1, forced_lhs=0, forced_rhs=1, full_fallbacks=0, fuel_exhausted=-
 #guard_msgs (whitespace := lax) in
 #print_internal_delta_candidate_profile DeltaConversionProfileSmoke
   (shapeIncl emptyCtx payload payload) (shapeIncl emptyCtx Alias Alias)
+
+declare_type_theory DeltaObjectGoalConversionSmoke where
+  syntax_sort Ctx
+  syntax_sort Shape (Γ : Ctx)
+  judgment shapeIncl (Γ : Ctx) (S : Shape Γ) (T : Shape Γ)
+  lf_opaque emptyCtx : Ctx
+  lf_opaque payload : Shape emptyCtx
+  lf_def Alias : Shape emptyCtx := payload
+  rule shape_refl (S : Shape emptyCtx) where
+    conclusion : shapeIncl emptyCtx S S
+  judgment_theorem payload_refl : shapeIncl emptyCtx payload payload :=
+    shape_refl payload
+
+set_option internalLean.conversion.delta true
+set_option internalLean.conversion.delta.compareFallback false
+
+internal theorem DeltaObjectGoalConversionSmoke.delta_change :
+    shapeIncl emptyCtx Alias Alias := by
+  change shapeIncl emptyCtx payload payload
+  exact payload_refl
+
+/--
+info: LF conversion profile site=object_goal_conversion, theory=DeltaObjectGoalConversionSmoke,
+owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=0ms,
+compact=false, fallback=false, accepted=true, unfolded=none, delta=true, delta_accepted=true,
+delta_steps=1, pair_visits=3, pair_cache_hits=1, whnf_cache_hits=3, delta_cache_hits=0,
+forced=Alias:1, forced_lhs=1, forced_rhs=0, full_fallbacks=0, fuel_exhausted=-
+-/
+#guard_msgs (whitespace := lax) in
+#print_internal_object_conversion_profile DeltaObjectGoalConversionSmoke
+  (shapeIncl emptyCtx Alias Alias) (shapeIncl emptyCtx payload payload)
+
+set_option internalLean.conversion.delta.maxDeltaSteps 0
+
+/--
+error: unsupported LF conversion: head-directed delta conversion rejected the endpoints and full
+checked LF-definition unfolding fallback is disabled
+delta_steps=0, pair_visits=3, forced=none, fuel_exhausted=delta
+-/
+#guard_msgs (whitespace := lax) in
+internal theorem DeltaObjectGoalConversionSmoke.delta_change_fuel_failure :
+    shapeIncl emptyCtx Alias Alias := by
+  change shapeIncl emptyCtx payload payload
+  exact payload_refl
