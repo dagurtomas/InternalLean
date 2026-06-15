@@ -745,6 +745,40 @@ Developer diagnostics with names such as `#print_lf_model_*`, `#check_default_pr
 `#print_checked_logical_framework_*` expose lower-level internals. Prefer the commands above in
 public examples unless you are debugging the implementation.
 
+### Developer profiling options
+
+The following options are off by default and are meant for local performance/debugging work:
+
+```lean
+set_option internalLean.profileInternalDef true
+set_option internalLean.profileLFCheckPhases true
+set_option internalLean.conversion.profile true
+set_option internalLean.conversion.traceFallbacks true
+set_option internalLean.conversion.delta.profile true
+```
+
+`internalLean.profileInternalDef` records bounded registration summaries, including cache status,
+materialization, LF-check timing, replay validation timing, and compact replay-artifact counters.
+Use `#print_internal_registration_profile T` to inspect accumulated registration events for a
+checked theory.
+
+`internalLean.conversion.profile`, `internalLean.conversion.traceFallbacks`, and
+`internalLean.conversion.delta.profile` print bounded conversion/profile lines. They also enable
+short progress lines around quoted-body elaboration, native candidate matching, native tactic steps,
+and native object-conversion searches, which helps diagnose long internal proof elaboration without
+printing proof terms.
+
+Head-directed delta conversion remains opt-in:
+
+```lean
+set_option internalLean.conversion.delta true
+```
+
+The delta path is useful for focused folded-definition comparisons. It is not enabled by default;
+turn it on only for local experiments or files that have been checked against the current fallback
+policy. `internalLean.conversion.delta.compareFallback` and the delta fuel options are developer
+controls for those experiments.
+
 ## Deprecated syntax
 
 `object_def` and `object_theorem` are deprecated compatibility shims. New code should use
