@@ -30,6 +30,36 @@ def getOrBuildCompiledLFCheckCache (theoryName : Name) (checked : CheckedSignatu
       setCompiledLFCheckCache theoryName cache
       pure { cache := cache, status := "miss", rebuilt := true }
 
+/-- Retrieve a compiled LF checking cache without requiring callers to materialize the full
+checked signature first.  A cache miss or cheap-stamp mismatch falls back to materializing and
+rebuilding the cache from the checked theory artifact. -/
+def getOrBuildCompiledLFCheckCacheForTheory (theoryName : Name) :
+    CoreM CompiledLFCheckCacheLookup := do
+  match ← getCompiledLFCheckCache? theoryName with
+  | some cache =>
+      match ← getCheckedTheoryStamp? theoryName with
+      | some expected =>
+          if cache.stamp == expected then
+            pure { cache := cache, status := "hit", rebuilt := false }
+          else
+            let some checked ← getCheckedTheory? theoryName
+              | throwError "no checked artifact stored for type theory '{theoryName}'"
+            let cache ← mkCompiledLFCheckCache theoryName checked
+            setCompiledLFCheckCache theoryName cache
+            pure { cache := cache, status := "stale-rebuilt", rebuilt := true }
+      | none =>
+          let some checked ← getCheckedTheory? theoryName
+            | throwError "no checked artifact stored for type theory '{theoryName}'"
+          let cache ← mkCompiledLFCheckCache theoryName checked
+          setCompiledLFCheckCache theoryName cache
+          pure { cache := cache, status := "miss", rebuilt := true }
+  | none =>
+      let some checked ← getCheckedTheory? theoryName
+        | throwError "no checked artifact stored for type theory '{theoryName}'"
+      let cache ← mkCompiledLFCheckCache theoryName checked
+      setCompiledLFCheckCache theoryName cache
+      pure { cache := cache, status := "miss", rebuilt := true }
+
 namespace CompiledLFCheckCache
 
 /-- Append a checked LF object definition to a compiled LF checking cache. -/
@@ -47,6 +77,32 @@ def appendObjectDef (cache : CompiledLFCheckCache) (d : CheckedLFObjectDef) :
     knownLFDefValues := cache.knownLFDefValues.insert defName (eraseObjExprScopes d.value)
     lfObjectDefs := cache.lfObjectDefs.push d
     checkedLFDefValues := checkedLFDefValues }
+
+/-- Append checked LF opaque constants to a compiled LF checking cache. -/
+def appendOpaqueConsts (cache : CompiledLFCheckCache) (checkedHLAfter : HLSignature)
+    (opaques : Array CheckedLFOpaqueConst) : CompiledLFCheckCache :=
+  let lfGlobals := opaques.foldl (init := cache.lfGlobals) fun globals o =>
+    globals.insert o.name.eraseMacroScopes
+  let opaqueArities := opaques.foldl (init := cache.opaqueArities) fun arities o =>
+    let decl := checkedLFOpaqueConstToHLDecl o
+    let arity? := match decl.typeExpr? with
+      | some typeExpr => lfTypedOpaqueExactArity? decl typeExpr
+      | none => decl.arity?
+    arities.insert o.name.eraseMacroScopes arity?
+  let globalHeads := opaques.foldl (init := cache.globalHeads) fun heads o =>
+    let decl := checkedLFOpaqueConstToHLDecl o
+    let arity? := match decl.typeExpr? with
+      | some typeExpr => lfTypedOpaqueExactArity? decl typeExpr
+      | none => decl.arity?
+    heads.insert o.name.eraseMacroScopes (.opaque, arity?)
+  { cache with
+    stamp := { cache.stamp with
+      opaqueConstCount := cache.stamp.opaqueConstCount + opaques.size }
+    checkedHL := checkedHLAfter
+    lfOpaqueConsts := cache.lfOpaqueConsts ++ opaques
+    lfGlobals := lfGlobals
+    opaqueArities := opaqueArities
+    globalHeads := globalHeads }
 
 /-- Append a checked LF judgment theorem to a compiled LF checking cache. -/
 def appendJudgmentTheorem (cache : CompiledLFCheckCache) (t : CheckedLFJudgmentTheorem) :

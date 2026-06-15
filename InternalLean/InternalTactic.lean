@@ -4292,9 +4292,8 @@ def elabInternalDefCheckedExpr (doc? : Option (TSyntax ``Parser.Command.docComme
   let sourceDoc? ← optDocCommentString? doc?
   if !levels.isEmpty then
     throwError "internal LF declarations do not support declaration-local universe parameters"
-  let some sig ← liftCoreM <| getTheory? target.theoryName
-    | throwError "unknown type theory '{target.theoryName}'"
-  let flatSig ← liftCoreM <| flattenSignature sig
+  let some flatSig ← liftCoreM <| getCheckedHLSignature? target.theoryName
+    | throwError "no checked high-level signature stored for type theory '{target.theoryName}'"
   let valueExpr ←
     match elaborateInternalDirectTermPlaceholders target flatSig #[] typeExpr valueExpr with
     | .ok valueExpr => pure valueExpr
@@ -4331,9 +4330,8 @@ def elabInternalDefCheckedWithBindersExpr (doc? : Option (TSyntax ``Parser.Comma
   let sourceDoc? ← optDocCommentString? doc?
   if !levels.isEmpty then
     throwError "internal LF declarations do not support declaration-local universe parameters"
-  let some sig ← liftCoreM <| getTheory? target.theoryName
-    | throwError "unknown type theory '{target.theoryName}'"
-  let flatSig ← liftCoreM <| flattenSignature sig
+  let some flatSig ← liftCoreM <| getCheckedHLSignature? target.theoryName
+    | throwError "no checked high-level signature stored for type theory '{target.theoryName}'"
   let valueExpr ←
     match elaborateInternalDirectTermPlaceholders target flatSig params typeExpr valueExpr with
     | .ok valueExpr => pure valueExpr
@@ -4422,9 +4420,8 @@ def elabInternalTheoremCheckedWithBinders (doc? : Option (TSyntax ``Parser.Comma
   let params ← binders.mapM elabHLBinding
   let typeExpr ← elabObjExpr typeStx
   let valueExpr ← elabObjExpr valueStx
-  let some sig ← liftCoreM <| getTheory? target.theoryName
-    | throwError "unknown type theory '{target.theoryName}'"
-  let flatSig ← liftCoreM <| flattenSignature sig
+  let some flatSig ← liftCoreM <| getCheckedHLSignature? target.theoryName
+    | throwError "no checked high-level signature stored for type theory '{target.theoryName}'"
   let valueExpr ←
     match elaborateInternalDirectTermPlaceholders target flatSig params typeExpr valueExpr with
     | .ok valueExpr => pure valueExpr
@@ -4476,9 +4473,8 @@ def elabInternalDefBy (doc? : Option (TSyntax ``Parser.Command.docComment))
     (typeStx : TSyntax `ttExpr) (tactics : TSyntaxArray `internalTactic) : CommandElabM Unit := do
   let steps ← tactics.mapM fun tac => withRef tac.raw <| elabInternalTacticStep tac
   let target ← resolveInternalDefTarget declName
-  let some sig ← liftCoreM <| getTheory? target.theoryName
-    | throwError "unknown type theory '{target.theoryName}'"
-  let flatSig ← liftCoreM <| flattenSignature sig
+  let some flatSig ← liftCoreM <| getCheckedHLSignature? target.theoryName
+    | throwError "no checked high-level signature stored for type theory '{target.theoryName}'"
   let typeExpr ← elabObjExpr typeStx
   saveInternalRawRootGoalInfo target flatSig { target := typeExpr } declNameStx
   if internalTacticStepsContainSorry steps then
@@ -4497,9 +4493,8 @@ def elabInternalDefByWithBinders (doc? : Option (TSyntax ``Parser.Command.docCom
     (tactics : TSyntaxArray `internalTactic) : CommandElabM Unit := do
   let steps ← tactics.mapM fun tac => withRef tac.raw <| elabInternalTacticStep tac
   let target ← resolveInternalDefTarget declName
-  let some sig ← liftCoreM <| getTheory? target.theoryName
-    | throwError "unknown type theory '{target.theoryName}'"
-  let flatSig ← liftCoreM <| flattenSignature sig
+  let some flatSig ← liftCoreM <| getCheckedHLSignature? target.theoryName
+    | throwError "no checked high-level signature stored for type theory '{target.theoryName}'"
   let params ← binders.mapM elabHLBinding
   let typeExpr ← elabObjExpr typeStx
   let fullType := mkInternalDefFunctionType params typeExpr

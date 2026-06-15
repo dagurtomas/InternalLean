@@ -579,9 +579,8 @@ partial def saveLeanQuotedLFBodyGoalInfo (target : InternalDefTarget) (flatSig :
 def saveLeanQuotedLFBodyInfo (target : InternalDefTarget) (params : Array HLBinding)
     (typeExpr : ObjExpr) (bodyStx : Syntax) : CommandElabM Unit := do
   let goal : InternalObjectGoal := { ctx := params, target := typeExpr }
-  let some sig ← liftCoreM <| getTheory? target.theoryName
+  let some flatSig ← liftCoreM <| getCheckedHLSignature? target.theoryName
     | return ()
-  let flatSig ← liftCoreM <| flattenSignature sig
   saveLeanQuotedLFBodyGoalInfo target flatSig goal bodyStx
 
 /-- Whether a Lean term body is exactly `sorry` or `by sorry`, preserving admissions. -/
@@ -597,9 +596,8 @@ Term bodies can then use Lean's implicit insertion against a fully elaborated ex
 while the trusted LF checker still validates the reflected declaration. -/
 def elaborateLeanQuotedHeaderImplicits (target : InternalDefTarget) (params : Array HLBinding)
     (typeExpr : ObjExpr) : CommandElabM (Array HLBinding × ObjExpr) := do
-  let some sig ← liftCoreM <| getTheory? target.theoryName
-    | throwError "unknown type theory '{target.theoryName}'"
-  let flatSig ← liftCoreM <| flattenSignature sig
+  let some flatSig ← liftCoreM <| getCheckedHLSignature? target.theoryName
+    | throwError "no checked high-level signature stored for type theory '{target.theoryName}'"
   liftCoreM do
     let (params, knownTypes, locals) ←
       elaborateImplicitAppsInBindings flatSig {} {} "internal declaration" target.localName params
@@ -681,9 +679,8 @@ def elabLeanQuotedInternalTheoremCheckedExpr
   let target ← resolveInternalDefTarget declName
   ensureInternalDeclarationNamesAvailable target
   let sourceDoc? ← optDocCommentString? doc?
-  let some sig ← liftCoreM <| getTheory? target.theoryName
-    | throwError "unknown type theory '{target.theoryName}'"
-  let flatSig ← liftCoreM <| flattenSignature sig
+  let some flatSig ← liftCoreM <| getCheckedHLSignature? target.theoryName
+    | throwError "no checked high-level signature stored for type theory '{target.theoryName}'"
   let valueExpr ←
     match elaborateInternalDirectTermPlaceholders target flatSig params typeExpr valueExpr with
     | .ok valueExpr => pure valueExpr
@@ -1972,9 +1969,8 @@ def elabCanonicalLeanQuotedDefChecked (doc? : Option (TSyntax ``Parser.Command.d
     if internalNativeStepsContainDirectSorry steps then
       elabInternalDefSorryWithBinders doc? declNameStx declName #[] binders typeStx
       return ()
-    let some sig ← liftCoreM <| getTheory? target.theoryName
-      | throwError "unknown type theory '{target.theoryName}'"
-    let flatSig ← liftCoreM <| flattenSignature sig
+    let some flatSig ← liftCoreM <| getCheckedHLSignature? target.theoryName
+      | throwError "no checked high-level signature stored for type theory '{target.theoryName}'"
     let valueExpr ← elabInternalNativeByTerm target flatSig #[] params typeExpr bodyStx.raw steps
     if params.isEmpty then
       elabInternalDefCheckedExpr doc? declNameStx declName #[] typeExpr valueExpr
@@ -2014,9 +2010,8 @@ def elabCanonicalLeanQuotedTheoremChecked (doc? : Option (TSyntax ``Parser.Comma
     if internalNativeStepsContainDirectSorry steps then
       elabInternalTheoremSorryWithBinders doc? declNameStx declName #[] binders typeStx
       return ()
-    let some sig ← liftCoreM <| getTheory? target.theoryName
-      | throwError "unknown type theory '{target.theoryName}'"
-    let flatSig ← liftCoreM <| flattenSignature sig
+    let some flatSig ← liftCoreM <| getCheckedHLSignature? target.theoryName
+      | throwError "no checked high-level signature stored for type theory '{target.theoryName}'"
     let valueExpr ← elabInternalNativeByTerm target flatSig #[] params typeExpr bodyStx.raw steps
     elabLeanQuotedInternalTheoremCheckedExpr doc? declNameStx declName params typeExpr
       valueExpr "internal theorem := by (native)"
@@ -2044,9 +2039,8 @@ def elabNativeInternalDefByFromParsedTactics
   let params ← binders.mapM elabHLBinding
   let typeExpr ← elabObjExpr typeStx
   let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
-  let some sig ← liftCoreM <| getTheory? target.theoryName
-    | throwError "unknown type theory '{target.theoryName}'"
-  let flatSig ← liftCoreM <| flattenSignature sig
+  let some flatSig ← liftCoreM <| getCheckedHLSignature? target.theoryName
+    | throwError "no checked high-level signature stored for type theory '{target.theoryName}'"
   let bodyRef := (tactics[0]?).map (·.raw) |>.getD declNameStx
   let valueExpr ← elabInternalNativeByTerm target flatSig levels params typeExpr bodyRef stepSyntax
   if params.isEmpty then

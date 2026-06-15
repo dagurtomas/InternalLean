@@ -472,31 +472,258 @@ initialize theoryExt : SimplePersistentEnvExtension TheoryEntry (NameMap HLSigna
               | none => m
   }
 
-/-- Persistent entries for checked signatures. Each entry replaces the checked artifact
-for its theory name. -/
+/-- Append one checked LF opaque constant to a checked signature. -/
+def checkedSignatureAppendLFOpaqueConst (checked : CheckedSignature)
+    (d : CheckedLFOpaqueConst) : CheckedSignature :=
+  let lfOpaqueConsts := checked.lfOpaqueConsts.push d
+  { checked with
+    lfOpaqueConsts := lfOpaqueConsts
+    lfEnvironment := { checked.lfEnvironment with opaqueConsts := lfOpaqueConsts } }
+
+/-- Append one checked LF object definition to a checked signature. -/
+def checkedSignatureAppendLFObjectDef (checked : CheckedSignature)
+    (d : CheckedLFObjectDef) : CheckedSignature :=
+  let lfObjectDefs := checked.lfObjectDefs.push d
+  { checked with
+    lfObjectDefs := lfObjectDefs
+    lfEnvironment := { checked.lfEnvironment with objectDefs := lfObjectDefs } }
+
+/-- Append one checked LF judgment theorem to a checked signature. -/
+def checkedSignatureAppendLFJudgmentTheorem (checked : CheckedSignature)
+    (t : CheckedLFJudgmentTheorem) : CheckedSignature :=
+  let lfJudgmentTheorems := checked.lfJudgmentTheorems.push t
+  { checked with
+    lfJudgmentTheorems := lfJudgmentTheorems
+    lfEnvironment := { checked.lfEnvironment with judgmentTheorems := lfJudgmentTheorems } }
+
+/-- Persistent entries for checked signatures. Small local entries avoid recording a full checked
+signature after every internal declaration; exported modules still write one final snapshot. -/
 inductive CheckedTheoryEntry where
-  /-- Store a checked signature. -/
+  /-- Store a checked signature snapshot. -/
   | sig : CheckedSignature → CheckedTheoryEntry
+  /-- Append one checked LF opaque constant. -/
+  | lfOpaqueConst : Name → CheckedLFOpaqueConst → CheckedTheoryEntry
+  /-- Append one checked LF object definition. -/
+  | lfObjectDef : Name → CheckedLFObjectDef → CheckedTheoryEntry
+  /-- Append one checked LF judgment theorem. -/
+  | lfJudgmentTheorem : Name → CheckedLFJudgmentTheorem → CheckedTheoryEntry
+
+/-- State for checked signatures with local dirty tracking. -/
+structure CheckedTheoryStore where
+  /-- Current materialized checked signatures by theory name. -/
+  signatures : NameMap CheckedSignature := {}
+  /-- Theory names updated in the current module. -/
+  dirty : NameSet := {}
+  deriving Inhabited
+
+namespace CheckedTheoryStore
+
+/-- Add a local checked-theory entry and mark the theory dirty for one-snapshot export. -/
+def addLocalEntry (store : CheckedTheoryStore) (entry : CheckedTheoryEntry) :
+    CheckedTheoryStore :=
+  match entry with
+  | .sig checked =>
+      let theoryName := checked.name.eraseMacroScopes
+      { signatures := store.signatures.insert theoryName checked
+        dirty := store.dirty.insert theoryName }
+  | .lfOpaqueConst theoryName d =>
+      let theoryName := theoryName.eraseMacroScopes
+      match store.signatures.find? theoryName with
+      | some checked =>
+          let checked := checkedSignatureAppendLFOpaqueConst checked d
+          { signatures := store.signatures.insert theoryName checked
+            dirty := store.dirty.insert theoryName }
+      | none => store
+  | .lfObjectDef theoryName d =>
+      let theoryName := theoryName.eraseMacroScopes
+      match store.signatures.find? theoryName with
+      | some checked =>
+          let checked := checkedSignatureAppendLFObjectDef checked d
+          { signatures := store.signatures.insert theoryName checked
+            dirty := store.dirty.insert theoryName }
+      | none => store
+  | .lfJudgmentTheorem theoryName t =>
+      let theoryName := theoryName.eraseMacroScopes
+      match store.signatures.find? theoryName with
+      | some checked =>
+          let checked := checkedSignatureAppendLFJudgmentTheorem checked t
+          { signatures := store.signatures.insert theoryName checked
+            dirty := store.dirty.insert theoryName }
+      | none => store
+
+/-- Add an imported checked-theory entry without marking it dirty in this module. -/
+def addImportedEntry (store : CheckedTheoryStore) (entry : CheckedTheoryEntry) :
+    CheckedTheoryStore :=
+  match entry with
+  | .sig checked =>
+      let theoryName := checked.name.eraseMacroScopes
+      { store with signatures := store.signatures.insert theoryName checked }
+  | .lfOpaqueConst theoryName d =>
+      let theoryName := theoryName.eraseMacroScopes
+      match store.signatures.find? theoryName with
+      | some checked =>
+          let checked := checkedSignatureAppendLFOpaqueConst checked d
+          { store with signatures := store.signatures.insert theoryName checked }
+      | none => store
+  | .lfObjectDef theoryName d =>
+      let theoryName := theoryName.eraseMacroScopes
+      match store.signatures.find? theoryName with
+      | some checked =>
+          let checked := checkedSignatureAppendLFObjectDef checked d
+          { store with signatures := store.signatures.insert theoryName checked }
+      | none => store
+  | .lfJudgmentTheorem theoryName t =>
+      let theoryName := theoryName.eraseMacroScopes
+      match store.signatures.find? theoryName with
+      | some checked =>
+          let checked := checkedSignatureAppendLFJudgmentTheorem checked t
+          { store with signatures := store.signatures.insert theoryName checked }
+      | none => store
+
+/-- Export one final checked-signature snapshot per theory changed in this module. -/
+def exportEntries (store : CheckedTheoryStore) : Array CheckedTheoryEntry := Id.run do
+  let mut entries := #[]
+  for theoryName in store.dirty do
+    if let some checked := store.signatures.find? theoryName then
+      entries := entries.push (.sig checked)
+  return entries
+
+end CheckedTheoryStore
 
 /-- Environment extension storing checked signatures by theory name. -/
 initialize checkedTheoryExt :
-  SimplePersistentEnvExtension CheckedTheoryEntry (NameMap CheckedSignature) ←
+  SimplePersistentEnvExtension CheckedTheoryEntry CheckedTheoryStore ←
   registerSimplePersistentEnvExtension {
     name := `InternalLean.checkedTheoryExt
-    addEntryFn := fun m e =>
-      match e with
-      | .sig checked => m.insert checked.name checked
+    addEntryFn := CheckedTheoryStore.addLocalEntry
     addImportedFn := fun entries =>
-      entries.foldl (init := {}) fun m es =>
-        es.foldl (init := m) fun m e =>
-          match e with
-          | .sig checked => m.insert checked.name checked
+      entries.foldl (init := {}) fun store es =>
+        es.foldl (init := store) CheckedTheoryStore.addImportedEntry
+    exportEntriesFnEx? := some fun _env store _localEntries =>
+      .uniform (CheckedTheoryStore.exportEntries store)
   }
+
+/-- Convert a checked LF binding back to its high-level declaration shape. -/
+def checkedLFBindingToHLBindingForRegistry (b : CheckedLFBinding) : HLBinding :=
+  { name := b.name, typeExpr := b.typeExpr, visibility := b.visibility }
+
+/-- Convert a checked LF opaque artifact to its high-level declaration shape. -/
+def checkedLFOpaqueConstToHLDeclForRegistry (d : CheckedLFOpaqueConst) : LFOpaqueConstDecl :=
+  { name := d.name
+    arity? := d.arity?
+    params := d.params.map checkedLFBindingToHLBindingForRegistry
+    typeExpr? := d.typeExpr? }
+
+/-- Convert a checked LF object definition to its high-level declaration shape. -/
+def checkedLFObjectDefToHLDeclForRegistry (d : CheckedLFObjectDef) : LFObjectDefDecl :=
+  { name := d.name, typeExpr := d.typeExpr, value := d.value }
+
+/-- Convert a checked LF judgment theorem to its high-level declaration shape. -/
+def checkedLFJudgmentTheoremToHLDeclForRegistry (t : CheckedLFJudgmentTheorem) :
+    LFJudgmentTheoremDecl :=
+  { name := t.name
+    binders := t.binders.map checkedLFBindingToHLBindingForRegistry
+    judgmentExpr := t.judgmentExpr
+    proof := t.proof }
 
 /-- Persistent entries for cached high-level signatures reconstructed from checked artifacts. -/
 inductive CheckedHLSignatureEntry where
-  /-- Store a flattened checked high-level signature for one theory. -/
+  /-- Store a flattened checked high-level signature snapshot for one theory. -/
   | sig : Name → HLSignature → CheckedHLSignatureEntry
+  /-- Append one checked LF opaque constant to the cached checked high-level signature. -/
+  | lfOpaqueConst : Name → CheckedLFOpaqueConst → CheckedHLSignatureEntry
+  /-- Append one checked LF object definition to the cached checked high-level signature. -/
+  | lfObjectDef : Name → CheckedLFObjectDef → CheckedHLSignatureEntry
+  /-- Append one checked LF judgment theorem to the cached checked high-level signature. -/
+  | lfJudgmentTheorem : Name → CheckedLFJudgmentTheorem → CheckedHLSignatureEntry
+
+/-- State for checked high-level signatures with local dirty tracking. -/
+structure CheckedHLSignatureStore where
+  /-- Current checked high-level signatures by theory name. -/
+  signatures : NameMap HLSignature := {}
+  /-- Theory names updated in the current module. -/
+  dirty : NameSet := {}
+  deriving Inhabited
+
+namespace CheckedHLSignatureStore
+
+/-- Add one local checked-HL entry and mark the owning theory dirty. -/
+def addLocalEntry (store : CheckedHLSignatureStore) (entry : CheckedHLSignatureEntry) :
+    CheckedHLSignatureStore :=
+  match entry with
+  | .sig theoryName sig =>
+      let theoryName := theoryName.eraseMacroScopes
+      { signatures := store.signatures.insert theoryName sig
+        dirty := store.dirty.insert theoryName }
+  | .lfOpaqueConst theoryName d =>
+      let theoryName := theoryName.eraseMacroScopes
+      match store.signatures.find? theoryName with
+      | some sig =>
+          let sig := { sig with lfOpaqueConsts :=
+            sig.lfOpaqueConsts.push (checkedLFOpaqueConstToHLDeclForRegistry d) }
+          { signatures := store.signatures.insert theoryName sig
+            dirty := store.dirty.insert theoryName }
+      | none => store
+  | .lfObjectDef theoryName d =>
+      let theoryName := theoryName.eraseMacroScopes
+      match store.signatures.find? theoryName with
+      | some sig =>
+          let sig := { sig with lfObjectDefs :=
+            sig.lfObjectDefs.push (checkedLFObjectDefToHLDeclForRegistry d) }
+          { signatures := store.signatures.insert theoryName sig
+            dirty := store.dirty.insert theoryName }
+      | none => store
+  | .lfJudgmentTheorem theoryName t =>
+      let theoryName := theoryName.eraseMacroScopes
+      match store.signatures.find? theoryName with
+      | some sig =>
+          let sig := { sig with lfJudgmentTheorems :=
+            sig.lfJudgmentTheorems.push (checkedLFJudgmentTheoremToHLDeclForRegistry t) }
+          { signatures := store.signatures.insert theoryName sig
+            dirty := store.dirty.insert theoryName }
+      | none => store
+
+/-- Add one imported checked-HL entry without marking the theory dirty. -/
+def addImportedEntry (store : CheckedHLSignatureStore) (entry : CheckedHLSignatureEntry) :
+    CheckedHLSignatureStore :=
+  match entry with
+  | .sig theoryName sig =>
+      let theoryName := theoryName.eraseMacroScopes
+      { store with signatures := store.signatures.insert theoryName sig }
+  | .lfOpaqueConst theoryName d =>
+      let theoryName := theoryName.eraseMacroScopes
+      match store.signatures.find? theoryName with
+      | some sig =>
+          let sig := { sig with lfOpaqueConsts :=
+            sig.lfOpaqueConsts.push (checkedLFOpaqueConstToHLDeclForRegistry d) }
+          { store with signatures := store.signatures.insert theoryName sig }
+      | none => store
+  | .lfObjectDef theoryName d =>
+      let theoryName := theoryName.eraseMacroScopes
+      match store.signatures.find? theoryName with
+      | some sig =>
+          let sig := { sig with lfObjectDefs :=
+            sig.lfObjectDefs.push (checkedLFObjectDefToHLDeclForRegistry d) }
+          { store with signatures := store.signatures.insert theoryName sig }
+      | none => store
+  | .lfJudgmentTheorem theoryName t =>
+      let theoryName := theoryName.eraseMacroScopes
+      match store.signatures.find? theoryName with
+      | some sig =>
+          let sig := { sig with lfJudgmentTheorems :=
+            sig.lfJudgmentTheorems.push (checkedLFJudgmentTheoremToHLDeclForRegistry t) }
+          { store with signatures := store.signatures.insert theoryName sig }
+      | none => store
+
+/-- Export one final checked-HL snapshot per theory changed in this module. -/
+def exportEntries (store : CheckedHLSignatureStore) : Array CheckedHLSignatureEntry := Id.run do
+  let mut entries := #[]
+  for theoryName in store.dirty do
+    if let some sig := store.signatures.find? theoryName then
+      entries := entries.push (.sig theoryName sig)
+  return entries
+
+end CheckedHLSignatureStore
 
 /-- Environment extension storing checked high-level signatures by theory name.
 
@@ -504,17 +731,15 @@ The cache is a performance aid for long files with many small `extend_type_theor
 `internal def` commands: it avoids reconstructing the whole high-level checking baseline from the
 full `CheckedSignature` after every small update. The checked artifact remains authoritative. -/
 initialize checkedHLSignatureExt :
-  SimplePersistentEnvExtension CheckedHLSignatureEntry (NameMap HLSignature) ←
+  SimplePersistentEnvExtension CheckedHLSignatureEntry CheckedHLSignatureStore ←
   registerSimplePersistentEnvExtension {
     name := `InternalLean.checkedHLSignatureExt
-    addEntryFn := fun m e =>
-      match e with
-      | .sig theoryName sig => m.insert theoryName sig
+    addEntryFn := CheckedHLSignatureStore.addLocalEntry
     addImportedFn := fun entries =>
-      entries.foldl (init := {}) fun m es =>
-        es.foldl (init := m) fun m e =>
-          match e with
-          | .sig theoryName sig => m.insert theoryName sig
+      entries.foldl (init := {}) fun store es =>
+        es.foldl (init := store) CheckedHLSignatureStore.addImportedEntry
+    exportEntriesFnEx? := some fun _env store _localEntries =>
+      .uniform (CheckedHLSignatureStore.exportEntries store)
   }
 
 /-- Registry record for a generated top-level internal-declaration evidence constant. -/
@@ -1153,11 +1378,16 @@ def getTheory? (nm : Name) : CoreM (Option HLSignature) := do
 
 /-- Return the registered checked signatures. -/
 def getCheckedTheories : CoreM (NameMap CheckedSignature) := do
-  return checkedTheoryExt.getState (← getEnv)
+  return (checkedTheoryExt.getState (← getEnv)).signatures
 
 /-- Look up a checked theory artifact. -/
 def getCheckedTheory? (nm : Name) : CoreM (Option CheckedSignature) := do
-  return (← getCheckedTheories).find? nm
+  return (← getCheckedTheories).find? nm.eraseMacroScopes
+
+/-- Return the cheap checked-theory stamp for a materialized checked artifact, if available. -/
+def getCheckedTheoryStamp? (nm : Name) : CoreM (Option CompiledLFCheckCacheStamp) := do
+  return (checkedTheoryExt.getState (← getEnv)).signatures.find? nm.eraseMacroScopes |>.map
+    CompiledLFCheckCacheStamp.ofCheckedSignature
 
 /-- Register or replace a checked theory artifact. -/
 def registerCheckedTheory (checked : CheckedSignature) : CoreM Unit := do
@@ -1165,11 +1395,19 @@ def registerCheckedTheory (checked : CheckedSignature) : CoreM Unit := do
 
 /-- Return cached checked high-level signatures. -/
 def getCheckedHLSignatures : CoreM (NameMap HLSignature) := do
-  return checkedHLSignatureExt.getState (← getEnv)
+  return (checkedHLSignatureExt.getState (← getEnv)).signatures
 
-/-- Look up a cached checked high-level signature. -/
+/-- Look up a cached checked high-level signature, preferring a valid compiled checker cache. -/
 def getCheckedHLSignature? (nm : Name) : CoreM (Option HLSignature) := do
-  return (← getCheckedHLSignatures).find? nm
+  if let some cache ← getCompiledLFCheckCache? nm then
+    match ← getCheckedTheoryStamp? nm with
+    | some expected =>
+        if cache.stamp == expected then
+          return some cache.checkedHL
+        else
+          pure ()
+    | none => pure ()
+  return (← getCheckedHLSignatures).find? nm.eraseMacroScopes
 
 /-- Register or replace a cached checked high-level signature. -/
 def registerCheckedHLSignature (theoryName : Name) (sig : HLSignature) : CoreM Unit := do
