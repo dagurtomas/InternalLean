@@ -809,6 +809,32 @@ structure InternalRegistrationProfile where
   cacheOverlayDecls : Nat := 0
   /-- Whether kernel replay validation reused the compiled replay cache. -/
   kernelReplayCacheHit : Bool := false
+  /-- Whether this registration materialized the full checked signature. -/
+  checkedTheoryMaterialized : Bool := false
+  /-- Whether this registration materialized the checked high-level signature. -/
+  checkedHLMaterialized : Bool := false
+  /-- Number of full lookup maps rebuilt instead of read from a compiled cache. -/
+  mapRebuilds : Nat := 0
+  /-- Time spent materializing the checked signature, when profiling requested timings. -/
+  checkedTheoryMaterializationMs? : Option Nat := none
+  /-- Time spent materializing the checked high-level signature, when profiled. -/
+  checkedHLMaterializationMs? : Option Nat := none
+  /-- Time spent preparing lookup/cache/elaboration context before LF checking, when profiled. -/
+  lookupSetupMs? : Option Nat := none
+  /-- Time spent rebuilding lookup maps, when profiled. -/
+  mapRebuildMs? : Option Nat := none
+  /-- Time spent in LF checking for the new declaration(s), when profiled. -/
+  lfCheckMs? : Option Nat := none
+  /-- Time spent updating the checked-signature artifact, when profiled. -/
+  checkedTheoryUpdateMs? : Option Nat := none
+  /-- Time spent updating the checked high-level artifact, when profiled. -/
+  checkedHLUpdateMs? : Option Nat := none
+  /-- Time spent updating the compiled LF cache, when profiled. -/
+  compiledCacheUpdateMs? : Option Nat := none
+  /-- Time spent validating structural replay, when profiled. -/
+  replayValidationMs? : Option Nat := none
+  /-- Time spent applying the main environment extension updates, when profiled. -/
+  environmentUpdateMs? : Option Nat := none
   deriving Inhabited, Repr, BEq
 
 /-- Persistent entries for registration profiles. -/
