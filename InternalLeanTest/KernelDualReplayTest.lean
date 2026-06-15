@@ -95,6 +95,20 @@ run_cmd do
   | .error _ => pure ()
 
 run_cmd do
+  let kn (n : Name) := Kernel.KName.ofName n
+  let stmt : Kernel.Judgment := { head := kn `J }
+  let entry : Kernel.KernelLFTheoremEntry := { name := kn `dup, statement := stmt }
+  let ctx : Kernel.KernelLFCheckContext := { theorems := [entry] }
+  match Kernel.ValidatedReplayContext.ofContext ctx with
+  | .ok validatedCtx =>
+      match validatedCtx.addTheoremEntry entry with
+      | .ok _ => throwError "incremental replay context accepted a duplicate theorem entry"
+      | .error err =>
+          unless err.contains "duplicate theorem" do
+            throwError "expected duplicate-theorem diagnostic, got: {err}"
+  | .error err => throwError "initial replay context validation failed: {err}"
+
+run_cmd do
   let lamConstant : Kernel.LFConstantSchema := {
     name := Kernel.KName.ofName `lam
     resultType := .univ .zero }

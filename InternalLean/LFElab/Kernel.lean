@@ -604,9 +604,9 @@ def kernelLFCertificateEntriesOfTheoremsToK (theorems : Array CheckedLFJudgmentT
   for t in theorems do
     match t.structuralKernelDerivation? with
     | some (.certificate name stmt certificateName) =>
-        out := out ++ [{ name := name, statement := stmt, certificateName := certificateName }]
+        out := { name := name, statement := stmt, certificateName := certificateName } :: out
     | _ => pure ()
-  return out
+  return out.reverse
 
 /-- Free-local set for all binders of a checked LF theorem. -/
 def theoremBinderFreeLocals (t : CheckedLFJudgmentTheorem) : NameSet :=
@@ -630,12 +630,13 @@ def kernelLFLocalAssumptionEntriesOfTheoremToK (normalize? : Bool)
     match b.head? with
     | some head =>
         if head.kind == .judgment then
-          out := out ++ [{
+          out := {
             name := Kernel.KName.ofName b.name
             statement :=
-              (← checkedLFJudgmentExprToKJudgment (norm b.checkedTypeExpr) head {} freeLocals) }]
+              (← checkedLFJudgmentExprToKJudgment (norm b.checkedTypeExpr) head {} freeLocals) } ::
+            out
     | none => pure ()
-  pure out
+  pure out.reverse
 
 /-- Lower a checked LF theorem to the structural rule schema used by theorem references. -/
 def kernelLFRuleSchemaOfTheoremToK (normalize? : Bool)
@@ -698,8 +699,7 @@ def kernelLFRuleSchemasOfTheoremsToK (normalize? : Bool)
 /-- Build a structural replay context from checked theorem artifacts. -/
 def kernelLFReplayContextOfTheoremsToK (theorems : Array CheckedLFJudgmentTheorem) :
     Except String Kernel.KernelLFCheckContext := do
-  let mut replayCtx : Kernel.KernelLFCheckContext := {
-    certificates := kernelLFCertificateEntriesOfTheoremsToK theorems }
+  let mut theoremEntries := []
   for prior in theorems do
     if prior.binders.isEmpty then
       if prior.checkedStructuralKernelDerivation?.isSome || prior.derivation?.isSome then
@@ -707,11 +707,12 @@ def kernelLFReplayContextOfTheoremsToK (theorems : Array CheckedLFJudgmentTheore
           match prior.checkedStructuralKernelDerivation? with
           | some checkedReplay => pure checkedReplay.statement
           | none => checkedLFJudgmentTheoremStatementToK prior
-        replayCtx := { replayCtx with
-          theorems := replayCtx.theorems ++ [{
-            name := Kernel.KName.ofName prior.name
-            statement := statement }] }
-  pure replayCtx
+        theoremEntries := {
+          name := Kernel.KName.ofName prior.name
+          statement := statement } :: theoremEntries
+  pure {
+    certificates := kernelLFCertificateEntriesOfTheoremsToK theorems
+    theorems := theoremEntries.reverse }
 
 /-- Lower checked LF artifacts to a structural compact replay signature. -/
 def checkedSignatureToKSignature (theoryName : Name) (lfSyntaxDefs : Array CheckedLFSyntaxDef)
@@ -888,6 +889,17 @@ def checkStructuralKernelReplay (label : String) (signature : Kernel.Signature)
   | .error err =>
       throwError "Phase-5c structural kernel replay failed for {label}: {err}"
 
+/-- Check a structural-kernel replay artifact with prevalidated signature/context indices. -/
+def checkStructuralKernelReplayWithValidated (label : String) (signature : Kernel.Signature)
+    (context : Kernel.KernelLFCheckContext) (validatedSignature : Kernel.ValidatedSignature)
+    (validatedContext : Kernel.ValidatedReplayContext) (statement : Kernel.Judgment)
+    (derivation : Kernel.KernelLFDerivation) : CoreM Kernel.CheckedKernelLFDerivation := do
+  match Kernel.CheckedKernelLFDerivation.ofReplayValidated signature context validatedSignature
+      validatedContext statement derivation with
+  | .ok checked => pure checked
+  | .error err =>
+      throwError "Phase-5c structural kernel replay failed for {label}: {err}"
+
 /-- Add checked structural-kernel replay validation to one incrementally checked LF theorem. -/
 def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : CheckedSignature)
     (t : CheckedLFJudgmentTheorem) : CoreM CheckedLFJudgmentTheorem := do
@@ -966,22 +978,30 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
   let structuralSig ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' cached compact signature" <|
       compiledLFCheckCacheStructuralSignature cache
+  let validatedStructuralSig ← liftStructuralKernelExcept
+    s!"judgment_theorem '{t.name}' cached compact validated signature" <|
+      Kernel.ValidatedSignature.ofSignature structuralSig
   let structuralReplayCtx := cache.structuralKernelReplayBase
+  let validatedReplayCtx ← liftStructuralKernelExcept
+    s!"judgment_theorem '{t.name}' cached compact validated replay context" <|
+      Kernel.ValidatedReplayContext.ofContext structuralReplayCtx
   let structuralAssumptions ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' compact cached local assumptions" <|
       kernelLFLocalAssumptionEntriesOfTheoremToK false cache.checkedLFDefValues t
+  let localParameters := t.binders.toList.map (fun b => Kernel.KLocalName.ofName b.name)
   let structuralDeriv ← lowerLFDerivationToStructuralKernelWithMode cache.checkedHL
     cache.globalHeads lfKernelDefValues (theoremBinderFreeLocals t) t.name false structuralSig
     shallowDeriv
   let structuralStmt := Kernel.KernelLFDerivation.statement structuralDeriv
-  let structuralLocalReplayCtx := { structuralReplayCtx with
-    localParameters := t.binders.toList.map (fun b => Kernel.KLocalName.ofName b.name)
-    assumptions := structuralAssumptions }
+  let structuralLocalReplayCtx ← liftStructuralKernelExcept
+    s!"judgment_theorem '{t.name}' compact cached local replay context" <|
+      validatedReplayCtx.withLocalFrame localParameters structuralAssumptions
   let (structuralDeriv, _structuralStmt, checkedStructuralReplay) ←
     try
-      let checkedStructuralReplay ← checkStructuralKernelReplay
+      let checkedStructuralReplay ← checkStructuralKernelReplayWithValidated
         s!"judgment_theorem '{t.name}' compact cached replay" structuralSig
-        structuralLocalReplayCtx structuralStmt structuralDeriv
+        structuralLocalReplayCtx.source validatedStructuralSig structuralLocalReplayCtx
+        structuralStmt structuralDeriv
       pure (structuralDeriv, structuralStmt, checkedStructuralReplay)
     catch _ =>
       logLFConversionProfileEntry {
@@ -996,6 +1016,9 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
       let structuralSigExpanded ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' cached expanded signature" <|
           compiledLFCheckCacheStructuralSignature cache true
+      let validatedStructuralSigExpanded ← liftStructuralKernelExcept
+        s!"judgment_theorem '{t.name}' cached expanded validated signature" <|
+          Kernel.ValidatedSignature.ofSignature structuralSigExpanded
       let structuralExpandedAssumptions ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' expanded cached local assumptions" <|
           kernelLFLocalAssumptionEntriesOfTheoremToK true cache.checkedLFDefValues t
@@ -1003,11 +1026,12 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
         cache.globalHeads lfKernelDefValues (theoremBinderFreeLocals t) t.name true
         structuralSigExpanded shallowDeriv
       let structuralStmtExpanded := Kernel.KernelLFDerivation.statement structuralDerivExpanded
-      let structuralExpandedReplayCtx := { structuralReplayCtx with
-        localParameters := t.binders.toList.map (fun b => Kernel.KLocalName.ofName b.name)
-        assumptions := structuralExpandedAssumptions }
-      let checkedStructuralReplay ← checkStructuralKernelReplay
+      let structuralExpandedReplayCtx ← liftStructuralKernelExcept
+        s!"judgment_theorem '{t.name}' expanded cached local replay context" <|
+          validatedReplayCtx.withLocalFrame localParameters structuralExpandedAssumptions
+      let checkedStructuralReplay ← checkStructuralKernelReplayWithValidated
         s!"judgment_theorem '{t.name}' expanded cached replay" structuralSigExpanded
+        structuralExpandedReplayCtx.source validatedStructuralSigExpanded
         structuralExpandedReplayCtx structuralStmtExpanded structuralDerivExpanded
       pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay)
   pure { t with

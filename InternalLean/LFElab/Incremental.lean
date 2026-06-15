@@ -110,7 +110,8 @@ def appendJudgmentTheorem (cache : CompiledLFCheckCache) (t : CheckedLFJudgmentT
   let theoremName := t.name.eraseMacroScopes
   let structuralCertificateEntries := kernelLFCertificateEntriesOfTheoremsToK #[t]
   let structuralReplayCtx := { cache.structuralKernelReplayBase with
-    certificates := cache.structuralKernelReplayBase.certificates ++ structuralCertificateEntries }
+    certificates := structuralCertificateEntries.foldr (fun entry entries => entry :: entries)
+      cache.structuralKernelReplayBase.certificates }
   let structuralReplayCtx :=
     if t.binders.isEmpty then
       let stmt? :=
@@ -119,9 +120,9 @@ def appendJudgmentTheorem (cache : CompiledLFCheckCache) (t : CheckedLFJudgmentT
         | none => checkedLFJudgmentTheoremStatementToK t |>.toOption
       match stmt? with
       | some stmt => { structuralReplayCtx with
-          theorems := structuralReplayCtx.theorems ++ [{
+          theorems := {
             name := Kernel.KName.ofName t.name
-            statement := stmt }] }
+            statement := stmt } :: structuralReplayCtx.theorems }
       | none => structuralReplayCtx
     else
       structuralReplayCtx
@@ -913,8 +914,17 @@ structure IntraBlockKernelReplayContext where
   checkedLFDefValues : CheckedLFDefinitionValueMap := {}
   /-- Structural compact signature built from checked artifacts for replay. -/
   structuralKernelSig : Except String Kernel.Signature := .ok default
+  /-- Validated structural compact signature built from checked artifacts for replay. -/
+  structuralKernelValidatedSig : Except String Kernel.ValidatedSignature := .ok default
+  /-- Structural expanded signature, built only after the first compact replay fallback. -/
+  structuralKernelSigExpanded? : Option (Except String Kernel.Signature) := none
+  /-- Validated structural expanded signature, built only after the first fallback. -/
+  structuralKernelValidatedSigExpanded? :
+    Option (Except String Kernel.ValidatedSignature) := none
   /-- Structural replay context built from checked prior theorem artifacts. -/
   structuralReplayCtx : Except String Kernel.KernelLFCheckContext := .ok default
+  /-- Validated structural replay context built from checked prior theorem artifacts. -/
+  structuralValidatedReplayCtx : Except String Kernel.ValidatedReplayContext := .ok default
   deriving Inhabited
 
 /-- Build a structural replay signature from a block replay context's checked artifacts. -/
@@ -938,6 +948,16 @@ def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignat
   let lfObjectDefs := checked.lfObjectDefs ++ objectDefs
   let lfJudgmentTheorems := checked.lfJudgmentTheorems ++ theoremCandidates
   let lfCheckedDefValues := checkedLFDefinitionValues lfSyntaxDefs lfObjectDefs
+  let structuralKernelSig :=
+    checkedSignatureToKSignature sig.name lfSyntaxDefs lfOpaqueConsts lfContextZones
+      lfBinderClasses lfConversionPlugins lfRuleSchemas lfObjectDefs lfJudgmentTheorems
+  let structuralKernelValidatedSig := do
+    let signature ← structuralKernelSig
+    Kernel.ValidatedSignature.ofSignature signature
+  let structuralReplayCtx := kernelLFReplayContextOfTheoremsToK checked.lfJudgmentTheorems
+  let structuralValidatedReplayCtx := do
+    let replayCtx ← structuralReplayCtx
+    Kernel.ValidatedReplayContext.ofContext replayCtx
   { theoryName := sig.name
     lfSyntaxDefs := lfSyntaxDefs
     lfOpaqueConsts := lfOpaqueConsts
@@ -950,10 +970,34 @@ def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignat
     lfKernelGlobalHeads := lfGlobalHeadInfo sig
     lfKernelDefValues := lfDefinitionValueMapFromCheckedDefs lfSyntaxDefs lfObjectDefs
     checkedLFDefValues := lfCheckedDefValues
-    structuralKernelSig :=
-      checkedSignatureToKSignature sig.name lfSyntaxDefs lfOpaqueConsts lfContextZones
-        lfBinderClasses lfConversionPlugins lfRuleSchemas lfObjectDefs lfJudgmentTheorems
-    structuralReplayCtx := kernelLFReplayContextOfTheoremsToK checked.lfJudgmentTheorems }
+    structuralKernelSig := structuralKernelSig
+    structuralKernelValidatedSig := structuralKernelValidatedSig
+    structuralReplayCtx := structuralReplayCtx
+    structuralValidatedReplayCtx := structuralValidatedReplayCtx }
+
+/-- Retrieve or build the expanded structural replay signature for a theorem block. -/
+def getIntraBlockExpandedValidatedSignature (ctx : IntraBlockKernelReplayContext) :
+    CoreM (Kernel.Signature × Kernel.ValidatedSignature × IntraBlockKernelReplayContext) := do
+  match ctx.structuralKernelSigExpanded?, ctx.structuralKernelValidatedSigExpanded? with
+  | some sigResult, some validatedResult =>
+      let signature ← liftStructuralKernelExcept
+        s!"type theory '{ctx.theoryName}' block cached expanded signature" sigResult
+      let validatedSignature ← liftStructuralKernelExcept
+        s!"type theory '{ctx.theoryName}' block cached expanded validated signature"
+          validatedResult
+      pure (signature, validatedSignature, ctx)
+  | _, _ =>
+      let sigResult := intraBlockKernelReplayStructuralSignature ctx true
+      let validatedResult := do
+        let signature ← sigResult
+        Kernel.ValidatedSignature.ofSignature signature
+      let signature ← liftStructuralKernelExcept
+        s!"type theory '{ctx.theoryName}' block expanded signature" sigResult
+      let validatedSignature ← liftStructuralKernelExcept
+        s!"type theory '{ctx.theoryName}' block expanded validated signature" validatedResult
+      pure (signature, validatedSignature, { ctx with
+        structuralKernelSigExpanded? := some sigResult
+        structuralKernelValidatedSigExpanded? := some validatedResult })
 
 /-- Replay-check one theorem against cached block-level kernel state and update availability. -/
 def validateLFTheoremKernelReplayInContext (sig : HLSignature)
@@ -963,27 +1007,41 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
     | pure (t, ctx)
   let structuralSig ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' block compact signature" ctx.structuralKernelSig
-  let structuralReplayCtx ← liftStructuralKernelExcept
-    s!"judgment_theorem '{t.name}' block compact replay context" ctx.structuralReplayCtx
+  let validatedStructuralSig ← liftStructuralKernelExcept
+    s!"judgment_theorem '{t.name}' block compact validated signature"
+      ctx.structuralKernelValidatedSig
+  let validatedReplayCtx ← liftStructuralKernelExcept
+    s!"judgment_theorem '{t.name}' block compact replay context"
+      ctx.structuralValidatedReplayCtx
   let structuralAssumptions ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' block compact local assumptions" <|
       kernelLFLocalAssumptionEntriesOfTheoremToK false ctx.checkedLFDefValues t
+  let localParameters := t.binders.toList.map (fun b => Kernel.KLocalName.ofName b.name)
   let structuralDeriv ← lowerLFDerivationToStructuralKernelWithMode sig ctx.lfKernelGlobalHeads
     ctx.lfKernelDefValues (theoremBinderFreeLocals t) t.name false structuralSig shallowDeriv
   let structuralStmt := Kernel.KernelLFDerivation.statement structuralDeriv
-  let structuralLocalReplayCtx := { structuralReplayCtx with
-    localParameters := t.binders.toList.map (fun b => Kernel.KLocalName.ofName b.name)
-    assumptions := structuralAssumptions }
-  let (structuralDeriv, structuralStmt, checkedStructuralReplay) ←
+  let structuralLocalReplayCtx ← liftStructuralKernelExcept
+    s!"judgment_theorem '{t.name}' block compact local replay context" <|
+      validatedReplayCtx.withLocalFrame localParameters structuralAssumptions
+  let (structuralDeriv, structuralStmt, checkedStructuralReplay, ctx) ←
     try
-      let checkedStructuralReplay ← checkStructuralKernelReplay
+      let checkedStructuralReplay ← checkStructuralKernelReplayWithValidated
         s!"judgment_theorem '{t.name}' block compact replay" structuralSig
-        structuralLocalReplayCtx structuralStmt structuralDeriv
-      pure (structuralDeriv, structuralStmt, checkedStructuralReplay)
+        structuralLocalReplayCtx.source validatedStructuralSig structuralLocalReplayCtx
+        structuralStmt structuralDeriv
+      pure (structuralDeriv, structuralStmt, checkedStructuralReplay, ctx)
     catch _ =>
-      let structuralSigExpanded ← liftStructuralKernelExcept
-        s!"judgment_theorem '{t.name}' block expanded signature" <|
-          intraBlockKernelReplayStructuralSignature ctx true
+      logLFConversionProfileEntry {
+        site := "structural_replay_fallback"
+        owner := {
+          theoryName := some sig.name
+          ownerKind := some "judgment_theorem"
+          ownerName := some t.name }
+        compactSucceeded := false
+        fullUnfoldFallback := true
+        accepted := true }
+      let (structuralSigExpanded, validatedStructuralSigExpanded, ctx) ←
+        getIntraBlockExpandedValidatedSignature ctx
       let structuralExpandedAssumptions ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' block expanded local assumptions" <|
           kernelLFLocalAssumptionEntriesOfTheoremToK true ctx.checkedLFDefValues t
@@ -991,25 +1049,33 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
         ctx.lfKernelGlobalHeads ctx.lfKernelDefValues (theoremBinderFreeLocals t) t.name true
         structuralSigExpanded shallowDeriv
       let structuralStmtExpanded := Kernel.KernelLFDerivation.statement structuralDerivExpanded
-      let structuralExpandedReplayCtx := { structuralReplayCtx with
-        localParameters := t.binders.toList.map (fun b => Kernel.KLocalName.ofName b.name)
-        assumptions := structuralExpandedAssumptions }
-      let checkedStructuralReplay ← checkStructuralKernelReplay
+      let structuralExpandedReplayCtx ← liftStructuralKernelExcept
+        s!"judgment_theorem '{t.name}' block expanded local replay context" <|
+          validatedReplayCtx.withLocalFrame localParameters structuralExpandedAssumptions
+      let checkedStructuralReplay ← checkStructuralKernelReplayWithValidated
         s!"judgment_theorem '{t.name}' block expanded replay" structuralSigExpanded
+        structuralExpandedReplayCtx.source validatedStructuralSigExpanded
         structuralExpandedReplayCtx structuralStmtExpanded structuralDerivExpanded
-      pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay)
+      pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay, ctx)
   let t := { t with
     structuralKernelDerivation? := some structuralDeriv
     checkedStructuralKernelDerivation? := some checkedStructuralReplay }
-  let structuralReplayCtx :=
+  let certificateEntries := kernelLFCertificateEntriesOfTheoremsToK #[t]
+  let validatedReplayCtx ← liftStructuralKernelExcept
+    s!"judgment_theorem '{t.name}' block replay certificate append" <|
+      validatedReplayCtx.addCertificateEntries certificateEntries
+  let validatedReplayCtx ←
     if t.binders.isEmpty then
-      { structuralReplayCtx with theorems := structuralReplayCtx.theorems ++ [{
-          name := Kernel.KName.ofName t.name
-          statement := structuralStmt }] }
+      liftStructuralKernelExcept
+        s!"judgment_theorem '{t.name}' block replay theorem append" <|
+          validatedReplayCtx.addTheoremEntry {
+            name := Kernel.KName.ofName t.name
+            statement := structuralStmt }
     else
-      structuralReplayCtx
+      pure validatedReplayCtx
   pure (t, { ctx with
-    structuralReplayCtx := .ok structuralReplayCtx })
+    structuralReplayCtx := .ok validatedReplayCtx.source
+    structuralValidatedReplayCtx := .ok validatedReplayCtx })
 
 /-- Replay-check all new theorem artifacts in one block using one cached kernel signature. -/
 def validateLFTheoremKernelReplayBlock (sig : HLSignature)

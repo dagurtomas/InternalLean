@@ -554,6 +554,7 @@ structure ValidatedSignature where
   contextZonesByName : Std.HashMap KName ContextZoneSchema := {}
   binderClassesByName : Std.HashMap KName BinderClassSchema := {}
   conversionPluginsByName : Std.HashMap KName ConversionPluginSchema := {}
+  deriving Inhabited
 
 /-- Previously checked theorem entry for structural replay. -/
 structure KernelLFTheoremEntry where
@@ -588,6 +589,7 @@ structure ValidatedReplayContext where
   certificatesByCertificateName : Std.HashMap KName KernelLFCertificateEntry := {}
   conversionCertificatesByCertificateName :
     Std.HashMap KName KernelLFConversionCertificateEntry := {}
+  deriving Inhabited
 
 /-- First duplicate value in a list. -/
 def firstDuplicate? [BEq α] (xs : List α) : Option α :=
@@ -708,21 +710,33 @@ end ValidatedSignature
 
 namespace ValidatedReplayContext
 
-/-- Validate and index a source-order structural replay context. -/
-def ofContext (ctx : KernelLFCheckContext) : Except String ValidatedReplayContext := do
+/-- Validate local replay parameters and build their lookup set. -/
+def validateLocalParameters (params : List KLocalName) :
+    Except String (Array KLocalName × Std.HashSet KLocalName) := do
   let mut localParameterSet : Std.HashSet KLocalName := {}
   let mut localParameters := #[]
-  for p in ctx.localParameters do
+  for p in params do
     if localParameterSet.contains p then
       throw s!"checked replay context has duplicate local parameter '{p}'"
     localParameterSet := localParameterSet.insert p
     localParameters := localParameters.push p
+  pure (localParameters, localParameterSet)
+
+/-- Validate local replay assumptions and build their lookup map. -/
+def validateAssumptions (assumptions : List KernelLFTheoremEntry) :
+    Except String (Std.HashMap KName KernelLFTheoremEntry) := do
   let mut assumptionsByName : Std.HashMap KName KernelLFTheoremEntry := {}
-  for e in ctx.assumptions do
+  for e in assumptions do
     if assumptionsByName.contains e.name then
       throw s!"checked replay context has duplicate assumption entry '{e.name}'"
     Judgment.ensureLocallyClosed s!"checked replay assumption '{e.name}'" e.statement
     assumptionsByName := assumptionsByName.insert e.name e
+  pure assumptionsByName
+
+/-- Validate and index a source-order structural replay context. -/
+def ofContext (ctx : KernelLFCheckContext) : Except String ValidatedReplayContext := do
+  let (localParameters, localParameterSet) ← validateLocalParameters ctx.localParameters
+  let assumptionsByName ← validateAssumptions ctx.assumptions
   let mut theoremsByName : Std.HashMap KName KernelLFTheoremEntry := {}
   for e in ctx.theorems do
     if theoremsByName.contains e.name then
@@ -758,6 +772,49 @@ def ofContext (ctx : KernelLFCheckContext) : Except String ValidatedReplayContex
     certificatesByName
     certificatesByCertificateName
     conversionCertificatesByCertificateName }
+
+/-- Reuse a validated replay context while replacing the local theorem frame. -/
+def withLocalFrame (ctx : ValidatedReplayContext) (localParams : List KLocalName)
+    (assumptions : List KernelLFTheoremEntry) : Except String ValidatedReplayContext := do
+  let (localParameters, localParameterSet) ← validateLocalParameters localParams
+  let assumptionsByName ← validateAssumptions assumptions
+  pure { ctx with
+    source := { ctx.source with localParameters := localParams, assumptions := assumptions }
+    localParameters := localParameters
+    localParameterSet := localParameterSet
+    assumptionsByName := assumptionsByName }
+
+/-- Add one checked theorem entry to an already validated replay context. -/
+def addTheoremEntry (ctx : ValidatedReplayContext) (entry : KernelLFTheoremEntry) :
+    Except String ValidatedReplayContext := do
+  if ctx.theoremsByName.contains entry.name then
+    throw s!"checked replay context has duplicate theorem entry '{entry.name}'"
+  Judgment.ensureLocallyClosed s!"checked replay theorem '{entry.name}'" entry.statement
+  pure { ctx with
+    source := { ctx.source with theorems := entry :: ctx.source.theorems }
+    theoremsByName := ctx.theoremsByName.insert entry.name entry }
+
+/-- Add one checked certificate entry to an already validated replay context. -/
+def addCertificateEntry (ctx : ValidatedReplayContext) (entry : KernelLFCertificateEntry) :
+    Except String ValidatedReplayContext := do
+  if ctx.certificatesByName.contains entry.name then
+    throw s!"checked replay context has duplicate certificate entry '{entry.name}'"
+  if ctx.certificatesByCertificateName.contains entry.certificateName then
+    throw s!"checked replay context has duplicate certificate token '{entry.certificateName}'"
+  Judgment.ensureLocallyClosed s!"checked replay certificate '{entry.name}'" entry.statement
+  pure { ctx with
+    source := { ctx.source with certificates := entry :: ctx.source.certificates }
+    certificatesByName := ctx.certificatesByName.insert entry.name entry
+    certificatesByCertificateName :=
+      ctx.certificatesByCertificateName.insert entry.certificateName entry }
+
+/-- Add checked certificate entries to an already validated replay context. -/
+def addCertificateEntries (ctx : ValidatedReplayContext)
+    (entries : List KernelLFCertificateEntry) : Except String ValidatedReplayContext := do
+  let mut ctx := ctx
+  for entry in entries do
+    ctx ← ctx.addCertificateEntry entry
+  pure ctx
 
 end ValidatedReplayContext
 
@@ -1181,6 +1238,20 @@ def ofReplay (signature : Signature) (context : KernelLFCheckContext) (statement
   let ctx ← ValidatedReplayContext.ofContext context
   KernelLFDerivation.checkWithValidatedContext ctx sig derivation statement
   pure { signature, context, statement, derivation }
+
+/-- Build a checked structural replay wrapper using prevalidated signature/context indices. -/
+def ofReplayValidated (sourceSignature : Signature) (sourceContext : KernelLFCheckContext)
+    (validatedSignature : ValidatedSignature) (validatedContext : ValidatedReplayContext)
+    (statement : Judgment) (derivation : KernelLFDerivation) :
+    Except String CheckedKernelLFDerivation := do
+  Judgment.ensureLocallyClosed "checked replay wrapper statement" statement
+  KernelLFDerivation.checkWithValidatedContext validatedContext validatedSignature derivation
+    statement
+  pure {
+    signature := sourceSignature
+    context := sourceContext
+    statement := statement
+    derivation := derivation }
 
 /-- Build a checked structural replay wrapper using the derivation's carried statement. -/
 def ofDerivation (signature : Signature) (context : KernelLFCheckContext)
