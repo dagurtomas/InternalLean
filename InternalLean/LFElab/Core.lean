@@ -2871,6 +2871,25 @@ def lfDefinitionComparisonAccepted (defs : LFDefinitionValueMap) (locals : NameS
       lfExprAlphaEq (normalizeLFExprForConversionWithLocals defs locals actual)
         (normalizeLFExprForConversionWithLocals defs locals expected)
 
+/-- Acceptedness for source-level LF-definition comparison, optionally using delta conversion. -/
+def lfDefinitionComparisonAcceptedWithOptions (defs : LFDefinitionValueMap) (locals : NameSet)
+    (actual expected : ObjExpr) (options : LFDeltaConversionOptions) : Bool :=
+  let actual := eraseObjExprScopes actual
+  let expected := eraseObjExprScopes expected
+  if lfExprAlphaEq actual expected then
+    true
+  else
+    let actualCheap := normalizeLFExprForConversionWithLocals {} locals actual
+    let expectedCheap := normalizeLFExprForConversionWithLocals {} locals expected
+    if lfExprAlphaEq actualCheap expectedCheap then
+      true
+    else if options.enabled then
+      let env : LFDeltaConversionEnv := { defs, locals, options }
+      (LFDeltaConversion.convertObjExprWithFallback env actual expected).accepted
+    else
+      lfExprAlphaEq (normalizeLFExprForConversionWithLocals defs locals actual)
+        (normalizeLFExprForConversionWithLocals defs locals expected)
+
 /-- Build a diagnostic entry for the current cheap-then-full comparison policy. -/
 def lfDefinitionComparisonProfileEntry (site : String) (owner : LFConversionProfileOwner)
     (defs : LFDefinitionValueMap) (locals : NameSet) (actual expected : ObjExpr)
@@ -2904,19 +2923,66 @@ def lfDefinitionComparisonProfileEntry (site : String) (owner : LFConversionProf
     elapsedMs?, compactSucceeded, fullUnfoldFallback := fallbackRan
     accepted, unfoldedCounts := counts }
 
+/-- Build a diagnostic entry for LF-definition comparison with optional delta conversion. -/
+def lfDefinitionComparisonProfileEntryWithOptions (site : String)
+    (owner : LFConversionProfileOwner) (defs : LFDefinitionValueMap) (locals : NameSet)
+    (actual expected : ObjExpr) (options : LFDeltaConversionOptions)
+    (elapsedMs? : Option Nat := none) : LFConversionProfileEntry :=
+  let actual := eraseObjExprScopes actual
+  let expected := eraseObjExprScopes expected
+  let alphaSucceeded := lfExprAlphaEq actual expected
+  let actualCheap := normalizeLFExprForConversionWithLocals {} locals actual
+  let expectedCheap := normalizeLFExprForConversionWithLocals {} locals expected
+  let compactSucceeded := alphaSucceeded || lfExprAlphaEq actualCheap expectedCheap
+  if compactSucceeded then
+    {
+      site, owner
+      actualHead? := lfExprHeadIdent? actual
+      expectedHead? := lfExprHeadIdent? expected
+      actualSize := objExprNodeCount actual
+      expectedSize := objExprNodeCount expected
+      normalizedActualSize? := none
+      normalizedExpectedSize? := none
+      elapsedMs?
+      compactSucceeded := true
+      fullUnfoldFallback := false
+      accepted := true
+      unfoldedCounts := {}
+      deltaEnabled := options.enabled }
+  else if options.enabled then
+    let env : LFDeltaConversionEnv := { defs, locals, options }
+    let result := LFDeltaConversion.convertObjExprWithFallback env actual expected
+    let counts :=
+      if result.fallbackUsed then
+        mergeLFConversionNameCounts (countLFDefinitionUnfolds defs locals actual)
+          (countLFDefinitionUnfolds defs locals expected)
+      else
+        {}
+    let entry := LFDeltaConversion.profileEntry site owner actual expected result
+    { entry with
+      elapsedMs?
+      compactSucceeded := false
+      unfoldedCounts := counts }
+  else
+    lfDefinitionComparisonProfileEntry site owner defs locals actual expected elapsedMs?
+
 /-- Profile one source-level LF-definition comparison without changing acceptance. -/
 def lfExprEqModuloDefinitionsWithLocalsProfiled (site : String)
     (owner : LFConversionProfileOwner) (defs : LFDefinitionValueMap) (locals : NameSet)
     (actual expected : ObjExpr) : CoreM Bool := do
   let profile ← getBoolOption `internalLean.conversion.profile
   let traceFallbacks ← getBoolOption `internalLean.conversion.traceFallbacks
-  if profile || traceFallbacks then
+  let deltaOptions ← getLFDeltaConversionOptions
+  if profile || traceFallbacks || deltaOptions.trace then
     let start ← IO.monoMsNow
-    let entry := lfDefinitionComparisonProfileEntry site owner defs locals actual expected
+    let entry := lfDefinitionComparisonProfileEntryWithOptions site owner defs locals actual
+      expected deltaOptions
     let stop ← IO.monoMsNow
     let entry := { entry with elapsedMs? := some (stop - start) }
     logLFConversionProfileEntry entry
     pure entry.accepted
+  else if deltaOptions.enabled then
+    pure <| lfDefinitionComparisonAcceptedWithOptions defs locals actual expected deltaOptions
   else
     pure <| lfDefinitionComparisonAccepted defs locals actual expected
 

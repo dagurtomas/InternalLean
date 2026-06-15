@@ -375,3 +375,95 @@ LF definitions unfolded: Alias
 internal theorem DeltaObjectGoalConversionSmoke.delta_native_refine_fuel_failure :
     shapeIncl emptyCtx Alias Alias := by
   refine payload_refl_with_arg payload
+
+set_option internalLean.conversion.delta.maxDeltaSteps 100000
+
+declare_type_theory DeltaSourceStatementConversionSmoke where
+  syntax_sort Ctx
+  syntax_sort Shape (Γ : Ctx)
+  judgment shapeIncl (Γ : Ctx) (S : Shape Γ) (T : Shape Γ)
+  lf_opaque emptyCtx : Ctx
+  lf_opaque payload : Shape emptyCtx
+  lf_def Alias : Shape emptyCtx := payload
+  rule shape_refl (S : Shape emptyCtx) where
+    conclusion : shapeIncl emptyCtx S S
+  judgment_theorem alias_by_payload_rule : shapeIncl emptyCtx Alias Alias :=
+    shape_refl payload
+
+declare_type_theory DeltaSourceRulePremiseConversionSmoke where
+  syntax_sort Ctx
+  syntax_sort Shape (Γ : Ctx)
+  judgment shapeIncl (Γ : Ctx) (S : Shape Γ) (T : Shape Γ)
+  lf_opaque emptyCtx : Ctx
+  lf_opaque payload : Shape emptyCtx
+  lf_def Alias : Shape emptyCtx := payload
+  rule shape_refl (S : Shape emptyCtx) where
+    conclusion : shapeIncl emptyCtx S S
+  rule use_prem (S : Shape emptyCtx) where
+    premise h : shapeIncl emptyCtx S S
+    conclusion : shapeIncl emptyCtx S S
+  judgment_theorem payload_refl : shapeIncl emptyCtx payload payload :=
+    shape_refl payload
+  judgment_theorem alias_via_premise : shapeIncl emptyCtx Alias Alias :=
+    use_prem Alias payload_refl
+
+set_option internalLean.conversion.delta.maxDeltaSteps 0
+
+/--
+error: judgment_theorem 'bad' in type theory 'DeltaSourceStatementNoFallbackReject' applies rule
+'shape_refl' but the statement does not match the rule conclusion after LF-definition normalization:
+LF-definition normalization could not match expressions.
+actual: shapeIncl emptyCtx Alias Alias
+expected: shapeIncl emptyCtx payload payload
+normalized actual: shapeIncl emptyCtx payload payload
+normalized expected: shapeIncl emptyCtx payload payload
+LF definitions mentioned before unfolding: Alias
+LF definitions unfolded: Alias
+Normalization policy: LF matching unfolds earlier checked `lf_def` values, beta-reduces
+explicit LF lambdas, contracts structural eta-redexes, and alpha-renames binders
+to avoid local-binder capture.
+-/
+#guard_msgs (whitespace := lax) in
+declare_type_theory DeltaSourceStatementNoFallbackReject where
+  syntax_sort Ctx
+  syntax_sort Shape (Γ : Ctx)
+  judgment shapeIncl (Γ : Ctx) (S : Shape Γ) (T : Shape Γ)
+  lf_opaque emptyCtx : Ctx
+  lf_opaque payload : Shape emptyCtx
+  lf_def Alias : Shape emptyCtx := payload
+  rule shape_refl (S : Shape emptyCtx) where
+    conclusion : shapeIncl emptyCtx S S
+  judgment_theorem bad : shapeIncl emptyCtx Alias Alias :=
+    shape_refl payload
+
+/--
+error: judgment_theorem 'bad' in type theory 'DeltaSourceRulePremiseNoFallbackReject' uses premise
+theorem 'payload_refl' with a statement that does not match after LF-definition normalization:
+LF-definition normalization could not match expressions.
+actual: shapeIncl emptyCtx payload payload
+expected: shapeIncl emptyCtx Alias Alias
+normalized actual: shapeIncl emptyCtx payload payload
+normalized expected: shapeIncl emptyCtx payload payload
+LF definitions mentioned before unfolding: Alias
+LF definitions unfolded: Alias
+Normalization policy: LF matching unfolds earlier checked `lf_def` values, beta-reduces
+explicit LF lambdas, contracts structural eta-redexes, and alpha-renames binders
+to avoid local-binder capture.
+-/
+#guard_msgs (whitespace := lax) in
+declare_type_theory DeltaSourceRulePremiseNoFallbackReject where
+  syntax_sort Ctx
+  syntax_sort Shape (Γ : Ctx)
+  judgment shapeIncl (Γ : Ctx) (S : Shape Γ) (T : Shape Γ)
+  lf_opaque emptyCtx : Ctx
+  lf_opaque payload : Shape emptyCtx
+  lf_def Alias : Shape emptyCtx := payload
+  rule shape_refl (S : Shape emptyCtx) where
+    conclusion : shapeIncl emptyCtx S S
+  rule use_prem (S : Shape emptyCtx) where
+    premise h : shapeIncl emptyCtx S S
+    conclusion : shapeIncl emptyCtx S S
+  judgment_theorem payload_refl : shapeIncl emptyCtx payload payload :=
+    shape_refl payload
+  judgment_theorem bad : shapeIncl emptyCtx Alias Alias :=
+    use_prem Alias payload_refl

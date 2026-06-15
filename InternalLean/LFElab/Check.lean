@@ -1317,7 +1317,8 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
     (globalHeads : NameMap (CheckedLFHeadKind × Option Nat)) (knownTypes : LFLocalTypes)
     (defValues : LFDefinitionValueMap) (localNames : NameSet)
     (availableLocalStatements availableTheoremStatements : NameMap ObjExpr)
-    (availableTheoremNames : NameSet) (theoremName : Name) (expectedStatement proof : ObjExpr) :
+    (availableTheoremNames : NameSet) (theoremName : Name) (expectedStatement proof : ObjExpr)
+    (statementMatchSite : String := "theorem_statement_match") :
       CoreM (Option CheckedLFDerivation) := do
   let some proofHead := checkedLFHead? globalHeads localNames proof
     | return none
@@ -1328,7 +1329,7 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
       | some actualStatement =>
           let expectedStatement := eraseObjExprScopes expectedStatement
           let statementsMatch ← lfExprEqModuloDefinitionsWithLocalsProfiled
-            "theorem_statement_match"
+            statementMatchSite
             { theoryName := some sig.name, ownerKind := some "judgment_theorem",
               ownerName := some theoremName }
             defValues localNames actualStatement expectedStatement
@@ -1382,7 +1383,7 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
               let some premiseDeriv ←
                 checkLFJudgmentDerivation sig rules globalHeads knownTypes defValues localNames
                   availableLocalStatements availableTheoremStatements availableTheoremNames
-                  theoremName expectedBinderType arg
+                  theoremName expectedBinderType arg "premise_theorem_statement_match"
                 | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' \
                   applies premise theorem '{theoremRefName}' with unchecked proof argument \
                     '{arg}' for local hypothesis '{b.name.eraseMacroScopes}'"
@@ -1425,7 +1426,7 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
       let actualStatement := eraseObjExprScopes (substLFParams subst premiseTheorem.judgmentExpr)
       let expectedStatement := eraseObjExprScopes expectedStatement
       let statementsMatch ← lfExprEqModuloDefinitionsWithLocalsProfiled
-        "theorem_statement_match"
+        statementMatchSite
         { theoryName := some sig.name, ownerKind := some "judgment_theorem",
           ownerName := some theoremName }
         defValues localNames actualStatement expectedStatement
@@ -1479,7 +1480,7 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
       let expectedConclusion := eraseObjExprScopes (substLFParams subst appliedRule.conclusionExpr)
       let actualStatement := eraseObjExprScopes expectedStatement
       let statementsMatch ← lfExprEqModuloDefinitionsWithLocalsProfiled
-        "theorem_statement_match"
+        statementMatchSite
         { theoryName := some sig.name, ownerKind := some "judgment_theorem",
           ownerName := some theoremName }
         defValues localNames actualStatement expectedConclusion
@@ -1506,7 +1507,7 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
           let some premiseDeriv ←
             checkLFJudgmentDerivation sig rules globalHeads knownTypes defValues localNames
               availableLocalStatements availableTheoremStatements availableTheoremNames theoremName
-              expectedPremise arg
+              expectedPremise arg "rule_premise_statement_match"
             | throwError "judgment_theorem '{theoremName}' in type theory '{sig.name}' applies \
                 rule '{ruleName}' with unchecked premise proof argument \
                 '{diagnosticObjExprString arg}' for expected premise \
