@@ -446,6 +446,8 @@ def reflectLFQuoteExpr (theoryName : Name) (locals : LFQuoteLocalMap) (e : Expr)
 /-- Elaborate `body` as a quoted LF term and reflect it to `ObjExpr`. -/
 def elabLeanQuotedLFBody (target : InternalDefTarget) (params : Array HLBinding)
     (typeExpr : ObjExpr) (body : TSyntax `term) : CommandElabM ObjExpr := do
+  liftCoreM <| emitInternalProofProgress "lean_quoted_body" target (some typeExpr) "start"
+  let startedAt ← IO.monoMsNow
   let builtinQuoteOpenDecl ← `(Lean.Parser.Command.openDecl| InternalLean.LFQuote)
   let quoteNs := mkIdent (lfQuoteNamespace target.theoryName)
   let quoteOpenDecl ← `(Lean.Parser.Command.openDecl| $quoteNs:ident)
@@ -473,11 +475,23 @@ def elabLeanQuotedLFBody (target : InternalDefTarget) (params : Array HLBinding)
       else
         let expectedType :=
           lfQuoteLeanTypeOfObjType (← getEnv) target.theoryName typeLocals untypedLocals typeExpr
+        emitInternalProofProgress "lean_quoted_body" target (some typeExpr)
+          "term-elaboration-start"
+        let termStart ← IO.monoMsNow
         let value ← withEnableInfoTree false do
           let value ← withoutErrToSorry <| Term.elabTerm body (some expectedType)
           Term.synthesizeSyntheticMVarsNoPostponing
           instantiateMVars value
-        reflectLFQuoteExpr target.theoryName locals value
+        let termStop ← IO.monoMsNow
+        emitInternalProofProgress "lean_quoted_body" target (some typeExpr)
+          s!"term-elaboration-done elapsed={termStop - termStart}ms"
+        emitInternalProofProgress "lean_quoted_body" target (some typeExpr) "reflection-start"
+        let reflectStart ← IO.monoMsNow
+        let reflected ← reflectLFQuoteExpr target.theoryName locals value
+        let reflectStop ← IO.monoMsNow
+        emitInternalProofProgress "lean_quoted_body" target (some typeExpr)
+          s!"done reflection={reflectStop - reflectStart}ms total={reflectStop - startedAt}ms"
+        pure reflected
     withLocals 0 #[] #[] {}
 
 /-- Collect names from the binder-pattern side of a Lean typed `fun` binder. -/
@@ -1359,6 +1373,8 @@ def mkInternalNativeApplyPlan (target : InternalDefTarget) (sig : HLSignature)
   let some cand := findInternalApplyCandidate? target sig rawName
     | throwErrorAt ref s!"native tactic `apply {rawName}` failed: unknown rule or internal \
         declaration '{rawName}' in type theory '{target.theoryName}'"
+  liftCoreM <| emitInternalProofProgress "native_candidate_match" target (some goal.target)
+    s!"apply {rawName.eraseMacroScopes}: before candidate match"
   let some subst0 := matchInternalCandidateConclusion? sig goal.ctx cand.params
       cand.conclusionExpr goal.target goal.deltaOptions
     | throwErrorAt ref (s!"native tactic `apply {rawName}` failed: " ++
@@ -1483,6 +1499,8 @@ mutual
           internal declaration '{rawName}' in type theory '{target.theoryName}'"
     discard <| throwInternalNativeObjectTacticErrorAt ref <|
       checkInternalCandidateAppArity tacticName rawName suppliedArgs.size cand
+    liftCoreM <| emitInternalProofProgress "native_candidate_match" target (some goal.target)
+      s!"{tacticName} {rawName.eraseMacroScopes}: before candidate match"
     let some subst0 := matchInternalCandidateConclusion? sig goal.ctx cand.params
         cand.conclusionExpr goal.target goal.deltaOptions
       | throwErrorAt ref (s!"native tactic `{tacticName} {rawName}` failed: " ++

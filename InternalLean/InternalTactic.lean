@@ -633,6 +633,22 @@ def objectGoalDeltaFailureSummary (result : LFDeltaConversionResult) : String :=
     s!"forced={renderLFConversionNameCounts result.stats.forcedByName}",
     s!"fuel_exhausted={result.fuelExhausted?.getD "-"}"]
 
+/-- Emit one bounded progress line for internal proof elaboration/conversion paths. -/
+def emitInternalProofProgress (site : String) (target : InternalDefTarget)
+    (targetExpr? : Option ObjExpr := none) (message : String := "")
+    (stepIndex? : Option Nat := none) (stepCount? : Option Nat := none) : CoreM Unit := do
+  emitLFConversionProgressEntry {
+    site
+    owner := {
+      theoryName := some target.theoryName
+      ownerKind := some "internal"
+      ownerName := some target.localName }
+    targetHead? := targetExpr?.bind lfExprHeadIdent?
+    targetSize := targetExpr?.map objExprNodeCount |>.getD 0
+    stepIndex?
+    stepCount?
+    message }
+
 /-- Check object goals through the direct-LF conversion interface. -/
 def checkObjectGoalConversion (sig : HLSignature) (_levels : Array Name) (ctx : Array HLBinding)
     (a b : ObjExpr) (deltaOptions : LFDeltaConversionOptions := {}) :
@@ -3185,6 +3201,8 @@ def rewriteInternalNativeMainGoal (stx : Syntax) (mvarId : MVarId)
   let mut targetExpr := goal.targetExpr
   let mut frames := goal.frames
   for (rawName, symm) in items do
+    emitInternalProofProgress "native_object_conversion" goal.target (some targetExpr)
+      s!"rw {rawName.eraseMacroScopes}: before goal conversion"
     let (newTarget, frame?) ←
       match nativeRewriteGoalUpdate goal.target session.sig session.levels goal.ctx targetExpr
           rawName symm session.deltaOptions with
@@ -3199,6 +3217,8 @@ def rewriteInternalNativeMainGoal (stx : Syntax) (mvarId : MVarId)
 def simpInternalNativeMainGoal (stx : Syntax) (mvarId : MVarId)
     (goal : InternalNativeGoal) (config : ObjectSimpConfig := {}) : Tactic.TacticM Unit := do
   let session ← getInternalNativeTacticSessionInTactic
+  emitInternalProofProgress "native_object_conversion" goal.target (some goal.targetExpr)
+    "simp: before simplifier conversion/rewrite search"
   let result ←
     match simpObjectGoalDetailed goal.target session.sig session.levels goal.ctx goal.targetExpr
         config 8 session.deltaOptions with
@@ -3256,6 +3276,8 @@ def evalInternalNativeResolvedTacticStep (stx : Syntax) (step : InternalNativeTa
       closeInternalNativeMainGoal mvarId goal term
   | .assumption =>
       let (session, mvarId, goal) ← getInternalNativeMainGoal stx
+      emitInternalProofProgress "native_object_conversion" goal.target (some goal.targetExpr)
+        "assumption: before local conversion search"
       let some hypName := findAssumption? session.sig session.levels goal.ctx goal.targetExpr
           session.deltaOptions
         | throwErrorAt stx (String.intercalate "\n" [
@@ -3267,6 +3289,8 @@ def evalInternalNativeResolvedTacticStep (stx : Syntax) (step : InternalNativeTa
       closeInternalNativeMainGoal mvarId goal (.ident hypName)
   | .showGoal targetExpr | .changeGoal targetExpr =>
       let (session, mvarId, goal) ← getInternalNativeMainGoal stx
+      emitInternalProofProgress "native_object_conversion" goal.target (some goal.targetExpr)
+        "show/change: before goal conversion"
       match objectGoalConversionCheck session.sig session.levels goal.ctx goal.targetExpr
           targetExpr session.deltaOptions with
       | .ok _ => replaceInternalNativeMainGoal mvarId { goal with targetExpr }
@@ -3346,6 +3370,9 @@ def runInternalNativeResolvedTacticStep (goal : MVarId) (restGoals : List MVarId
   let txBefore ← internalNativeTacticTransaction.get
   internalNativeTacticTransaction.set {}
   try
+    if let some currentGoal := sessionBefore.goals.find? goal.name then
+      emitInternalProofProgress "native_tactic_step" currentGoal.target
+        (some currentGoal.targetExpr) "before step"
     let goalsAfter ← Tactic.run goal <|
       Tactic.withTacticInfoContext resolved.stx <|
         evalInternalNativeResolvedTacticStep resolved.stx resolved.step
