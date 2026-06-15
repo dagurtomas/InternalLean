@@ -2051,27 +2051,48 @@ def registerLFObjectDefBatch (theoryName : Name) (defs : Array LFObjectDefDecl) 
   if defs.isEmpty then
     return ()
   let profileTimings ← getBoolOption `internalLean.profileInternalDef
-  let some sig ← getTheory? theoryName
+  let some _sig ← getTheory? theoryName
     | throwError "unknown type theory '{theoryName}'"
-  let (checked?, checkedTheoryMaterializationMs?) ←
-    measureInternalRegistrationMs? profileTimings (getCheckedTheory? theoryName)
-  let some checked := checked?
-    | throwError "no checked artifact stored for type theory '{theoryName}'"
   let (cacheLookup, lookupSetupMs?) ←
     measureInternalRegistrationMs? profileTimings do
-      getOrBuildCompiledLFCheckCache theoryName checked
-  let block : HLTheoryBlock := { lfObjectDefs := defs }
-  let (result, lfCheckMs?) ←
+      getOrBuildCompiledLFCheckCacheForTheory theoryName
+  let cache := cacheLookup.cache
+  let ((defsForRegistry, checkedDefs, compiledCache), lfCheckMs?) ←
     measureInternalRegistrationMs? profileTimings do
-      checkTheoryBlockExtensionIncremental theoryName sig checked block
-        (some cacheLookup.cache.checkedHL)
-  unless result.delta.objectDefs.size == defs.size do
-    throwError "internal error: LF object-definition batch produced \
-      {result.delta.objectDefs.size} checked definition(s) for {defs.size} request(s)"
-  let candidate := sig.appendBlock result.blockForRegistry
-  let (compiledCache, compiledCacheUpdateMs?) ←
-    measureInternalRegistrationMs? profileTimings do
-      pure <| cacheLookup.cache.appendDelta result.checkedHL result.checked result.delta
+      let mut cache := cache
+      let mut defsForRegistry : Array LFObjectDefDecl := #[]
+      let mut checkedDefs : Array CheckedLFObjectDef := #[]
+      for d in defs do
+        checkLFKernelReservedDeclarationName "LF object definition" d.name
+        if cache.checkedHL.containsName d.name then
+          throwError "declaration '{d.name}' already exists in type theory '{theoryName}' or one \
+            of its parents"
+        let rawBlock : HLTheoryBlock := { lfObjectDefs := #[d] }
+        let flatSigWithRaw := cache.checkedHL.appendBlock rawBlock
+        let implicitLookup := mkImplicitCallableLookupContextFromCache cache rawBlock
+        let dForRegistry ←
+          elaborateImplicitAppsInLFObjectDefWithLookup implicitLookup flatSigWithRaw
+            cache.knownLFDefTypes d
+        let flatSigWithNew := cache.checkedHL.appendBlock { lfObjectDefs := #[dForRegistry] }
+        let typeExpr ←
+          expandSyntaxAbbrevsInExpr flatSigWithNew "lf_def" dForRegistry.name "type" {}
+            (lfAbbrevExpansionFuel flatSigWithNew) dForRegistry.typeExpr
+        let value ←
+          expandSyntaxAbbrevsInExpr flatSigWithNew "lf_def" dForRegistry.name "value" {}
+            (lfAbbrevExpansionFuel flatSigWithNew) dForRegistry.value
+        let dForCheck := {
+          dForRegistry with
+          name := dForRegistry.name.eraseMacroScopes
+          typeExpr := typeExpr
+          value := value }
+        let checkedDef ← checkOneLFObjectDefArtifactWithCache cache dForCheck
+        defsForRegistry := defsForRegistry.push dForRegistry
+        checkedDefs := checkedDefs.push checkedDef
+        cache := cache.appendObjectDef checkedDef
+      pure (defsForRegistry, checkedDefs, cache)
+  unless defsForRegistry.size == defs.size && checkedDefs.size == defs.size do
+    throwError "internal error: LF object-definition batch produced {checkedDefs.size} checked \
+      definition(s) for {defs.size} request(s)"
   let profileDeclName :=
     if defs.size == 1 then defs[0]!.name.eraseMacroScopes else `internal_defs
   let strategy :=
@@ -2080,27 +2101,27 @@ def registerLFObjectDefBatch (theoryName : Name) (defs : Array LFObjectDefDecl) 
   let (_, environmentUpdateMs?) ←
     measureInternalRegistrationMs? profileTimings do
       modifyEnv fun env =>
-        let env := theoryExt.addEntry env (.sig candidate)
-        let env := checkedTheoryExt.addEntry env (.sig result.checked)
-        let env := checkedHLSignatureExt.addEntry env (.sig theoryName result.checkedHL)
+        let entries := List.zip defsForRegistry.toList checkedDefs.toList
+        let env := entries.foldl (init := env) fun env (rawDef, checkedDef) =>
+          let env := theoryExt.addEntry env (.lfObjectDef theoryName rawDef)
+          let env := checkedTheoryExt.addEntry env (.lfObjectDef theoryName checkedDef)
+          checkedHLSignatureExt.addEntry env (.lfObjectDef theoryName checkedDef)
         setCompiledLFCheckCacheInEnv env theoryName compiledCache
   recordInternalRegistrationProfile {
     theoryName := theoryName
     declName := profileDeclName
     strategy := strategy
-    priorObjectDefs := checked.lfObjectDefs.size
-    priorJudgmentTheorems := checked.lfJudgmentTheorems.size
+    priorObjectDefs := cache.stamp.objectDefCount
+    priorJudgmentTheorems := cache.stamp.judgmentTheoremCount
     recheckedObjectDefs := 0
     recheckedJudgmentTheorems := 0
     incrementallyChecked := defs.size
     cacheStatus? := some cacheLookup.status
     cacheRebuilt := cacheLookup.rebuilt
     cacheOverlayDecls := defs.size
-    checkedTheoryMaterialized := true
-    checkedTheoryMaterializationMs? := checkedTheoryMaterializationMs?
+    checkedTheoryMaterialized := cacheLookup.rebuilt
     lookupSetupMs? := lookupSetupMs?
     lfCheckMs? := lfCheckMs?
-    compiledCacheUpdateMs? := compiledCacheUpdateMs?
     environmentUpdateMs? := environmentUpdateMs? }
 
 /-- Register a top-level staged LF judgment theorem in an existing theory. -/

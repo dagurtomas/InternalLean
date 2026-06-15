@@ -227,6 +227,98 @@ end IncrementalCacheAdmittedOpaqueBatch
 #guard_internal_profile_cache IncrementalCacheAdmittedOpaqueBatch use_admitted_batch "hit" true
 #guard_compiled_cache_matches_rebuild IncrementalCacheAdmittedOpaqueBatch
 
+declare_type_theory IncrementalCacheCheckedObjectBatch where
+  syntax_sort Obj
+  judgment J (x : Obj)
+  lf_opaque base : Obj
+  rule intro (x : Obj) : J x
+
+namespace IncrementalCacheCheckedObjectBatch
+
+internal_defs where
+  def batchA : Obj := base
+  def batchB : Obj := base
+  def batchC : Obj := base
+
+internal theorem use_batchC : J batchC := intro batchC
+
+end IncrementalCacheCheckedObjectBatch
+
+#check IncrementalCacheCheckedObjectBatch.batchA
+#check IncrementalCacheCheckedObjectBatch.batchB
+#check IncrementalCacheCheckedObjectBatch.batchC
+#check IncrementalCacheCheckedObjectBatch.LFQuote.batchA
+#check IncrementalCacheCheckedObjectBatch.LFQuote.batchB
+#check IncrementalCacheCheckedObjectBatch.LFQuote.batchC
+#guard_internal_profile_cache_overlay IncrementalCacheCheckedObjectBatch "internal_defs" "hit"
+  false 3
+#guard_internal_profile_cache IncrementalCacheCheckedObjectBatch use_batchC "hit" true
+#guard_compiled_cache_matches_rebuild IncrementalCacheCheckedObjectBatch
+
+declare_type_theory IncrementalCacheInternalDefsFallback where
+  syntax_sort Obj
+  judgment J (x : Obj)
+  lf_opaque base : Obj
+  rule intro (x : Obj) : J x
+
+namespace IncrementalCacheInternalDefsFallback
+
+internal_defs where
+  def first : Obj := base
+  def second : Obj := first
+  def third : Obj := base
+
+internal theorem use_second : J second := intro second
+
+end IncrementalCacheInternalDefsFallback
+
+#check IncrementalCacheInternalDefsFallback.first
+#check IncrementalCacheInternalDefsFallback.second
+#check IncrementalCacheInternalDefsFallback.third
+#check IncrementalCacheInternalDefsFallback.LFQuote.first
+#check IncrementalCacheInternalDefsFallback.LFQuote.second
+#check IncrementalCacheInternalDefsFallback.LFQuote.third
+#guard_internal_profile_cache IncrementalCacheInternalDefsFallback second "hit" false
+#guard_internal_profile_cache IncrementalCacheInternalDefsFallback use_second "hit" true
+#guard_compiled_cache_matches_rebuild IncrementalCacheInternalDefsFallback
+
+declare_type_theory IncrementalCacheInternalDefsMixed where
+  syntax_sort Obj
+  judgment J (x : Obj)
+  lf_opaque base : Obj
+  rule intro (x : Obj) : J x
+
+namespace IncrementalCacheInternalDefsMixed
+
+#guard_msgs (drop warning) in
+internal_defs where
+  def checkedBefore : Obj := base
+  def admittedObj : Obj := sorry
+  def admittedThm : J base := sorry
+  def checkedAfter : Obj := base
+
+internal theorem use_checked_after : J checkedAfter := intro checkedAfter
+
+end IncrementalCacheInternalDefsMixed
+
+/--
+warning: type theory 'IncrementalCacheInternalDefsMixed' has 2 admitted internal declaration(s):
+admitted internal def IncrementalCacheInternalDefsMixed.admittedObj : Obj [missing doc]
+admitted internal theorem IncrementalCacheInternalDefsMixed.admittedThm : J base [missing doc]
+-/
+#guard_msgs (whitespace := lax) in
+#lint_type_theory_sorries IncrementalCacheInternalDefsMixed
+
+#check IncrementalCacheInternalDefsMixed.checkedBefore
+#check IncrementalCacheInternalDefsMixed.checkedAfter
+#check IncrementalCacheInternalDefsMixed.LFQuote.checkedBefore
+#check IncrementalCacheInternalDefsMixed.LFQuote.admittedObj
+#check IncrementalCacheInternalDefsMixed.LFQuote.checkedAfter
+#guard_internal_profile_cache IncrementalCacheInternalDefsMixed admittedObj "hit" false
+#guard_internal_profile_cache IncrementalCacheInternalDefsMixed checkedAfter "hit" false
+#guard_internal_profile_cache IncrementalCacheInternalDefsMixed use_checked_after "hit" true
+#guard_compiled_cache_matches_rebuild IncrementalCacheInternalDefsMixed
+
 declare_type_theory IncrementalCacheSelfReferenceReject where
   syntax_sort Obj
   judgment J (x : Obj)

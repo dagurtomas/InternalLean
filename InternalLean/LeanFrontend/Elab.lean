@@ -2114,10 +2114,147 @@ partial def elabLeanQuotedInternalDefsDecl (decl : TSyntax `internalDefsDecl) :
       addInternalDefAnnotationNavigationInfo declName.getId binders typeStx
   | stx => throwError "unsupported internal_defs declaration:{indentD stx}"
 
-/-- Elaborate an `internal_defs where` block, preserving consecutive opaque-admission batches. -/
+/-- Return whether an LF expression mentions one of `names`, ignoring local binders. -/
+partial def objExprMentionsAnyGlobal (names : NameSet) (locals : NameSet) : ObjExpr → Bool
+  | .ident n => names.contains n.eraseMacroScopes && !locals.contains n.eraseMacroScopes
+  | .sort | .univ .. => false
+  | .app f a => objExprMentionsAnyGlobal names locals f ||
+      objExprMentionsAnyGlobal names locals a
+  | .arrow x A B | .funArrow x A B | .sigma x A B =>
+      objExprMentionsAnyGlobal names locals A ||
+        let locals := match x with
+          | some x => locals.insert x.eraseMacroScopes
+          | none => locals
+        objExprMentionsAnyGlobal names locals B
+  | .pair a b => objExprMentionsAnyGlobal names locals a ||
+      objExprMentionsAnyGlobal names locals b
+  | .fst e | .snd e => objExprMentionsAnyGlobal names locals e
+  | .lam xs body =>
+      let locals := xs.foldl (init := locals) fun locals x =>
+        locals.insert x.eraseMacroScopes
+      objExprMentionsAnyGlobal names locals body
+  | .jeq lhs rhs => objExprMentionsAnyGlobal names locals lhs ||
+      objExprMentionsAnyGlobal names locals rhs
+
+/-- Return whether a checked batch candidate mentions any declaration from the same block. -/
+def internalDefsCandidateMentionsSameBlock (names : NameSet) (params : Array HLBinding)
+    (typeExpr valueExpr : ObjExpr) : Bool := Id.run do
+  let mut locals : NameSet := {}
+  for b in params do
+    if objExprMentionsAnyGlobal names locals b.typeExpr then
+      return true
+    locals := locals.insert b.name.eraseMacroScopes
+  return objExprMentionsAnyGlobal names locals typeExpr ||
+    objExprMentionsAnyGlobal names locals valueExpr
+
+/-- Best-effort declaration name extraction for dependency screening in `internal_defs where`. -/
+partial def internalDefsDeclLocalName? (decl : TSyntax `internalDefsDecl) : Option Name :=
+  if decl.raw.isOfKind choiceKind then
+    decl.raw.getArgs.findSome? fun arg => internalDefsDeclLocalName? ⟨arg⟩
+  else
+    match decl with
+    | `(internalDefsDecl| $[$_doc?:docComment]? def $declName:ident : $_typeStx:ttExpr :=
+        $_bodyStx:term) => some declName.getId
+    | `(internalDefsDecl| $[$_doc?:docComment]? def $declName:ident $_binders:ttBinder* :
+        $_typeStx:ttExpr := $_bodyStx:term) => some declName.getId
+    | `(internalDefsDecl| $[$_doc?:docComment]? def $declName:ident : $_typeStx:ttExpr := by
+        $_tactics:internalTactic*) => some declName.getId
+    | `(internalDefsDecl| $[$_doc?:docComment]? def $declName:ident $_binders:ttBinder* :
+        $_typeStx:ttExpr := by $_tactics:internalTactic*) => some declName.getId
+    | _ => none
+
+/-- All declaration names syntactically introduced by an `internal_defs where` block. -/
+def internalDefsDeclLocalNames (decls : Array (TSyntax `internalDefsDecl)) : NameSet :=
+  decls.foldl (init := {}) fun names decl =>
+    match internalDefsDeclLocalName? decl with
+    | some name => names.insert name.eraseMacroScopes
+    | none => names
+
+/-- One checked object definition collected for a conservative `internal_defs where` batch. -/
+structure InternalDefsCheckedObjectBatchItem where
+  /-- Original declaration syntax, used for range metadata. -/
+  declStx : Syntax
+  /-- Declaration identifier syntax. -/
+  declNameStx : Syntax
+  /-- Original Lean body syntax, used for goal metadata. -/
+  bodyStx : Syntax
+  /-- Resolved target theory/local name. -/
+  target : InternalDefTarget
+  /-- Source-level documentation, if present. -/
+  sourceDoc? : Option String := none
+  /-- Elaborated source binders. -/
+  params : Array HLBinding := #[]
+  /-- Elaborated result annotation. -/
+  typeExpr : ObjExpr
+  /-- Reflected body before binder-lambda wrapping. -/
+  valueExpr : ObjExpr
+  /-- Full LF object-definition type. -/
+  fullType : ObjExpr
+  /-- Full LF object-definition body. -/
+  fullValue : ObjExpr
+  deriving Inhabited
+
+/-- Try to elaborate one independent checked object definition for an
+`internal_defs where` batch. -/
+partial def elabInternalDefsCheckedObjectBatchItem?
+    (sameBlockNames : NameSet) (decl : TSyntax `internalDefsDecl) :
+    CommandElabM (Option InternalDefsCheckedObjectBatchItem) := do
+  if decl.raw.isOfKind choiceKind then
+    for alt in decl.raw.getArgs do
+      match ← elabInternalDefsCheckedObjectBatchItem? sameBlockNames ⟨alt⟩ with
+      | some item => return some item
+      | none => pure ()
+    return none
+  let mkItem (doc? : Option (TSyntax ``Parser.Command.docComment)) (declNameStx : Syntax)
+      (declName : Name) (binders : TSyntaxArray `ttBinder) (typeStx : TSyntax `ttExpr)
+      (bodyStx : TSyntax `term) := do
+    if leanQuotedTermIsSorryAdmission bodyStx.raw || bodyStx.raw.isOfKind
+        `Lean.Parser.Term.byTactic || (internalNativeLeanBySteps? bodyStx.raw).isSome then
+      return none
+    let target ← resolveInternalDefTarget declName
+    ensureInternalDeclarationNamesAvailable target
+    let sourceDoc? ← optDocCommentString? doc?
+    let params ← binders.mapM elabHLBinding
+    let typeExpr ← elabObjExpr typeStx
+    let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
+    let some flatSig ← liftCoreM <| getCheckedHLSignature? target.theoryName
+      | throwError "no checked high-level signature stored for type theory '{target.theoryName}'"
+    match classifyInternalDeclarationCheckPath flatSig typeExpr with
+    | .objectDef => pure ()
+    | .judgmentTheorem | .ambiguous _ => return none
+    let valueExpr ← elabLeanQuotedLFBody target params typeExpr bodyStx
+    compareLeanQuotedBodyWithLegacyIfEnabled .objectDef `compareLegacyInternalDef declName target
+      params typeExpr valueExpr bodyStx
+    if internalDefsCandidateMentionsSameBlock sameBlockNames params typeExpr valueExpr then
+      return none
+    let fullType := mkInternalDefFunctionType params typeExpr
+    let fullValue := mkInternalDefLambda params valueExpr
+    return some {
+      declStx := decl.raw
+      declNameStx := declNameStx
+      bodyStx := bodyStx.raw
+      target := target
+      sourceDoc? := sourceDoc?
+      params := params
+      typeExpr := typeExpr
+      valueExpr := valueExpr
+      fullType := fullType
+      fullValue := fullValue }
+  match decl with
+  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident : $typeStx:ttExpr :=
+      $bodyStx:term) =>
+      mkItem doc? declName declName.getId #[] typeStx bodyStx
+  | `(internalDefsDecl| $[$doc?:docComment]? def $declName:ident $binders:ttBinder* :
+      $typeStx:ttExpr := $bodyStx:term) =>
+      mkItem doc? declName declName.getId binders typeStx bodyStx
+  | _ => pure none
+
+/-- Elaborate an `internal_defs where` block, preserving consecutive admission and object
+batches. -/
 def elabLeanQuotedInternalDefsDeclsWithSorryOpaqueBatches
     (decls : Array (TSyntax `internalDefsDecl)) : CommandElabM Unit := do
-  let flush (items : Array InternalDefsSorryBatchItem) : CommandElabM Unit := do
+  let sameBlockNames := internalDefsDeclLocalNames decls
+  let flushSorry (items : Array InternalDefsSorryBatchItem) : CommandElabM Unit := do
     if items.isEmpty then
       return ()
     let theoryName := items[0]!.target.theoryName
@@ -2133,37 +2270,87 @@ def elabLeanQuotedInternalDefsDeclsWithSorryOpaqueBatches
           item.target.localName doc
       addInternalDeclarationAnchor item.target item.typeExpr .admittedLFOpaque item.params none
         "internal_defs admitted opaque batch" item.sourceDoc? item.declStx item.declNameStx
+      addInternalDeclarationQuoteStub item.target item.params item.typeExpr
       addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
       logWarning m!"internal declaration '{item.target.anchorName}' was admitted by `sorry`; the \
         annotation was checked in theory '{item.target.theoryName}', but the body was not \
         checked. Use `#lint_type_theory_sorries {item.target.theoryName}` to list current \
         admissions."
     refreshLFMirrorAfterInternalRegistration theoryName
-  let mut batch : Array InternalDefsSorryBatchItem := #[]
+  let flushChecked (items : Array InternalDefsCheckedObjectBatchItem) : CommandElabM Unit := do
+    if items.isEmpty then
+      return ()
+    let theoryName := items[0]!.target.theoryName
+    let defs := items.map fun item =>
+      ({ name := item.target.localName
+         typeExpr := item.fullType
+         value := item.fullValue } : LFObjectDefDecl)
+    liftCoreM <| registerLFObjectDefBatch theoryName defs
+    for item in items do
+      saveLeanQuotedLFBodyInfo item.target item.params item.typeExpr item.bodyStx
+      if let some doc := item.sourceDoc? then
+        liftCoreM <| registerSourceDoc item.target.theoryName .internalDef
+          item.target.localName doc
+      addInternalDeclarationAnchor item.target item.fullType .checkedObjectDef item.params
+        (some item.fullValue) "internal def (Lean-quoted)" item.sourceDoc? item.declStx
+        item.declNameStx
+      addInternalDeclarationQuoteStub item.target item.params item.typeExpr
+      addInternalDefsDeclNavigationInfo item.target.theoryName item.declStx
+    refreshLFMirrorAfterInternalRegistration theoryName
+  let flushAll (sorryBatch : Array InternalDefsSorryBatchItem)
+      (checkedBatch : Array InternalDefsCheckedObjectBatchItem) : CommandElabM Unit := do
+    flushSorry sorryBatch
+    flushChecked checkedBatch
+  let mut sorryBatch : Array InternalDefsSorryBatchItem := #[]
+  let mut checkedBatch : Array InternalDefsCheckedObjectBatchItem := #[]
   for decl in decls do
     match ← elabInternalDefsSorryBatchItem? decl with
     | some item =>
         match ← liftCoreM <| classifyInternalSorryAdmissionShape item.target.theoryName
             item.target.localName item.params item.typeExpr with
         | .lfOpaque =>
-            if let some first := batch[0]? then
+            flushChecked checkedBatch
+            checkedBatch := #[]
+            if let some first := sorryBatch[0]? then
               if first.target.theoryName != item.target.theoryName then
-                flush batch
-                batch := #[]
+                flushSorry sorryBatch
+                sorryBatch := #[]
             let localName := item.target.localName.eraseMacroScopes
-            if batch.any (fun old => old.target.localName.eraseMacroScopes == localName) then
+            if sorryBatch.any (fun old => old.target.localName.eraseMacroScopes == localName) then
               throwError "duplicate internal_defs declaration '{item.target.localName}' in type \
                 theory '{item.target.theoryName}'"
-            batch := batch.push item
+            sorryBatch := sorryBatch.push item
         | .judgmentTheorem | .unsupported _ =>
-            flush batch
-            batch := #[]
+            flushAll sorryBatch checkedBatch
+            sorryBatch := #[]
+            checkedBatch := #[]
             elabLeanQuotedInternalDefsDecl decl
     | none =>
-        flush batch
-        batch := #[]
-        elabLeanQuotedInternalDefsDecl decl
-  flush batch
+        let checkedItem? ←
+          try
+            withRestoredCommandStateOnError <|
+              elabInternalDefsCheckedObjectBatchItem? sameBlockNames decl
+          catch _ =>
+            pure none
+        match checkedItem? with
+        | some item =>
+            flushSorry sorryBatch
+            sorryBatch := #[]
+            if let some first := checkedBatch[0]? then
+              if first.target.theoryName != item.target.theoryName then
+                flushChecked checkedBatch
+                checkedBatch := #[]
+            let localName := item.target.localName.eraseMacroScopes
+            if checkedBatch.any (fun old => old.target.localName.eraseMacroScopes == localName) then
+              throwError "duplicate internal_defs declaration '{item.target.localName}' in type \
+                theory '{item.target.theoryName}'"
+            checkedBatch := checkedBatch.push item
+        | none =>
+            flushAll sorryBatch checkedBatch
+            sorryBatch := #[]
+            checkedBatch := #[]
+            elabLeanQuotedInternalDefsDecl decl
+  flushAll sorryBatch checkedBatch
 
 elab_rules (kind := internalDefsBlock) : command
   | `(internal_defs where $decls:internalDefsDecl*) => do
