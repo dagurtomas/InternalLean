@@ -1114,6 +1114,47 @@ inductive CheckedLFDerivation where
       CheckedLFDerivation
   deriving Inhabited, Repr, BEq
 
+/-- Whether structural replay checked compactly or through expanded-definition fallback. -/
+inductive StructuralReplayMode where
+  | compact
+  | expanded
+  deriving Inhabited, Repr, BEq
+
+namespace StructuralReplayMode
+
+/-- Human-readable replay mode label. -/
+def label : StructuralReplayMode → String
+  | .compact => "compact"
+  | .expanded => "expanded"
+
+end StructuralReplayMode
+
+/-- Compact checked structural replay artifact.
+
+The artifact is created only after structural replay succeeds. It records the checked statement,
+replay derivation, replay mode, and the size of the source-order replay prefix without copying the
+full structural signature and prior theorem context into every theorem record. -/
+structure CheckedStructuralReplayArtifact where
+  mode : StructuralReplayMode := .compact
+  statement : Kernel.Judgment
+  derivation : Kernel.KernelLFDerivation
+  contextTheoremCount : Nat := 0
+  contextCertificateCount : Nat := 0
+  deriving Inhabited, Repr, BEq
+
+namespace CheckedStructuralReplayArtifact
+
+/-- Build a compact artifact from a successfully checked structural replay wrapper. -/
+def ofChecked (mode : StructuralReplayMode) (checked : Kernel.CheckedKernelLFDerivation) :
+    CheckedStructuralReplayArtifact :=
+  { mode := mode
+    statement := checked.statement
+    derivation := checked.derivation
+    contextTheoremCount := checked.context.theorems.length
+    contextCertificateCount := checked.context.certificates.length }
+
+end CheckedStructuralReplayArtifact
+
 /-- Checked staged custom-judgment theorem artifact. -/
 structure CheckedLFJudgmentTheorem where
   /-- Theorem/proof name. -/
@@ -1145,15 +1186,27 @@ structure CheckedLFJudgmentTheorem where
   derivation? : Option CheckedLFDerivation := none
   /-- Structural-kernel replay artifact lowered directly from the checked LF derivation. -/
   structuralKernelDerivation? : Option Kernel.KernelLFDerivation := none
-  /-- Checked structural-kernel replay artifact accepted during signature registration. -/
+  /-- Historical full checked structural-kernel replay wrapper. -/
   checkedStructuralKernelDerivation? : Option Kernel.CheckedKernelLFDerivation := none
+  /-- Compact checked structural-kernel replay artifact accepted during signature registration. -/
+  checkedStructuralReplay? : Option CheckedStructuralReplayArtifact := none
   deriving Inhabited, Repr, BEq
 
 namespace CheckedLFJudgmentTheorem
 
 /-- Whether this theorem has a checked replay artifact at the current kernel boundary. -/
 def hasCheckedKernelReplay (t : CheckedLFJudgmentTheorem) : Bool :=
-  t.checkedStructuralKernelDerivation?.isSome
+  t.checkedStructuralReplay?.isSome || t.checkedStructuralKernelDerivation?.isSome
+
+/-- Structural derivation carried by either the compact or historical replay artifact. -/
+def structuralReplayDerivation? (t : CheckedLFJudgmentTheorem) :
+    Option Kernel.KernelLFDerivation :=
+  match t.checkedStructuralReplay? with
+  | some artifact => some artifact.derivation
+  | none =>
+      match t.checkedStructuralKernelDerivation? with
+      | some checkedReplay => some checkedReplay.derivation
+      | none => t.structuralKernelDerivation?
 
 end CheckedLFJudgmentTheorem
 

@@ -75,6 +75,44 @@ def internalRegistrationProfileCacheSuffix (p : InternalRegistrationProfile) : S
       s!", cache={status}, cache rebuilt={p.cacheRebuilt}, cache overlay=\
         {p.cacheOverlayDecls}{replay}"
 
+/-- Extra profile detail for compact structural replay artifacts. -/
+def internalRegistrationProfileReplaySuffix (p : InternalRegistrationProfile) : String :=
+  if p.replayContextTheorems == 0 && p.replayContextCertificates == 0 &&
+      p.replayCompactArtifacts == 0 && p.replayFullWrappers == 0 &&
+      p.replayTheoremRuleSchemas == 0 then
+    ""
+  else
+    s!", replay context theorem(s)={p.replayContextTheorems}, certificate(s)=\
+      {p.replayContextCertificates}, compact={p.replayCompactArtifacts}, full=\
+        {p.replayFullWrappers}, structural-rules={p.replayTheoremRuleSchemas}"
+
+/-- Replay-context theorem count stored by a theorem's current replay artifact. -/
+def checkedTheoremReplayContextTheoremCount (t : CheckedLFJudgmentTheorem) : Nat :=
+  match t.checkedStructuralReplay? with
+  | some artifact => artifact.contextTheoremCount
+  | none => t.checkedStructuralKernelDerivation?.map (·.context.theorems.length) |>.getD 0
+
+/-- Replay-context certificate count stored by a theorem's current replay artifact. -/
+def checkedTheoremReplayContextCertificateCount (t : CheckedLFJudgmentTheorem) : Nat :=
+  match t.checkedStructuralReplay? with
+  | some artifact => artifact.contextCertificateCount
+  | none => t.checkedStructuralKernelDerivation?.map (·.context.certificates.length) |>.getD 0
+
+/-- Count compact replay artifacts in checked theorems. -/
+def checkedTheoremCompactReplayCount (theorems : Array CheckedLFJudgmentTheorem) : Nat :=
+  theorems.foldl (init := 0) fun count t =>
+    if t.checkedStructuralReplay?.isSome then count + 1 else count
+
+/-- Count historical full replay wrappers in checked theorems. -/
+def checkedTheoremFullReplayWrapperCount (theorems : Array CheckedLFJudgmentTheorem) : Nat :=
+  theorems.foldl (init := 0) fun count t =>
+    if t.checkedStructuralKernelDerivation?.isSome then count + 1 else count
+
+/-- Count structural theorem-rule schemas still needed by checked theorems. -/
+def checkedTheoremStructuralRuleSchemaCount (theorems : Array CheckedLFJudgmentTheorem) : Nat :=
+  theorems.foldl (init := 0) fun count t =>
+    if checkedLFJudgmentTheoremNeedsStructuralRuleSchema t then count + 1 else count
+
 /-- Measure one registration subphase only when registration profiling is enabled. -/
 def measureInternalRegistrationMs? (enabled : Bool) (x : CoreM α) : CoreM (α × Option Nat) := do
   if enabled then
@@ -124,6 +162,7 @@ def recordInternalRegistrationProfile (p : InternalRegistrationProfile) : CoreM 
         theorem(s)={p.priorJudgmentTheorems}{internalRegistrationProfileMetadataSuffix p}, old \
           object defs rechecked={p.recheckedObjectDefs}, old theorem(s) rechecked=\
             {p.recheckedJudgmentTheorems}, incremental={p.incrementallyChecked}\
+              {internalRegistrationProfileReplaySuffix p}\
               {internalRegistrationProfileTimingSuffix p}"
 
 /-- Render a compact summary for the generated Lean-visible theory anchor. -/
@@ -2197,6 +2236,11 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
     lfCheckMs? := lfCheckMs?
     compiledCacheUpdateMs? := compiledCacheUpdateMs?
     replayValidationMs? := replayValidationMs?
+    replayContextTheorems := checkedTheoremReplayContextTheoremCount checkedTheorem
+    replayContextCertificates := checkedTheoremReplayContextCertificateCount checkedTheorem
+    replayCompactArtifacts := checkedTheoremCompactReplayCount #[checkedTheorem]
+    replayFullWrappers := checkedTheoremFullReplayWrapperCount #[checkedTheorem]
+    replayTheoremRuleSchemas := checkedTheoremStructuralRuleSchemaCount #[checkedTheorem]
     environmentUpdateMs? := environmentUpdateMs? }
 
 /-- Register a theory-local ergonomic object macro. -/

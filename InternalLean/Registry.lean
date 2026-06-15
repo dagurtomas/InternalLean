@@ -1058,6 +1058,16 @@ structure InternalRegistrationProfile where
   compiledCacheUpdateMs? : Option Nat := none
   /-- Time spent validating structural replay, when profiled. -/
   replayValidationMs? : Option Nat := none
+  /-- Stored replay-context theorem entries for this event, when applicable. -/
+  replayContextTheorems : Nat := 0
+  /-- Stored replay-context certificate entries for this event, when applicable. -/
+  replayContextCertificates : Nat := 0
+  /-- Compact checked replay artifacts produced by this event. -/
+  replayCompactArtifacts : Nat := 0
+  /-- Historical full checked replay wrappers produced by this event. -/
+  replayFullWrappers : Nat := 0
+  /-- Structural theorem-rule schemas generated for theorem references in this event. -/
+  replayTheoremRuleSchemas : Nat := 0
   /-- Time spent applying the main environment extension updates, when profiled. -/
   environmentUpdateMs? : Option Nat := none
   deriving Inhabited, Repr, BEq

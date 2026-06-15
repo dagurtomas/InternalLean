@@ -213,7 +213,7 @@ elab "#print_lf_model_artifacts " theory:ident : command => do
       let derivationStatus := if t.derivation?.isSome then "checked derivation" else
         "opaque proof artifact"
       let replayStatus :=
-        if t.checkedStructuralKernelDerivation?.isSome then
+        if t.hasCheckedKernelReplay then
           "checked structural kernel replay artifact"
         else
           "no checked structural kernel replay artifact"

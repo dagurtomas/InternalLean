@@ -602,7 +602,7 @@ def kernelLFCertificateEntriesOfTheoremsToK (theorems : Array CheckedLFJudgmentT
     List Kernel.KernelLFCertificateEntry := Id.run do
   let mut out := []
   for t in theorems do
-    match t.structuralKernelDerivation? with
+    match t.structuralReplayDerivation? with
     | some (.certificate name stmt certificateName) =>
         out := { name := name, statement := stmt, certificateName := certificateName } :: out
     | _ => pure ()
@@ -637,6 +637,10 @@ def kernelLFLocalAssumptionEntriesOfTheoremToK (normalize? : Bool)
             out
     | none => pure ()
   pure out.reverse
+
+/-- Whether a theorem still needs a structural rule schema for applied theorem references. -/
+def checkedLFJudgmentTheoremNeedsStructuralRuleSchema (t : CheckedLFJudgmentTheorem) : Bool :=
+  !t.binders.isEmpty
 
 /-- Lower a checked LF theorem to the structural rule schema used by theorem references. -/
 def kernelLFRuleSchemaOfTheoremToK (normalize? : Bool)
@@ -693,7 +697,8 @@ def kernelLFRuleSchemasOfTheoremsToK (normalize? : Bool)
     Except String (Array Kernel.RuleSchema) := do
   let mut out := #[]
   for t in theorems do
-    out := out.push (← kernelLFRuleSchemaOfTheoremToK normalize? defValues t)
+    if checkedLFJudgmentTheoremNeedsStructuralRuleSchema t then
+      out := out.push (← kernelLFRuleSchemaOfTheoremToK normalize? defValues t)
   pure out
 
 /-- Build a structural replay context from checked theorem artifacts. -/
@@ -702,11 +707,14 @@ def kernelLFReplayContextOfTheoremsToK (theorems : Array CheckedLFJudgmentTheore
   let mut theoremEntries := []
   for prior in theorems do
     if prior.binders.isEmpty then
-      if prior.checkedStructuralKernelDerivation?.isSome || prior.derivation?.isSome then
+      if prior.hasCheckedKernelReplay || prior.derivation?.isSome then
         let statement ←
-          match prior.checkedStructuralKernelDerivation? with
-          | some checkedReplay => pure checkedReplay.statement
-          | none => checkedLFJudgmentTheoremStatementToK prior
+          match prior.checkedStructuralReplay? with
+          | some artifact => pure artifact.statement
+          | none =>
+              match prior.checkedStructuralKernelDerivation? with
+              | some checkedReplay => pure checkedReplay.statement
+              | none => checkedLFJudgmentTheoremStatementToK prior
         theoremEntries := {
           name := Kernel.KName.ofName prior.name
           statement := statement } :: theoremEntries
@@ -925,12 +933,13 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
   let structuralLocalReplayCtx := { structuralReplayCtx with
     localParameters := t.binders.toList.map (fun b => Kernel.KLocalName.ofName b.name)
     assumptions := structuralAssumptions }
-  let (structuralDeriv, _structuralStmt, checkedStructuralReplay) ←
+  let (_structuralDeriv, _structuralStmt, checkedStructuralReplay, replayMode) ←
     try
       let checkedStructuralReplay ← checkStructuralKernelReplay
         s!"judgment_theorem '{t.name}' compact replay" structuralSig structuralLocalReplayCtx
         structuralStmt structuralDeriv
-      pure (structuralDeriv, structuralStmt, checkedStructuralReplay)
+      pure (structuralDeriv, structuralStmt, checkedStructuralReplay,
+        StructuralReplayMode.compact)
     catch _ =>
       logLFConversionProfileEntry {
         site := "structural_replay_fallback"
@@ -959,10 +968,13 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
       let checkedStructuralReplay ← checkStructuralKernelReplay
         s!"judgment_theorem '{t.name}' expanded replay" structuralSigExpanded
         structuralExpandedReplayCtx structuralStmtExpanded structuralDerivExpanded
-      pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay)
+      pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay,
+        StructuralReplayMode.expanded)
   pure { t with
-    structuralKernelDerivation? := some structuralDeriv
-    checkedStructuralKernelDerivation? := some checkedStructuralReplay }
+    structuralKernelDerivation? := none
+    checkedStructuralKernelDerivation? := none
+    checkedStructuralReplay? := some <|
+      CheckedStructuralReplayArtifact.ofChecked replayMode checkedStructuralReplay }
 
 /-- Add checked structural-kernel replay validation to one incrementally checked LF theorem,
     reusing a compiled checked-theory replay cache. -/
@@ -996,13 +1008,14 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
   let structuralLocalReplayCtx ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' compact cached local replay context" <|
       validatedReplayCtx.withLocalFrame localParameters structuralAssumptions
-  let (structuralDeriv, _structuralStmt, checkedStructuralReplay) ←
+  let (_structuralDeriv, _structuralStmt, checkedStructuralReplay, replayMode) ←
     try
       let checkedStructuralReplay ← checkStructuralKernelReplayWithValidated
         s!"judgment_theorem '{t.name}' compact cached replay" structuralSig
         structuralLocalReplayCtx.source validatedStructuralSig structuralLocalReplayCtx
         structuralStmt structuralDeriv
-      pure (structuralDeriv, structuralStmt, checkedStructuralReplay)
+      pure (structuralDeriv, structuralStmt, checkedStructuralReplay,
+        StructuralReplayMode.compact)
     catch _ =>
       logLFConversionProfileEntry {
         site := "structural_replay_fallback"
@@ -1033,10 +1046,13 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
         s!"judgment_theorem '{t.name}' expanded cached replay" structuralSigExpanded
         structuralExpandedReplayCtx.source validatedStructuralSigExpanded
         structuralExpandedReplayCtx structuralStmtExpanded structuralDerivExpanded
-      pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay)
+      pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay,
+        StructuralReplayMode.expanded)
   pure { t with
-    structuralKernelDerivation? := some structuralDeriv
-    checkedStructuralKernelDerivation? := some checkedStructuralReplay }
+    structuralKernelDerivation? := none
+    checkedStructuralKernelDerivation? := none
+    checkedStructuralReplay? := some <|
+      CheckedStructuralReplayArtifact.ofChecked replayMode checkedStructuralReplay }
 
 
 /-- Convert a checked LF binding back to the high-level declaration shape used for checking

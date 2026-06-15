@@ -115,9 +115,12 @@ def appendJudgmentTheorem (cache : CompiledLFCheckCache) (t : CheckedLFJudgmentT
   let structuralReplayCtx :=
     if t.binders.isEmpty then
       let stmt? :=
-        match t.checkedStructuralKernelDerivation? with
-        | some checkedReplay => some checkedReplay.statement
-        | none => checkedLFJudgmentTheoremStatementToK t |>.toOption
+        match t.checkedStructuralReplay? with
+        | some artifact => some artifact.statement
+        | none =>
+            match t.checkedStructuralKernelDerivation? with
+            | some checkedReplay => some checkedReplay.statement
+            | none => checkedLFJudgmentTheoremStatementToK t |>.toOption
       match stmt? with
       | some stmt => { structuralReplayCtx with
           theorems := {
@@ -1023,13 +1026,14 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
   let structuralLocalReplayCtx ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' block compact local replay context" <|
       validatedReplayCtx.withLocalFrame localParameters structuralAssumptions
-  let (structuralDeriv, structuralStmt, checkedStructuralReplay, ctx) ←
+  let (_structuralDeriv, structuralStmt, checkedStructuralReplay, replayMode, ctx) ←
     try
       let checkedStructuralReplay ← checkStructuralKernelReplayWithValidated
         s!"judgment_theorem '{t.name}' block compact replay" structuralSig
         structuralLocalReplayCtx.source validatedStructuralSig structuralLocalReplayCtx
         structuralStmt structuralDeriv
-      pure (structuralDeriv, structuralStmt, checkedStructuralReplay, ctx)
+      pure (structuralDeriv, structuralStmt, checkedStructuralReplay,
+        StructuralReplayMode.compact, ctx)
     catch _ =>
       logLFConversionProfileEntry {
         site := "structural_replay_fallback"
@@ -1056,10 +1060,13 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
         s!"judgment_theorem '{t.name}' block expanded replay" structuralSigExpanded
         structuralExpandedReplayCtx.source validatedStructuralSigExpanded
         structuralExpandedReplayCtx structuralStmtExpanded structuralDerivExpanded
-      pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay, ctx)
+      pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay,
+        StructuralReplayMode.expanded, ctx)
   let t := { t with
-    structuralKernelDerivation? := some structuralDeriv
-    checkedStructuralKernelDerivation? := some checkedStructuralReplay }
+    structuralKernelDerivation? := none
+    checkedStructuralKernelDerivation? := none
+    checkedStructuralReplay? := some <|
+      CheckedStructuralReplayArtifact.ofChecked replayMode checkedStructuralReplay }
   let certificateEntries := kernelLFCertificateEntriesOfTheoremsToK #[t]
   let validatedReplayCtx ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' block replay certificate append" <|

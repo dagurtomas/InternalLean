@@ -287,47 +287,78 @@ def replayAuditStructuralTargetString (stmt : Kernel.Judgment) : String :=
 def replayAuditStructuralDerivationString (derivation : Kernel.KernelLFDerivation) : String :=
   truncateDiagnosticString 1200 (structuralKernelLFDerivationSourceStringWithDepth 5 derivation)
 
-/-- Structural replay statement for a theorem, preferring checked cached replay wrappers. -/
+/-- Structural replay statement for a theorem, preferring compact checked artifacts. -/
 def structuralKernelLFReplayStatementOfTheorem? (t : CheckedLFJudgmentTheorem) :
     Option Kernel.Judgment :=
-  match t.checkedStructuralKernelDerivation? with
-  | some checkedReplay => some checkedReplay.statement
-  | none => checkedLFJudgmentTheoremStatementToK t |>.toOption
+  match t.checkedStructuralReplay? with
+  | some artifact => some artifact.statement
+  | none =>
+      match t.checkedStructuralKernelDerivation? with
+      | some checkedReplay => some checkedReplay.statement
+      | none => checkedLFJudgmentTheoremStatementToK t |>.toOption
 
-/-- Structural replay payload for a theorem, preferring checked cached replay wrappers. -/
+/-- Structural replay payload for a theorem, preferring compact checked artifacts. -/
 def structuralKernelLFReplayPayloadOfTheorem? (t : CheckedLFJudgmentTheorem) :
     Option (Kernel.Judgment × Kernel.KernelLFDerivation) :=
-  match t.checkedStructuralKernelDerivation? with
-  | some checkedReplay => some (checkedReplay.statement, checkedReplay.derivation)
+  match t.checkedStructuralReplay? with
+  | some artifact => some (artifact.statement, artifact.derivation)
   | none =>
-      match t.structuralKernelDerivation? with
-      | some derivation => some (Kernel.KernelLFDerivation.statement derivation, derivation)
-      | none => none
+      match t.checkedStructuralKernelDerivation? with
+      | some checkedReplay => some (checkedReplay.statement, checkedReplay.derivation)
+      | none =>
+          match t.structuralKernelDerivation? with
+          | some derivation => some (Kernel.KernelLFDerivation.statement derivation, derivation)
+          | none => none
 
-/-- Previously checked closed LF theorems that precede a theorem in source order. -/
-def precedingClosedLFTheoremEntriesToK (theorems : Array CheckedLFJudgmentTheorem)
-    (theoremName : Name) : Except String (List Kernel.KernelLFTheoremEntry) := do
-  let mut out : List Kernel.KernelLFTheoremEntry := []
+/-- Previously checked closed theorem and certificate entries before a theorem in source order. -/
+def precedingLFReplayEntriesToK (theorems : Array CheckedLFJudgmentTheorem)
+    (theoremName : Name) :
+    Except String (List Kernel.KernelLFTheoremEntry × List Kernel.KernelLFCertificateEntry) := do
+  let mut theoremEntries : List Kernel.KernelLFTheoremEntry := []
+  let mut certificateEntries : List Kernel.KernelLFCertificateEntry := []
   for t in theorems do
     if t.name.eraseMacroScopes == theoremName.eraseMacroScopes then
-      return out.reverse
+      return (theoremEntries.reverse, certificateEntries.reverse)
     if t.binders.isEmpty then
       let some statement := structuralKernelLFReplayStatementOfTheorem? t
         | throw s!"checked LF judgment theorem '{t.name}' has no structural replay statement"
-      out := { name := Kernel.KName.ofName t.name, statement := statement } :: out
-  return out.reverse
+      theoremEntries := { name := Kernel.KName.ofName t.name, statement := statement } ::
+        theoremEntries
+    for entry in kernelLFCertificateEntriesOfTheoremsToK #[t] do
+      certificateEntries := entry :: certificateEntries
+  return (theoremEntries.reverse, certificateEntries.reverse)
+
+/-- Verify compact replay prefix counters against a reconstructed source-order context. -/
+def checkCompactReplayPrefixCounts (t : CheckedLFJudgmentTheorem)
+    (ctx : Kernel.KernelLFCheckContext) : Except String Unit := do
+  if let some artifact := t.checkedStructuralReplay? then
+    if artifact.contextTheoremCount != ctx.theorems.length then
+      throw s!"checked LF judgment theorem '{t.name}' compact replay theorem-prefix count is \
+        {artifact.contextTheoremCount}, reconstructed {ctx.theorems.length}"
+    if artifact.contextCertificateCount != ctx.certificates.length then
+      throw s!"checked LF judgment theorem '{t.name}' compact replay certificate-prefix count is \
+        {artifact.contextCertificateCount}, reconstructed {ctx.certificates.length}"
+
+/-- Whether replay reconstruction should use expanded LF-definition lowering. -/
+def checkedLFTheoremReplayUsesExpandedMode (t : CheckedLFJudgmentTheorem) : Bool :=
+  match t.checkedStructuralReplay? with
+  | some artifact => artifact.mode == .expanded
+  | none => false
 
 /-- Build the structural replay context needed for one checked LF theorem. -/
 def kernelLFReplayCertificateContextForTheorem (checked : CheckedSignature)
     (t : CheckedLFJudgmentTheorem) : Except String Kernel.KernelLFCheckContext := do
   let checkedLFDefValues := checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs
-  let assumptions ← kernelLFLocalAssumptionEntriesOfTheoremToK false checkedLFDefValues t
-  let theorems ← precedingClosedLFTheoremEntriesToK checked.lfJudgmentTheorems t.name
-  pure {
+  let assumptions ← kernelLFLocalAssumptionEntriesOfTheoremToK
+    (checkedLFTheoremReplayUsesExpandedMode t) checkedLFDefValues t
+  let (theorems, certificates) ← precedingLFReplayEntriesToK checked.lfJudgmentTheorems t.name
+  let ctx : Kernel.KernelLFCheckContext := {
     localParameters := t.binders.toList.map (fun b => Kernel.KLocalName.ofName b.name)
     assumptions := assumptions
     theorems := theorems
-    certificates := kernelLFCertificateEntriesOfTheoremsToK checked.lfJudgmentTheorems }
+    certificates := certificates }
+  checkCompactReplayPrefixCounts t ctx
+  pure ctx
 
 /-- Build a structural independently checkable replay certificate from a checked LF theorem. -/
 def kernelLFReplayCertificateForCheckedTheorem (checked : CheckedSignature)
@@ -337,7 +368,7 @@ def kernelLFReplayCertificateForCheckedTheorem (checked : CheckedSignature)
   let signature ← checkedSignatureToKSignature checked.name checked.lfSyntaxDefs
     checked.lfOpaqueConsts checked.lfContextZones checked.lfBinderClasses
     checked.lfConversionPlugins checked.lfRuleSchemas checked.lfObjectDefs
-    checked.lfJudgmentTheorems
+    checked.lfJudgmentTheorems (checkedLFTheoremReplayUsesExpandedMode t)
   let usedRules := structuralKernelLFDerivationRuleAppNames derivation
   let rules := signature.rules.filter (fun r => usedRules.contains r.name.raw.eraseMacroScopes)
   let usedGlobals := rules.foldl

@@ -1287,7 +1287,8 @@ elab "#print_internal_registration_profile " theory:ident : command => do
       s!"{p.declName.eraseMacroScopes}: {p.strategy}; prior={p.priorObjectDefs} object def(s), \
         {p.priorJudgmentTheorems} theorem(s){internalRegistrationProfileMetadataSuffix p}; \
         rechecked={p.recheckedObjectDefs} object def(s), {p.recheckedJudgmentTheorems} \
-        theorem(s); incremental={p.incrementallyChecked}"
+        theorem(s); incremental={p.incrementallyChecked}\
+          {internalRegistrationProfileReplaySuffix p}"
     let opaqueText :=
       if totals.2.2.1 == 0 then ""
       else s!", {totals.2.2.1} opaque(s)"
@@ -1882,17 +1883,21 @@ elab "#print_logical_framework_definitions " nm:ident : command => do
         [{premiseProofs}] certificates [{certs}]"
     if let some derivation := t.derivation? then
       logInfo m!"  derivation: {replayAuditCheckedLFDerivationString derivation}"
-    if let some derivation := t.structuralKernelDerivation? then
+    if let some derivation := t.structuralReplayDerivation? then
       logInfo m!"  structural kernel replay: {replayAuditStructuralDerivationString derivation}"
-    match t.checkedStructuralKernelDerivation? with
-    | some checkedReplay =>
+    if let some artifact := t.checkedStructuralReplay? then
+      logInfo m!"  compact structural kernel replay artifact: mode={artifact.mode.label}, \
+        prefix theorem(s)={artifact.contextTheoremCount}, certificate(s)=\
+          {artifact.contextCertificateCount}"
+    match checkedKernelLFReplayForTheorem checked t with
+    | .ok checkedReplay =>
         match checkedReplay.check with
         | .ok () =>
-            logInfo m!"  checked structural kernel replay wrapper: eligible"
+            logInfo m!"  checked structural kernel replay wrapper: reconstructable"
         | .error err =>
             logInfo m!"  checked structural kernel replay wrapper: ineligible: {err}"
-    | none =>
-        logInfo m!"  checked structural kernel replay wrapper: unavailable"
+    | .error err =>
+        logInfo m!"  checked structural kernel replay wrapper: unavailable: {err}"
 
 /-- Print Phase-3 LF side-condition hook registry and produced certificates. -/
 elab "#print_logical_framework_side_condition_hooks " nm:ident : command => do

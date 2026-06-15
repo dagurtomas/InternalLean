@@ -329,3 +329,75 @@ internal theorem a_good_again : GoodEl a := good_el A a
 end KernelDualReplayIndexedImplicitSmoke
 
 #check_type_theory KernelDualReplayIndexedImplicitSmoke
+
+declare_type_theory KernelDualReplayRP4ArtifactSmoke where
+  syntax_sort Obj
+  judgment Good (x : Obj)
+  lf_opaque base : Obj
+  lf_opaque step (x : Obj) : Obj
+  rule base_ok where
+    conclusion : Good base
+  rule step_ok (x : Obj) where
+    premise prev : Good x
+    conclusion : Good (step x)
+  judgment_theorem base_ok_thm : Good base := base_ok
+  judgment_theorem base_ok_again : Good base := base_ok_thm
+  judgment_theorem step_preserves_ok (x : Obj) (h : Good x) : Good (step x) :=
+    step_ok x h
+  judgment_theorem step_base_ok : Good (step base) :=
+    step_preserves_ok base base_ok_thm
+
+run_cmd do
+  let some checked ← Lean.Elab.Command.liftCoreM <|
+      getCheckedTheory? `KernelDualReplayRP4ArtifactSmoke
+    | throwError "missing RP4 artifact smoke checked theory"
+  let findTheorem (n : Name) : Lean.Elab.Command.CommandElabM CheckedLFJudgmentTheorem := do
+    let some thm := checked.lfJudgmentTheorems.find? (fun t => t.name == n)
+      | throwError "missing RP4 artifact smoke theorem '{n}'"
+    pure thm
+  let baseAgain ← findTheorem `base_ok_again
+  let some baseArtifact := baseAgain.checkedStructuralReplay?
+    | throwError "binder-free theorem reference did not get a compact replay artifact"
+  if baseAgain.checkedStructuralKernelDerivation?.isSome ||
+      baseAgain.structuralKernelDerivation?.isSome then
+    throwError "compact replay theorem retained a full structural replay wrapper"
+  unless baseArtifact.contextTheoremCount == 1 do
+    throwError "binder-free theorem reference recorded wrong theorem-prefix count"
+  match baseArtifact.derivation with
+  | Kernel.KernelLFDerivation.theoremRef name _ =>
+      unless name == Kernel.KName.ofName `base_ok_thm do
+        throwError "binder-free theorem reference used the wrong replay-context entry"
+  | _ => throwError "binder-free theorem reference did not lower to a context theorem reference"
+  match checkedKernelLFReplayForTheorem checked baseAgain with
+  | .ok checkedReplay =>
+      unless checkedReplay.context.theorems.length == baseArtifact.contextTheoremCount do
+        throwError "audit reconstruction used a different theorem-prefix length"
+  | .error err => throwError "audit reconstruction of compact replay artifact failed: {err}"
+  let signature ← match checkedSignatureToKSignature checked.name checked.lfSyntaxDefs
+      checked.lfOpaqueConsts checked.lfContextZones checked.lfBinderClasses
+      checked.lfConversionPlugins checked.lfRuleSchemas checked.lfObjectDefs
+      checked.lfJudgmentTheorems with
+    | .ok signature => pure signature
+    | .error err => throwError "RP4 structural signature failed: {err}"
+  let baseRule := Kernel.KName.ofName (lfJudgmentTheoremKernelRuleName `base_ok_thm)
+  if signature.rules.any (fun r => r.name == baseRule) then
+    throwError "binder-free theorem retained an unnecessary structural theorem-rule schema"
+  let stepRule := Kernel.KName.ofName (lfJudgmentTheoremKernelRuleName `step_preserves_ok)
+  unless signature.rules.any (fun r => r.name == stepRule) do
+    throwError "theorem with binders lost its structural theorem-rule schema"
+  let stepUse ← findTheorem `step_base_ok
+  let some stepArtifact := stepUse.checkedStructuralReplay?
+    | throwError "applied theorem reference did not get a compact replay artifact"
+  match stepArtifact.derivation with
+  | Kernel.KernelLFDerivation.ruleApp ruleName _ _ _ _ =>
+      unless ruleName == stepRule do
+        throwError "applied theorem reference used the wrong structural theorem-rule schema"
+  | _ => throwError "applied theorem reference did not lower to a theorem-rule application"
+  let corruptedArtifact := {
+    baseArtifact with contextTheoremCount := baseArtifact.contextTheoremCount + 1 }
+  let corrupted := { baseAgain with checkedStructuralReplay? := some corruptedArtifact }
+  match kernelLFReplayCertificateForCheckedTheorem checked corrupted with
+  | .ok _ => throwError "corrupted compact replay prefix count was accepted"
+  | .error err =>
+      unless err.contains "theorem-prefix count" do
+        throwError "expected compact prefix-count diagnostic, got: {err}"
