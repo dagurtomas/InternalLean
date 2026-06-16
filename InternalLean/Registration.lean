@@ -1456,6 +1456,23 @@ def checkedParentBaseForSignature (sig : HLSignature) (flatSourceBase : HLSignat
     checked := appendCheckedTheoryDelta checked (checkedSignatureAsDelta parentChecked)
   pure checked
 
+/-- Reuse the single direct parent's compiled cache as the opaque checked baseline for a child.
+The checked signature remains authoritative; the reused cache only preserves derived maps and replay
+entries that were already validated for the parent. -/
+def singleParentCompiledBaseCache? (sig : HLSignature) (checkedBaseHL : HLSignature)
+    (checkedBase : CheckedSignature) : CoreM (Option CompiledLFCheckCache) := do
+  match sig.parents.toList with
+  | [parentName] =>
+      let some parentChecked ← getCheckedTheory? parentName
+        | throwError "no checked artifact stored for parent type theory '{parentName}'"
+      let parentCacheLookup ← getOrBuildCompiledLFCheckCache parentName parentChecked
+      pure <| some {
+        parentCacheLookup.cache with
+        theoryName := sig.name.eraseMacroScopes
+        stamp := CompiledLFCheckCacheStamp.ofCheckedSignature checkedBase
+        checkedHL := checkedBaseHL }
+  | _ => pure none
+
 /-- Register a theory by checking its whole flattened signature. -/
 def registerTheoryFull (sig : HLSignature) (strategy? : Option String := none) : CoreM Unit := do
   let headSig ← flattenSignature sig
@@ -1497,7 +1514,10 @@ def registerTheoryIncrementalFromParents (sig : HLSignature) (block : HLTheoryBl
     checkNoDuplicateLevelParamsInSignature flatSourceBase
   let checkedBase ← checkedParentBaseForSignature sig flatSourceBase
   let checkedBaseHL := checkedSignatureIncrementalHLSignature flatSourceBase checkedBase
-  let baseCache ← mkCompiledLFCheckCacheFromHL checkedBaseHL checkedBase
+  let baseCache ←
+    match ← singleParentCompiledBaseCache? sig checkedBaseHL checkedBase with
+    | some cache => pure cache
+    | none => mkCompiledLFCheckCacheFromHL checkedBaseHL checkedBase
   let result ←
     checkTheoryBlockExtensionIncrementalWithFlatBase sig.name flatSourceBase checkedBase block
       (some checkedBaseHL)
@@ -1528,7 +1548,7 @@ def registerTheory (sig : HLSignature) : CoreM Unit := do
   let block := signatureOwnBlock sig
   if sig.parents.isEmpty || !(sig.macros.isEmpty && sig.roles.isEmpty) then
     registerTheoryFull sig
-  else if (← parentDagHasSharedAncestor sig) then
+  else if sig.parents.size > 1 && (← parentDagHasSharedAncestor sig) then
     registerTheoryFull sig <| some "full fallback declare_type_theory: shared parent ancestor"
   else
     match unsupportedIncrementalTheoryBlockReason? block with

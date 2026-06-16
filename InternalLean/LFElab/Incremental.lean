@@ -104,25 +104,28 @@ def appendOpaqueConsts (cache : CompiledLFCheckCache) (checkedHLAfter : HLSignat
     opaqueArities := opaqueArities
     globalHeads := globalHeads }
 
+/-- Append checked theorem artifacts to a structural replay context without rebuilding prior
+validated theorem entries. -/
+def appendTheoremsToStructuralReplayContext (ctx : Kernel.KernelLFCheckContext)
+    (theorems : Array CheckedLFJudgmentTheorem) : Except String Kernel.KernelLFCheckContext := do
+  let mut ctx := { ctx with
+    certificates := ctx.certificates ++ kernelLFCertificateEntriesOfTheoremsToK theorems }
+  for t in theorems do
+    if t.binders.isEmpty && (t.hasCheckedKernelReplay || t.derivation?.isSome) then
+      let statement ← checkedLFJudgmentTheoremContextStatementToK t
+      ctx := { ctx with theorems := ctx.theorems ++ [{
+        name := Kernel.KName.ofName t.name
+        statement := statement }] }
+  pure ctx
+
 /-- Append a checked LF judgment theorem to a compiled LF checking cache. -/
 def appendJudgmentTheorem (cache : CompiledLFCheckCache) (t : CheckedLFJudgmentTheorem) :
     CompiledLFCheckCache :=
   let theoremName := t.name.eraseMacroScopes
-  let structuralCertificateEntries := kernelLFCertificateEntriesOfTheoremsToK #[t]
-  let structuralReplayCtx := { cache.structuralKernelReplayBase with
-    certificates := structuralCertificateEntries.foldr (fun entry entries => entry :: entries)
-      cache.structuralKernelReplayBase.certificates }
   let structuralReplayCtx :=
-    if t.binders.isEmpty then
-      let stmt? := checkedLFJudgmentTheoremContextStatementToK t |>.toOption
-      match stmt? with
-      | some stmt => { structuralReplayCtx with
-          theorems := {
-            name := Kernel.KName.ofName t.name
-            statement := stmt } :: structuralReplayCtx.theorems }
-      | none => structuralReplayCtx
-    else
-      structuralReplayCtx
+    match appendTheoremsToStructuralReplayContext cache.structuralKernelReplayBase #[t] with
+    | .ok ctx => ctx
+    | .error _ => cache.structuralKernelReplayBase
   let availableStatements :=
     if t.binders.isEmpty then
       let stmt := match t.derivation? with
@@ -850,7 +853,8 @@ def appendDelta (cache : CompiledLFCheckCache) (checkedHLAfter : HLSignature)
   let lfObjectDefs := cache.lfObjectDefs ++ delta.objectDefs
   let lfJudgmentTheorems := cache.lfJudgmentTheorems ++ delta.judgmentTheorems
   let structuralKernelReplayBase :=
-    match kernelLFReplayContextOfTheoremsToK checkedAfter.lfJudgmentTheorems with
+    match appendTheoremsToStructuralReplayContext cache.structuralKernelReplayBase
+        delta.judgmentTheorems with
     | .ok ctx => ctx
     | .error _ => cache.structuralKernelReplayBase
   { cache with

@@ -10,9 +10,10 @@ public import InternalLean.Command
 /-!
 # Theory mixin composition tests
 
-These tests exercise parent-DAG flattening for shared-ancestor diamonds.  M1 intentionally routes
-shared-ancestor `declare_type_theory ... extends ...` blocks through the full checker, while
-sharing-free parent trees keep the incremental path.
+These tests exercise parent-DAG flattening for shared-ancestor diamonds.  Multi-parent shared
+ancestor `declare_type_theory ... extends ...` blocks still route through the full checker, while
+sharing-free parent trees and single-parent children of already checked diamonds keep the
+incremental path.
 -/
 
 @[expose] public section
@@ -28,6 +29,33 @@ elab "#guard_mixin_registration_strategy " theory:ident expected:str : command =
     let strategies := profiles.toList.map (fun p => p.strategy)
     throwError "expected registration strategy '{expected}' for '{theory.getId}', found \
       {String.intercalate ", " strategies}"
+
+/-- Assert old-artifact recheck counts for a registration profile entry. -/
+elab "#guard_mixin_registration_rechecks " theory:ident decl:str objects:num theorems:num :
+    command => do
+  let profiles ← liftCoreM <| getInternalRegistrationProfilesFor theory.getId
+  let declName := Name.mkSimple decl.getString
+  let some profile := profiles.find? (fun p => p.declName == declName)
+    | throwError "no registration profile for '{theory.getId}.{declName}'"
+  unless profile.recheckedObjectDefs == objects.getNat &&
+      profile.recheckedJudgmentTheorems == theorems.getNat do
+    throwError "unexpected old-artifact recheck counts for '{theory.getId}.{declName}': \
+      object(s)={profile.recheckedObjectDefs}, theorem(s)=\
+        {profile.recheckedJudgmentTheorems}"
+
+/-- Assert inherited theorem-schema demand counters for a registration profile entry. -/
+elab "#guard_mixin_registration_schema_stats " theory:ident decl:ident considered:num
+    demanded:num lowered:num : command => do
+  let profiles ← liftCoreM <| getInternalRegistrationProfilesFor theory.getId
+  let some profile := profiles.find? (fun p => p.declName == decl.getId.eraseMacroScopes)
+    | throwError "no registration profile for '{theory.getId}.{decl.getId}'"
+  unless profile.inheritedTheoremRuleSchemasConsidered == considered.getNat &&
+      profile.inheritedTheoremRuleSchemasDemanded == demanded.getNat &&
+        profile.inheritedTheoremRuleSchemasLowered == lowered.getNat do
+    throwError "unexpected inherited theorem-schema stats for '{theory.getId}.{decl.getId}': \
+      considered={profile.inheritedTheoremRuleSchemasConsidered}, demanded=\
+        {profile.inheritedTheoremRuleSchemasDemanded}, lowered=\
+          {profile.inheritedTheoremRuleSchemasLowered}"
 
 /-- Assert syntax-sort and LF-opaque counts in a flattened signature. -/
 elab "#guard_mixin_flat_counts " theory:ident sorts:num opaques:num : command => do
@@ -114,6 +142,60 @@ extend_type_theory MixinChild where
   "full fallback declare_type_theory: shared parent ancestor"
 #guard_mixin_flat_counts MixinChild 1 4
 #guard_mixin_cache_invariant MixinChild
+
+/- AR4: a single-parent child of an already checked diamond uses the incremental path and keeps
+parent theorem artifacts opaque unless a new theorem directly applies them. -/
+declare_type_theory AR4OpaqueBase where
+  syntax_sort Obj
+  lf_opaque left : Obj
+  lf_opaque right : Obj
+  judgment Good (x : Obj)
+  rule good_intro (x : Obj) : Good x
+
+
+declare_type_theory AR4OpaqueLeft extends AR4OpaqueBase where
+  lf_opaque left_tag : Obj
+
+
+declare_type_theory AR4OpaqueRight extends AR4OpaqueBase where
+  lf_opaque right_tag : Obj
+
+
+declare_type_theory AR4OpaqueDiamond extends AR4OpaqueLeft, AR4OpaqueRight where
+  judgment_theorem parent_id (x : Obj) (h : Good x) : Good x := h
+  judgment_theorem parent_left : Good left := good_intro left
+
+
+declare_type_theory AR4OpaqueChild extends AR4OpaqueDiamond where
+  rule child_good_rule : Good right
+
+#guard_mixin_registration_strategy AR4OpaqueChild
+  "incremental declare_type_theory extends (streaming block)"
+#guard_mixin_registration_rechecks AR4OpaqueChild "declare_type_theory" 0 0
+
+namespace AR4OpaqueChild
+
+internal theorem child_good : Good right := child_good_rule
+#guard_mixin_registration_schema_stats AR4OpaqueChild child_good 1 0 0
+
+internal theorem use_parent_id : Good right := parent_id right child_good
+
+end AR4OpaqueChild
+
+#guard_mixin_registration_schema_stats AR4OpaqueChild use_parent_id 1 1 1
+
+run_cmd do
+  let some checked ← liftCoreM <| getCheckedTheory? `AR4OpaqueChild
+    | throwError "missing AR4 opaque child checked theory"
+  let some parentLeft := checked.lfJudgmentTheorems.find? (fun t =>
+      t.name.eraseMacroScopes == `parent_left)
+    | throwError "missing inherited parent_left theorem"
+  unless parentLeft.checkedStructuralReplay?.isSome do
+    throwError "inherited parent_left theorem lost its checked replay artifact"
+  match kernelLFReplayCertificateForCheckedTheorem checked parentLeft with
+  | .ok _ => pure ()
+  | .error err => throwError "inherited parent replay audit failed: {err}"
+
 
 generate_model_interface MixinChild as Model
 #check MixinChild.Model.A
