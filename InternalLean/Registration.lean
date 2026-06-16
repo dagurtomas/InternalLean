@@ -79,12 +79,18 @@ def internalRegistrationProfileCacheSuffix (p : InternalRegistrationProfile) : S
 def internalRegistrationProfileReplaySuffix (p : InternalRegistrationProfile) : String :=
   if p.replayContextTheorems == 0 && p.replayContextCertificates == 0 &&
       p.replayCompactArtifacts == 0 && p.replayFullWrappers == 0 &&
-      p.replayTheoremRuleSchemas == 0 then
+      p.replayTheoremRuleSchemas == 0 &&
+      p.inheritedTheoremRuleSchemasConsidered == 0 &&
+      p.inheritedTheoremRuleSchemasDemanded == 0 &&
+      p.inheritedTheoremRuleSchemasLowered == 0 then
     ""
   else
     s!", replay context theorem(s)={p.replayContextTheorems}, certificate(s)=\
       {p.replayContextCertificates}, compact={p.replayCompactArtifacts}, full=\
-        {p.replayFullWrappers}, structural-rules={p.replayTheoremRuleSchemas}"
+        {p.replayFullWrappers}, structural-rules={p.replayTheoremRuleSchemas}, \
+        inherited-structural-rules considered={p.inheritedTheoremRuleSchemasConsidered}, \
+        demanded={p.inheritedTheoremRuleSchemasDemanded}, \
+        lowered={p.inheritedTheoremRuleSchemasLowered}"
 
 /-- Replay-context theorem count stored by a theorem's current replay artifact. -/
 def checkedTheoremReplayContextTheoremCount (t : CheckedLFJudgmentTheorem) : Nat :=
@@ -2218,6 +2224,8 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
         let env := checkedHLSignatureExt.addEntry env
           (.lfJudgmentTheorem theoryName checkedTheorem)
         setCompiledLFCheckCacheInEnv env theoryName compiledCache
+  let schemaStats := structuralTheoremSchemaFilterStats cache.lfJudgmentTheorems
+    (structuralTheoremSchemaFilterForTheorem checkedTheorem)
   recordInternalRegistrationProfile {
     theoryName := theoryName
     declName := t.name.eraseMacroScopes
@@ -2240,6 +2248,9 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
     replayContextCertificates := checkedTheoremReplayContextCertificateCount checkedTheorem
     replayCompactArtifacts := checkedTheoremCompactReplayCount #[checkedTheorem]
     replayFullWrappers := checkedTheoremFullReplayWrapperCount #[checkedTheorem]
+    inheritedTheoremRuleSchemasConsidered := schemaStats.considered
+    inheritedTheoremRuleSchemasDemanded := schemaStats.demanded
+    inheritedTheoremRuleSchemasLowered := schemaStats.lowered
     replayTheoremRuleSchemas := checkedTheoremStructuralRuleSchemaCount #[checkedTheorem]
     environmentUpdateMs? := environmentUpdateMs? }
 

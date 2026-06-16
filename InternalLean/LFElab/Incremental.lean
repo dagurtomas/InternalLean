@@ -909,6 +909,8 @@ structure IntraBlockKernelReplayContext where
   lfObjectDefs : Array CheckedLFObjectDef := #[]
   /-- Checked LF judgment theorems used to build structural replay signatures. -/
   lfJudgmentTheorems : Array CheckedLFJudgmentTheorem := #[]
+  /-- Demand filter for theorem-rule schemas in structural replay signatures. -/
+  structuralTheoremSchemaFilter : StructuralTheoremSchemaFilter := {}
   /-- Global LF heads used by structural replay fallback assumptions. -/
   lfKernelGlobalHeads : NameMap (CheckedLFHeadKind × Option Nat)
   /-- LF definition values used by structural replay fallback assumptions. -/
@@ -935,7 +937,7 @@ def intraBlockKernelReplayStructuralSignature (ctx : IntraBlockKernelReplayConte
     (normalizeRules? : Bool := false) : Except String Kernel.Signature :=
   checkedSignatureToKSignature ctx.theoryName ctx.lfSyntaxDefs ctx.lfOpaqueConsts
     ctx.lfContextZones ctx.lfBinderClasses ctx.lfConversionPlugins ctx.lfRuleSchemas
-    ctx.lfObjectDefs ctx.lfJudgmentTheorems normalizeRules?
+    ctx.lfObjectDefs ctx.lfJudgmentTheorems normalizeRules? ctx.structuralTheoremSchemaFilter
 
 /-- Build cached replay state for a checked baseline plus one checked block delta. -/
 def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignature)
@@ -951,9 +953,11 @@ def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignat
   let lfObjectDefs := checked.lfObjectDefs ++ objectDefs
   let lfJudgmentTheorems := checked.lfJudgmentTheorems ++ theoremCandidates
   let lfCheckedDefValues := checkedLFDefinitionValues lfSyntaxDefs lfObjectDefs
+  let theoremFilter := structuralTheoremSchemaFilterForTheorems theoremCandidates
   let structuralKernelSig :=
     checkedSignatureToKSignature sig.name lfSyntaxDefs lfOpaqueConsts lfContextZones
-      lfBinderClasses lfConversionPlugins lfRuleSchemas lfObjectDefs lfJudgmentTheorems
+      lfBinderClasses lfConversionPlugins lfRuleSchemas lfObjectDefs lfJudgmentTheorems false
+      theoremFilter
   let structuralKernelValidatedSig := do
     let signature ← structuralKernelSig
     Kernel.ValidatedSignature.ofSignature signature
@@ -970,6 +974,7 @@ def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignat
     lfRuleSchemas := lfRuleSchemas
     lfObjectDefs := lfObjectDefs
     lfJudgmentTheorems := lfJudgmentTheorems
+    structuralTheoremSchemaFilter := theoremFilter
     lfKernelGlobalHeads := lfGlobalHeadInfo sig
     lfKernelDefValues := lfDefinitionValueMapFromCheckedDefs lfSyntaxDefs lfObjectDefs
     checkedLFDefValues := lfCheckedDefValues

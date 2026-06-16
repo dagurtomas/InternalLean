@@ -642,6 +642,94 @@ def kernelLFLocalAssumptionEntriesOfTheoremToK (normalize? : Bool)
 def checkedLFJudgmentTheoremNeedsStructuralRuleSchema (t : CheckedLFJudgmentTheorem) : Bool :=
   !t.binders.isEmpty
 
+/-- Filter selecting which checked theorem schemas should be lowered into structural signatures. -/
+structure StructuralTheoremSchemaFilter where
+  /-- Theorem names actually needed by the current replay/lowering task. -/
+  demandedTheorems : NameSet := {}
+  /-- Compatibility mode: include all theorem schemas as older callers expected. -/
+  includeAllForCompatibility : Bool := true
+  deriving Inhabited
+
+namespace StructuralTheoremSchemaFilter
+
+/-- Filter that lowers only the listed demanded theorem schemas. -/
+def demandOnly (demandedTheorems : NameSet) : StructuralTheoremSchemaFilter := {
+  demandedTheorems := demandedTheorems
+  includeAllForCompatibility := false }
+
+/-- Whether this filter allows lowering the named theorem schema. -/
+def allows (filter : StructuralTheoremSchemaFilter) (theoremName : Name) : Bool :=
+  filter.includeAllForCompatibility || filter.demandedTheorems.contains theoremName.eraseMacroScopes
+
+end StructuralTheoremSchemaFilter
+
+/-- Bounded counters for theorem-schema demand filtering. -/
+structure StructuralTheoremSchemaFilterStats where
+  /-- Theorem artifacts with binders that could have structural schemas. -/
+  considered : Nat := 0
+  /-- Considered schemas selected by the active filter. -/
+  demanded : Nat := 0
+  /-- Schemas actually lowered by the active filter. -/
+  lowered : Nat := 0
+  deriving Inhabited, Repr, BEq
+
+/-- Count theorem-schema filtering decisions without lowering theorem statements. -/
+def structuralTheoremSchemaFilterStats (theorems : Array CheckedLFJudgmentTheorem)
+    (filter : StructuralTheoremSchemaFilter) : StructuralTheoremSchemaFilterStats :=
+  theorems.foldl (init := {}) fun stats t =>
+    if checkedLFJudgmentTheoremNeedsStructuralRuleSchema t then
+      let considered := stats.considered + 1
+      if filter.allows t.name then
+        { stats with
+          considered := considered
+          demanded := stats.demanded + 1
+          lowered := stats.lowered + 1 }
+      else
+        { stats with considered := considered }
+    else
+      stats
+
+/-- Merge name sets by inserting all names from `src` into `dst`. -/
+def mergeStructuralTheoremNameSet (dst src : NameSet) : NameSet :=
+  src.toList.foldl (fun acc n => acc.insert n.eraseMacroScopes) dst
+
+/-- Theorem schemas demanded by applied theorem references in a checked derivation. -/
+partial def appliedTheoremRefsInCheckedLFDerivation : CheckedLFDerivation → NameSet
+  | .localAssumption .. => {}
+  | .theoremRef name _ args premises => Id.run do
+      let mut refs : NameSet := {}
+      for prem in premises do
+        refs := mergeStructuralTheoremNameSet refs
+          (appliedTheoremRefsInCheckedLFDerivation prem)
+      if !args.isEmpty || !premises.isEmpty then
+        refs := refs.insert name.eraseMacroScopes
+      return refs
+  | .ruleApp _ _ _ premises _ => Id.run do
+      let mut refs : NameSet := {}
+      for prem in premises do
+        refs := mergeStructuralTheoremNameSet refs
+          (appliedTheoremRefsInCheckedLFDerivation prem)
+      return refs
+
+/-- Theorem schemas demanded by one checked theorem's replay tree. -/
+def appliedTheoremRefsInCheckedLFTheorem (t : CheckedLFJudgmentTheorem) : NameSet :=
+  match t.derivation? with
+  | some derivation => appliedTheoremRefsInCheckedLFDerivation derivation
+  | none => {}
+
+/-- Filter demanded theorem schemas for one checked theorem. -/
+def structuralTheoremSchemaFilterForTheorem (t : CheckedLFJudgmentTheorem) :
+    StructuralTheoremSchemaFilter :=
+  StructuralTheoremSchemaFilter.demandOnly (appliedTheoremRefsInCheckedLFTheorem t)
+
+/-- Filter demanded theorem schemas for a block of checked theorem candidates. -/
+def structuralTheoremSchemaFilterForTheorems (theorems : Array CheckedLFJudgmentTheorem) :
+    StructuralTheoremSchemaFilter := Id.run do
+  let mut demanded : NameSet := {}
+  for t in theorems do
+    demanded := mergeStructuralTheoremNameSet demanded (appliedTheoremRefsInCheckedLFTheorem t)
+  return StructuralTheoremSchemaFilter.demandOnly demanded
+
 /-- Lower a checked LF theorem to the structural rule schema used by theorem references. -/
 def kernelLFRuleSchemaOfTheoremToK (normalize? : Bool)
     (defValues : CheckedLFDefinitionValueMap) (t : CheckedLFJudgmentTheorem) :
@@ -693,11 +781,11 @@ def kernelLFRuleSchemaOfTheoremToK (normalize? : Bool)
 
 /-- Lower checked LF theorem schemas to structural replay rule schemas. -/
 def kernelLFRuleSchemasOfTheoremsToK (normalize? : Bool)
-    (defValues : CheckedLFDefinitionValueMap) (theorems : Array CheckedLFJudgmentTheorem) :
-    Except String (Array Kernel.RuleSchema) := do
+    (defValues : CheckedLFDefinitionValueMap) (theorems : Array CheckedLFJudgmentTheorem)
+    (filter : StructuralTheoremSchemaFilter := {}) : Except String (Array Kernel.RuleSchema) := do
   let mut out := #[]
   for t in theorems do
-    if checkedLFJudgmentTheoremNeedsStructuralRuleSchema t then
+    if checkedLFJudgmentTheoremNeedsStructuralRuleSchema t && filter.allows t.name then
       out := out.push (← kernelLFRuleSchemaOfTheoremToK normalize? defValues t)
   pure out
 
@@ -728,13 +816,14 @@ def checkedSignatureToKSignature (theoryName : Name) (lfSyntaxDefs : Array Check
     (lfBinderClasses : Array CheckedLFBinderClass)
     (lfConversionPlugins : Array CheckedLFConversionPlugin)
     (lfRuleSchemas : Array CheckedLFRuleSchema) (lfObjectDefs : Array CheckedLFObjectDef)
-    (lfJudgmentTheorems : Array CheckedLFJudgmentTheorem) (normalizeRules? : Bool := false) :
-    Except String Kernel.Signature := do
+    (lfJudgmentTheorems : Array CheckedLFJudgmentTheorem) (normalizeRules? : Bool := false)
+    (theoremFilter : StructuralTheoremSchemaFilter := {}) : Except String Kernel.Signature := do
   let lfCheckedDefValues := checkedLFDefinitionValues lfSyntaxDefs lfObjectDefs
   let constants ← checkedLFConstantsToK lfCheckedDefValues lfSyntaxDefs lfOpaqueConsts lfObjectDefs
   let rules ← checkedLFRuleSchemasToK normalizeRules? lfCheckedDefValues lfRuleSchemas
   let theoremRules ←
     kernelLFRuleSchemasOfTheoremsToK normalizeRules? lfCheckedDefValues lfJudgmentTheorems
+      theoremFilter
   pure {
     name := Kernel.KName.ofName theoryName
     constants := constants.toList
@@ -745,10 +834,11 @@ def checkedSignatureToKSignature (theoryName : Name) (lfSyntaxDefs : Array Check
 
 /-- Build a structural replay signature from a compiled cache's retained checked artifacts. -/
 def compiledLFCheckCacheStructuralSignature (cache : CompiledLFCheckCache)
-    (normalizeRules? : Bool := false) : Except String Kernel.Signature :=
+    (normalizeRules? : Bool := false) (theoremFilter : StructuralTheoremSchemaFilter := {}) :
+    Except String Kernel.Signature :=
   checkedSignatureToKSignature cache.theoryName cache.lfSyntaxDefs cache.lfOpaqueConsts
     cache.lfContextZones cache.lfBinderClasses cache.lfConversionPlugins cache.checkedRuleSchemas
-    cache.lfObjectDefs cache.lfJudgmentTheorems normalizeRules?
+    cache.lfObjectDefs cache.lfJudgmentTheorems normalizeRules? theoremFilter
 
 /-- Lift structural-kernel construction failures into command elaboration errors. -/
 def liftStructuralKernelExcept (label : String) : Except String α → CoreM α
@@ -916,11 +1006,12 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
   let lfCheckedDefValues := checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs
   let lfKernelDefValues :=
     lfDefinitionValueMapFromCheckedDefs checked.lfSyntaxDefs checked.lfObjectDefs
+  let theoremFilter := structuralTheoremSchemaFilterForTheorem t
   let structuralSig ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' compact signature" <|
       checkedSignatureToKSignature sig.name checked.lfSyntaxDefs checked.lfOpaqueConsts
       checked.lfContextZones checked.lfBinderClasses checked.lfConversionPlugins
-      checked.lfRuleSchemas checked.lfObjectDefs checked.lfJudgmentTheorems
+      checked.lfRuleSchemas checked.lfObjectDefs checked.lfJudgmentTheorems false theoremFilter
   let structuralReplayCtx ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' compact replay context" <|
       kernelLFReplayContextOfTheoremsToK checked.lfJudgmentTheorems
@@ -955,6 +1046,7 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
           checkedSignatureToKSignature sig.name checked.lfSyntaxDefs checked.lfOpaqueConsts
             checked.lfContextZones checked.lfBinderClasses checked.lfConversionPlugins
             checked.lfRuleSchemas checked.lfObjectDefs checked.lfJudgmentTheorems true
+            theoremFilter
       let structuralExpandedAssumptions ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' expanded local assumptions" <|
           kernelLFLocalAssumptionEntriesOfTheoremToK true lfCheckedDefValues t
@@ -987,9 +1079,10 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
     for (n, value) in cache.knownLFSyntaxDefValues.toList do
       values := values.insert n value
     return values
+  let theoremFilter := structuralTheoremSchemaFilterForTheorem t
   let structuralSig ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' cached compact signature" <|
-      compiledLFCheckCacheStructuralSignature cache
+      compiledLFCheckCacheStructuralSignature cache false theoremFilter
   let validatedStructuralSig ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' cached compact validated signature" <|
       Kernel.ValidatedSignature.ofSignature structuralSig
@@ -1028,7 +1121,7 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
         accepted := true }
       let structuralSigExpanded ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' cached expanded signature" <|
-          compiledLFCheckCacheStructuralSignature cache true
+          compiledLFCheckCacheStructuralSignature cache true theoremFilter
       let validatedStructuralSigExpanded ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' cached expanded validated signature" <|
           Kernel.ValidatedSignature.ofSignature structuralSigExpanded

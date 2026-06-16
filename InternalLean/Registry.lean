@@ -1066,6 +1066,12 @@ structure InternalRegistrationProfile where
   replayCompactArtifacts : Nat := 0
   /-- Historical full checked replay wrappers produced by this event. -/
   replayFullWrappers : Nat := 0
+  /-- Inherited theorem schemas with binders considered by demand filtering. -/
+  inheritedTheoremRuleSchemasConsidered : Nat := 0
+  /-- Inherited theorem schemas selected by the active demand filter. -/
+  inheritedTheoremRuleSchemasDemanded : Nat := 0
+  /-- Inherited theorem schemas lowered by the active demand filter. -/
+  inheritedTheoremRuleSchemasLowered : Nat := 0
   /-- Structural theorem-rule schemas generated for theorem references in this event. -/
   replayTheoremRuleSchemas : Nat := 0
   /-- Time spent applying the main environment extension updates, when profiled. -/

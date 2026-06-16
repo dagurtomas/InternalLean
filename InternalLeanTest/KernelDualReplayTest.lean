@@ -401,3 +401,62 @@ run_cmd do
   | .error err =>
       unless err.contains "theorem-prefix count" do
         throwError "expected compact prefix-count diagnostic, got: {err}"
+
+
+declare_type_theory AR1LazySchemaParent where
+  syntax_sort Obj
+  lf_opaque base : Obj
+  judgment Good (x : Obj)
+  rule good_intro (x : Obj) : Good x
+  judgment_theorem parent_id (x : Obj) (h : Good x) : Good x := h
+
+declare_type_theory AR1LazySchemaChild extends AR1LazySchemaParent where
+  rule child_good_rule : Good base
+
+namespace AR1LazySchemaChild
+
+internal theorem child_good : Good base := child_good_rule
+internal theorem use_parent_id : Good base := parent_id base child_good
+
+end AR1LazySchemaChild
+
+run_cmd do
+  let some checked ← Lean.Elab.Command.liftCoreM <| getCheckedTheory? `AR1LazySchemaChild
+    | throwError "missing AR1 lazy-schema child checked theory"
+  let some parentTheorem := checked.lfJudgmentTheorems.find? (fun t =>
+      t.name.eraseMacroScopes.getString! == "parent_id")
+    | throwError "missing inherited parent_id theorem"
+  let parentRule := Kernel.KName.ofName (lfJudgmentTheoremKernelRuleName parentTheorem.name)
+  let noDemandFilter := StructuralTheoremSchemaFilter.demandOnly {}
+  let noDemandStats := structuralTheoremSchemaFilterStats checked.lfJudgmentTheorems noDemandFilter
+  unless noDemandStats.considered == 1 && noDemandStats.demanded == 0 &&
+      noDemandStats.lowered == 0 do
+    throwError "unexpected no-demand theorem-schema stats: {repr noDemandStats}"
+  let noDemandSig ← match checkedSignatureToKSignature checked.name checked.lfSyntaxDefs
+      checked.lfOpaqueConsts checked.lfContextZones checked.lfBinderClasses
+      checked.lfConversionPlugins checked.lfRuleSchemas checked.lfObjectDefs
+      checked.lfJudgmentTheorems false noDemandFilter with
+    | .ok signature => pure signature
+    | .error err => throwError "AR1 no-demand structural signature failed: {err}"
+  if noDemandSig.rules.any (fun r => r.name == parentRule) then
+    throwError "unrelated inherited theorem schema was lowered without demand"
+  let demandFilter := StructuralTheoremSchemaFilter.demandOnly
+    (({} : NameSet).insert parentTheorem.name.eraseMacroScopes)
+  let demandStats := structuralTheoremSchemaFilterStats checked.lfJudgmentTheorems demandFilter
+  unless demandStats.considered == 1 && demandStats.demanded == 1 &&
+      demandStats.lowered == 1 do
+    throwError "unexpected demanded theorem-schema stats: {repr demandStats}"
+  let demandedSig ← match checkedSignatureToKSignature checked.name checked.lfSyntaxDefs
+      checked.lfOpaqueConsts checked.lfContextZones checked.lfBinderClasses
+      checked.lfConversionPlugins checked.lfRuleSchemas checked.lfObjectDefs
+      checked.lfJudgmentTheorems false demandFilter with
+    | .ok signature => pure signature
+    | .error err => throwError "AR1 demanded structural signature failed: {err}"
+  unless demandedSig.rules.any (fun r => r.name == parentRule) do
+    throwError "demanded inherited theorem schema was not lowered"
+  let some useParent := checked.lfJudgmentTheorems.find? (fun t =>
+      t.name.eraseMacroScopes.getString! == "use_parent_id")
+    | throwError "missing theorem that applies parent_id"
+  let demandFromTheorem := structuralTheoremSchemaFilterForTheorem useParent
+  unless demandFromTheorem.demandedTheorems.contains parentTheorem.name.eraseMacroScopes do
+    throwError "applied theorem reference did not demand parent_id schema"
