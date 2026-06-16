@@ -462,6 +462,88 @@ run_cmd do
     throwError "applied theorem reference did not demand parent_id schema"
 
 
+declare_type_theory RS1PrimitiveDemandParent where
+  syntax_sort Obj
+  lf_opaque base : Obj
+  judgment Good (x : Obj)
+  rule parent_good : Good base
+  judgment_theorem parent_const (x : Obj) : Good base := parent_good
+
+
+declare_type_theory RS1PrimitiveDemandChild extends RS1PrimitiveDemandParent where
+  rule child_good_rule : Good base
+  rule unrelated_rule (x : Obj) : Good x
+
+namespace RS1PrimitiveDemandChild
+
+internal theorem child_good : Good base := child_good_rule
+internal theorem use_parent_const : Good base := parent_const base
+
+end RS1PrimitiveDemandChild
+
+run_cmd do
+  let some checked ← Lean.Elab.Command.liftCoreM <| getCheckedTheory? `RS1PrimitiveDemandChild
+    | throwError "missing RS1 primitive-demand child checked theory"
+  let findTheorem (n : Name) : Lean.Elab.Command.CommandElabM CheckedLFJudgmentTheorem := do
+    let some thm := checked.lfJudgmentTheorems.find? (fun t => t.name == n)
+      | throwError "missing RS1 primitive-demand theorem '{n}'"
+    pure thm
+  let hasRule (signature : Kernel.Signature) (n : Name) : Bool :=
+    signature.rules.any (fun r => r.name == Kernel.KName.ofName n)
+  let signatureFor (t : CheckedLFJudgmentTheorem)
+      (primitiveFilter : StructuralPrimitiveRuleSchemaFilter) :
+      Lean.Elab.Command.CommandElabM Kernel.Signature := do
+    match checkedSignatureToKSignature checked.name checked.lfSyntaxDefs checked.lfOpaqueConsts
+        checked.lfContextZones checked.lfBinderClasses checked.lfConversionPlugins
+        checked.lfRuleSchemas checked.lfObjectDefs checked.lfJudgmentTheorems false
+        (structuralTheoremSchemaFilterForTheorem t) primitiveFilter with
+    | .ok signature => pure signature
+    | .error err => throwError "RS1 primitive-demand signature failed: {err}"
+  let childGood ← findTheorem `child_good
+  let childPrimitiveFilter := structuralPrimitiveRuleSchemaFilterForTheorem childGood
+  let childStats := structuralPrimitiveRuleDemandStats checked.lfRuleSchemas childPrimitiveFilter
+  unless childStats.considered == 3 && childStats.demanded == 1 &&
+      childStats.lowered == 1 && childStats.demandedNames.contains `child_good_rule do
+    throwError "unexpected direct primitive-demand stats: {repr childStats}"
+  let childSig ← signatureFor childGood childPrimitiveFilter
+  unless hasRule childSig `child_good_rule do
+    throwError "demanded primitive rule was not lowered"
+  if hasRule childSig `parent_good || hasRule childSig `unrelated_rule then
+    throwError "undemanded primitive rule was lowered for direct primitive proof"
+  let useParentConst ← findTheorem `use_parent_const
+  let usePrimitiveFilter := structuralPrimitiveRuleSchemaFilterForTheorem useParentConst
+  let useStats := structuralPrimitiveRuleDemandStats checked.lfRuleSchemas usePrimitiveFilter
+  unless useStats.considered == 3 && useStats.demanded == 0 && useStats.lowered == 0 do
+    throwError "unexpected theorem-reference primitive-demand stats: {repr useStats}"
+  let useSig ← signatureFor useParentConst usePrimitiveFilter
+  let parentConstRule := lfJudgmentTheoremKernelRuleName `parent_const
+  unless hasRule useSig parentConstRule do
+    throwError "demanded applied-theorem schema was not lowered"
+  if hasRule useSig `parent_good || hasRule useSig `child_good_rule ||
+      hasRule useSig `unrelated_rule then
+    throwError "theorem-reference replay lowered an undemanded primitive rule"
+  let emptyPrimitiveFilter := StructuralPrimitiveRuleSchemaFilter.demandOnly {}
+  let missingSig ← signatureFor childGood emptyPrimitiveFilter
+  let some shallowDeriv := childGood.derivation?
+    | throwError "RS1 direct primitive theorem lost its checked derivation"
+  let some sourceSig ← Lean.Elab.Command.liftCoreM <| getTheory? `RS1PrimitiveDemandChild
+    | throwError "missing RS1 primitive-demand source theory"
+  let flatSig ← Lean.Elab.Command.liftCoreM <| flattenSignature sourceSig
+  let lfKernelDefValues :=
+    lfDefinitionValueMapFromCheckedDefs checked.lfSyntaxDefs checked.lfObjectDefs
+  let rejected ←
+    try
+      let _ ← Lean.Elab.Command.liftCoreM <|
+        lowerLFDerivationToStructuralKernelWithMode flatSig (lfGlobalHeadInfo flatSig)
+          lfKernelDefValues (theoremBinderFreeLocals childGood) childGood.name false
+          missingSig shallowDeriv
+      pure false
+    catch _ =>
+      pure true
+  unless rejected do
+    throwError "missing demanded primitive rule was accepted by structural lowering"
+
+
 declare_type_theory AR2CanonicalStatementSmoke where
   syntax_sort Obj
   lf_opaque base : Obj

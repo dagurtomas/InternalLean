@@ -909,6 +909,8 @@ structure IntraBlockKernelReplayContext where
   lfJudgmentTheorems : Array CheckedLFJudgmentTheorem := #[]
   /-- Demand filter for theorem-rule schemas in structural replay signatures. -/
   structuralTheoremSchemaFilter : StructuralTheoremSchemaFilter := {}
+  /-- Demand filter for primitive-rule schemas in structural replay signatures. -/
+  structuralPrimitiveRuleSchemaFilter : StructuralPrimitiveRuleSchemaFilter := {}
   /-- Global LF heads used by structural replay fallback assumptions. -/
   lfKernelGlobalHeads : NameMap (CheckedLFHeadKind × Option Nat)
   /-- LF definition values used by structural replay fallback assumptions. -/
@@ -932,10 +934,13 @@ structure IntraBlockKernelReplayContext where
 
 /-- Build a structural replay signature from a block replay context's checked artifacts. -/
 def intraBlockKernelReplayStructuralSignature (ctx : IntraBlockKernelReplayContext)
-    (normalizeRules? : Bool := false) : Except String Kernel.Signature :=
+    (normalizeRules? : Bool := false)
+    (theoremFilter : StructuralTheoremSchemaFilter := ctx.structuralTheoremSchemaFilter)
+    (primitiveRuleFilter : StructuralPrimitiveRuleSchemaFilter :=
+      ctx.structuralPrimitiveRuleSchemaFilter) : Except String Kernel.Signature :=
   checkedSignatureToKSignature ctx.theoryName ctx.lfSyntaxDefs ctx.lfOpaqueConsts
     ctx.lfContextZones ctx.lfBinderClasses ctx.lfConversionPlugins ctx.lfRuleSchemas
-    ctx.lfObjectDefs ctx.lfJudgmentTheorems normalizeRules? ctx.structuralTheoremSchemaFilter
+    ctx.lfObjectDefs ctx.lfJudgmentTheorems normalizeRules? theoremFilter primitiveRuleFilter
 
 /-- Build cached replay state for a checked baseline plus one checked block delta. -/
 def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignature)
@@ -952,10 +957,11 @@ def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignat
   let lfJudgmentTheorems := checked.lfJudgmentTheorems ++ theoremCandidates
   let lfCheckedDefValues := checkedLFDefinitionValues lfSyntaxDefs lfObjectDefs
   let theoremFilter := structuralTheoremSchemaFilterForTheorems theoremCandidates
+  let primitiveRuleFilter := structuralPrimitiveRuleSchemaFilterForTheorems theoremCandidates
   let structuralKernelSig :=
     checkedSignatureToKSignature sig.name lfSyntaxDefs lfOpaqueConsts lfContextZones
       lfBinderClasses lfConversionPlugins lfRuleSchemas lfObjectDefs lfJudgmentTheorems false
-      theoremFilter
+      theoremFilter primitiveRuleFilter
   let structuralKernelValidatedSig := do
     let signature ← structuralKernelSig
     Kernel.ValidatedSignature.ofSignature signature
@@ -973,6 +979,7 @@ def mkIntraBlockKernelReplayContext (sig : HLSignature) (checked : CheckedSignat
     lfObjectDefs := lfObjectDefs
     lfJudgmentTheorems := lfJudgmentTheorems
     structuralTheoremSchemaFilter := theoremFilter
+    structuralPrimitiveRuleSchemaFilter := primitiveRuleFilter
     lfKernelGlobalHeads := lfGlobalHeadInfo sig
     lfKernelDefValues := lfDefinitionValueMapFromCheckedDefs lfSyntaxDefs lfObjectDefs
     checkedLFDefValues := lfCheckedDefValues
@@ -1011,13 +1018,20 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
     CoreM (CheckedLFJudgmentTheorem × IntraBlockKernelReplayContext) := do
   let some shallowDeriv := t.derivation?
     | pure (t, ctx)
+  let theoremFilter := structuralTheoremSchemaFilterForTheorem t
+  let primitiveRuleFilter := structuralPrimitiveRuleSchemaFilterForTheorem t
   emitStructuralPrimitiveRuleDemandStart "block_compact_signature" sig.name t.name
-    ctx.lfRuleSchemas t
+    ctx.lfRuleSchemas primitiveRuleFilter
+  let structuralSigResult := intraBlockKernelReplayStructuralSignature ctx false theoremFilter
+    primitiveRuleFilter
   let structuralSig ← liftStructuralKernelExcept
-    s!"judgment_theorem '{t.name}' block compact signature" ctx.structuralKernelSig
+    s!"judgment_theorem '{t.name}' block compact signature" structuralSigResult
+  let validatedStructuralSigResult := do
+    let signature ← structuralSigResult
+    Kernel.ValidatedSignature.ofSignature signature
   let validatedStructuralSig ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' block compact validated signature"
-      ctx.structuralKernelValidatedSig
+      validatedStructuralSigResult
   let validatedReplayCtx ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' block compact replay context"
       ctx.structuralValidatedReplayCtx
@@ -1042,9 +1056,17 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
     catch _ =>
       emitStructuralReplayFallbackStart sig.name ctx.checkedLFDefValues t structuralStmt
       emitStructuralPrimitiveRuleDemandStart "block_expanded_signature" sig.name t.name
-        ctx.lfRuleSchemas t
-      let (structuralSigExpanded, validatedStructuralSigExpanded, ctx) ←
-        getIntraBlockExpandedValidatedSignature ctx
+        ctx.lfRuleSchemas primitiveRuleFilter
+      let structuralSigExpandedResult := intraBlockKernelReplayStructuralSignature ctx true
+        theoremFilter primitiveRuleFilter
+      let structuralSigExpanded ← liftStructuralKernelExcept
+        s!"judgment_theorem '{t.name}' block expanded signature" structuralSigExpandedResult
+      let validatedStructuralSigExpandedResult := do
+        let signature ← structuralSigExpandedResult
+        Kernel.ValidatedSignature.ofSignature signature
+      let validatedStructuralSigExpanded ← liftStructuralKernelExcept
+        s!"judgment_theorem '{t.name}' block expanded validated signature"
+          validatedStructuralSigExpandedResult
       let structuralExpandedAssumptions ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' block expanded local assumptions" <|
           kernelLFLocalAssumptionEntriesOfTheoremToK true ctx.checkedLFDefValues t

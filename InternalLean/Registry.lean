@@ -1076,7 +1076,7 @@ structure InternalRegistrationProfile where
   primitiveRuleSchemasConsidered : Nat := 0
   /-- Primitive rule schemas named by this event's replay derivation. -/
   primitiveRuleSchemasDemanded : Nat := 0
-  /-- Primitive rule schemas lowered by the current compatibility replay signature. -/
+  /-- Primitive rule schemas lowered by the active replay signature filter. -/
   primitiveRuleSchemasLowered : Nat := 0
   /-- Demanded primitive rule names, in checked-signature order. -/
   primitiveRuleSchemaDemandedNames : Array Name := #[]

@@ -2274,7 +2274,7 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
   let schemaStats := structuralTheoremSchemaFilterStats cache.lfJudgmentTheorems
     (structuralTheoremSchemaFilterForTheorem checkedTheorem)
   let primitiveStats := structuralPrimitiveRuleDemandStats cache.checkedRuleSchemas
-    (primitiveRuleAppsInCheckedLFTheorem checkedTheorem)
+    (structuralPrimitiveRuleSchemaFilterForTheorem checkedTheorem)
   recordInternalRegistrationProfile {
     theoryName := theoryName
     declName := t.name.eraseMacroScopes
