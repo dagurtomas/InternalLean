@@ -264,13 +264,87 @@ def checkedLFSideConditionCertificateToK (metas : NameMap RawMetaSort)
       | .levelNormalizer => .levelNormalizer
     payload := cert.diagnostic }
 
+/-- Collect checked LF-definition names mentioned in a checked expression. -/
+partial def collectCheckedLFDefinitionMentions (defs : CheckedLFDefinitionValueMap)
+    (locals : NameSet) (acc : Array Name) : CheckedLFExpr → Array Name
+  | .ident h =>
+      let n := h.name.eraseMacroScopes
+      if h.kind == .local || locals.contains n then acc else if (defs.find? n).isSome then
+        pushUniqueDiagnosticName acc n else acc
+  | .sort | .univ _ => acc
+  | .app f a =>
+      collectCheckedLFDefinitionMentions defs locals
+        (collectCheckedLFDefinitionMentions defs locals acc f) a
+  | .arrow x A B | .sigma x A B =>
+      let acc := collectCheckedLFDefinitionMentions defs locals acc A
+      let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
+      collectCheckedLFDefinitionMentions defs locals acc B
+  | .pair a b =>
+      collectCheckedLFDefinitionMentions defs locals
+        (collectCheckedLFDefinitionMentions defs locals acc a) b
+  | .fst e | .snd e => collectCheckedLFDefinitionMentions defs locals acc e
+  | .lam xs body =>
+      let locals := xs.foldl (fun locals x => locals.insert x.eraseMacroScopes) locals
+      collectCheckedLFDefinitionMentions defs locals acc body
+  | .jeq lhs rhs =>
+      collectCheckedLFDefinitionMentions defs locals
+        (collectCheckedLFDefinitionMentions defs locals acc lhs) rhs
+
+/-- Worklist implementation for dependency-restricted checked LF-definition environments. -/
+partial def restrictCheckedLFDefinitionValuesForWorklist
+    (allDefs : CheckedLFDefinitionValueMap) (locals seen : NameSet)
+    (out : CheckedLFDefinitionValueMap) (stats : LFDefinitionDependencyStats) :
+    List Name → CheckedLFDefinitionValueMap × LFDefinitionDependencyStats
+  | [] => (out, stats)
+  | n :: rest =>
+      let n := n.eraseMacroScopes
+      if seen.contains n then
+        restrictCheckedLFDefinitionValuesForWorklist allDefs locals seen out stats rest
+      else
+        let seen := seen.insert n
+        if locals.contains n then
+          restrictCheckedLFDefinitionValuesForWorklist allDefs locals seen out
+            { stats with blockedByLocal := stats.blockedByLocal + 1 } rest
+        else
+          match allDefs.find? n with
+          | none =>
+              restrictCheckedLFDefinitionValuesForWorklist allDefs locals seen out
+                { stats with missingIdentifiers := stats.missingIdentifiers + 1 } rest
+          | some value =>
+              let deps := collectCheckedLFDefinitionMentions allDefs locals #[] value
+              restrictCheckedLFDefinitionValuesForWorklist allDefs locals seen
+                (out.insert n value)
+                { stats with reachableDefinitions := stats.reachableDefinitions + 1 }
+                (deps.toList ++ rest)
+
+/-- Restrict checked LF definitions to the closure reachable from checked root expressions. -/
+def restrictCheckedLFDefinitionValuesForExprs (defs : CheckedLFDefinitionValueMap)
+    (locals : NameSet) (roots : Array CheckedLFExpr) :
+    CheckedLFDefinitionValueMap × LFDefinitionDependencyStats :=
+  let rootNames := roots.foldl
+    (fun acc root => collectCheckedLFDefinitionMentions defs locals acc root) #[]
+  restrictCheckedLFDefinitionValuesForWorklist defs locals {} {} {
+    rootCount := rootNames.size
+    fullDefinitionCount := defs.size } rootNames.toList
+
+/-- Checked LF-definition values reachable from one checked theorem conclusion. -/
+def checkedLFDefinitionValuesOfMapForCheckedExpr (allDefs : CheckedLFDefinitionValueMap)
+    (locals : NameSet) (e : CheckedLFExpr) : CheckedLFDefinitionValueMap :=
+  (restrictCheckedLFDefinitionValuesForExprs allDefs locals #[e]).1
+
+/-- Unfold a checked LF expression using only its reachable checked definitions. -/
+def unfoldReachableLFDefinitionsInCheckedExpr (defs : CheckedLFDefinitionValueMap)
+    (locals : NameSet) (e : CheckedLFExpr) : CheckedLFExpr :=
+  let (defs, _) := restrictCheckedLFDefinitionValuesForExprs defs locals #[e]
+  unfoldLFDefinitionsInCheckedExpr defs locals e
+
 /-- Lower a checked LF rule schema to the structural replay shape. -/
 def checkedLFRuleSchemaToK (normalize? : Bool) (defValues : CheckedLFDefinitionValueMap)
     (r : CheckedLFRuleSchema) : Except String Kernel.RuleSchema := do
   let baseMetas := checkedLFRuleSchemaMetaMap r
   let locals := r.metavariables.foldl (init := {}) fun locals v =>
     locals.insert v.name.eraseMacroScopes
-  let norm := if normalize? then unfoldLFDefinitionsInCheckedExpr defValues locals else id
+  let norm := if normalize? then unfoldReachableLFDefinitionsInCheckedExpr defValues locals else id
   let sideConditions ← r.sideConditionSlots.toList.mapM (fun sc =>
     checkedLFSideConditionToK baseMetas { sc with checkedInput := norm sc.checkedInput })
   let certificateSlots ← r.sideConditionSlots.toList.mapM (fun sc => do
@@ -629,55 +703,6 @@ partial def kernelKTermNodeCount : Kernel.KTerm → Nat
 def kernelJudgmentNodeCount (j : Kernel.Judgment) : Nat :=
   1 + j.args.foldl (fun total arg => total + kernelKTermNodeCount arg) 0
 
-/-- Collect checked LF-definition names mentioned in a checked expression. -/
-partial def collectCheckedLFDefinitionMentions (defs : CheckedLFDefinitionValueMap)
-    (locals : NameSet) (acc : Array Name) : CheckedLFExpr → Array Name
-  | .ident h =>
-      let n := h.name.eraseMacroScopes
-      if h.kind == .local || locals.contains n then acc else if (defs.find? n).isSome then
-        pushUniqueDiagnosticName acc n else acc
-  | .sort | .univ _ => acc
-  | .app f a =>
-      collectCheckedLFDefinitionMentions defs locals
-        (collectCheckedLFDefinitionMentions defs locals acc f) a
-  | .arrow x A B | .sigma x A B =>
-      let acc := collectCheckedLFDefinitionMentions defs locals acc A
-      let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
-      collectCheckedLFDefinitionMentions defs locals acc B
-  | .pair a b =>
-      collectCheckedLFDefinitionMentions defs locals
-        (collectCheckedLFDefinitionMentions defs locals acc a) b
-  | .fst e | .snd e => collectCheckedLFDefinitionMentions defs locals acc e
-  | .lam xs body =>
-      let locals := xs.foldl (fun locals x => locals.insert x.eraseMacroScopes) locals
-      collectCheckedLFDefinitionMentions defs locals acc body
-  | .jeq lhs rhs =>
-      collectCheckedLFDefinitionMentions defs locals
-        (collectCheckedLFDefinitionMentions defs locals acc lhs) rhs
-
-/-- Values from `allDefs` reachable while unfolding checked LF expressions. -/
-partial def checkedLFDefinitionValuesFromMapForWorklist (allDefs : CheckedLFDefinitionValueMap)
-    (seen : NameSet) (out : CheckedLFDefinitionValueMap) : List Name → CheckedLFDefinitionValueMap
-  | [] => out
-  | n :: rest =>
-      let n := n.eraseMacroScopes
-      if seen.contains n then
-        checkedLFDefinitionValuesFromMapForWorklist allDefs seen out rest
-      else
-        let seen := seen.insert n
-        match allDefs.find? n with
-        | none => checkedLFDefinitionValuesFromMapForWorklist allDefs seen out rest
-        | some value =>
-            let deps := collectCheckedLFDefinitionMentions allDefs {} #[] value
-            checkedLFDefinitionValuesFromMapForWorklist allDefs seen (out.insert n value)
-              (deps.toList ++ rest)
-
-/-- Checked LF-definition values reachable from one checked theorem conclusion. -/
-def checkedLFDefinitionValuesOfMapForCheckedExpr (allDefs : CheckedLFDefinitionValueMap)
-    (locals : NameSet) (e : CheckedLFExpr) : CheckedLFDefinitionValueMap :=
-  checkedLFDefinitionValuesFromMapForWorklist allDefs {} {}
-    (collectCheckedLFDefinitionMentions allDefs locals #[] e).toList
-
 /-- Count checked LF definitions expanded by bounded canonicalization. -/
 partial def countCheckedLFDefinitionUnfoldsCore (defs : CheckedLFDefinitionValueMap)
     (locals : NameSet) (fuel : Nat) (counts : NameMap Nat) : CheckedLFExpr → NameMap Nat
@@ -790,7 +815,7 @@ def kernelLFLocalAssumptionEntriesOfTheoremToK (normalize? : Bool)
     Except String (List Kernel.KernelLFTheoremEntry) := do
   let freeLocals := theoremBinderFreeLocals t
   let locals := freeLocals
-  let norm := if normalize? then unfoldLFDefinitionsInCheckedExpr defValues locals else id
+  let norm := if normalize? then unfoldReachableLFDefinitionsInCheckedExpr defValues locals else id
   let mut out := []
   for b in t.binders do
     match b.head? with
@@ -911,7 +936,7 @@ def kernelLFRuleSchemaOfTheoremToK (normalize? : Bool)
       | none => metas := metas.insert b.name.eraseMacroScopes .arg
     return metas
   let locals := t.binders.foldl (init := {}) fun locals b => locals.insert b.name.eraseMacroScopes
-  let norm := if normalize? then unfoldLFDefinitionsInCheckedExpr defValues locals else id
+  let norm := if normalize? then unfoldReachableLFDefinitionsInCheckedExpr defValues locals else id
   let mut metavariables := []
   for b in t.binders do
     match b.head? with
@@ -1074,7 +1099,7 @@ mutual
     let mut entries : List Kernel.ScopedInstantiationEntry := []
     for v in r.metavariables, arg in ruleArgs do
       let kernelArgExpr :=
-        if unfoldDefs then unfoldLFDefinitionsInExprWithLocals defValues localNames arg
+        if unfoldDefs then unfoldReachableLFDefinitionsInExprWithLocals defValues localNames arg
         else eraseObjExprScopes arg
       let value ← lfObjExprToKTerm sig globalHeads "kernel-facing structural derivation"
         theoremName s!"argument for '{v.name}'" kernelArgExpr localNames
@@ -1084,7 +1109,7 @@ mutual
       entries := entries ++ [entry]
     let inst : Kernel.ScopedInstantiation := { entries := entries }
     let stmtExpr :=
-      if unfoldDefs then unfoldLFDefinitionsInExprWithLocals defValues localNames stmt
+      if unfoldDefs then unfoldReachableLFDefinitionsInExprWithLocals defValues localNames stmt
       else eraseObjExprScopes stmt
     let kernelStmt ← lfJudgmentObjExprToKJudgment sig globalHeads "rule application"
       theoremName stmtExpr localNames
@@ -1104,7 +1129,7 @@ mutual
       CheckedLFDerivation → CoreM Kernel.KernelLFDerivation
     | .localAssumption name stmt => do
         let stmtExpr :=
-          if unfoldDefs then unfoldLFDefinitionsInExprWithLocals defValues localNames stmt
+          if unfoldDefs then unfoldReachableLFDefinitionsInExprWithLocals defValues localNames stmt
           else eraseObjExprScopes stmt
         let kernelStmt ← lfJudgmentObjExprToKJudgment sig globalHeads "local theorem assumption"
           theoremName stmtExpr localNames
@@ -1112,8 +1137,10 @@ mutual
     | .theoremRef name stmt args premises => do
         if args.isEmpty && premises.isEmpty then
           let stmtExpr :=
-            if unfoldDefs then unfoldLFDefinitionsInExprWithLocals defValues localNames stmt
-            else eraseObjExprScopes stmt
+            if unfoldDefs then
+              unfoldReachableLFDefinitionsInExprWithLocals defValues localNames stmt
+            else
+              eraseObjExprScopes stmt
           let kernelStmt ← lfJudgmentObjExprToKJudgment sig globalHeads "theorem reference"
             theoremName stmtExpr localNames
           pure (.theoremRef (Kernel.KName.ofName name) kernelStmt)

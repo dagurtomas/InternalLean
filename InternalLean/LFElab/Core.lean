@@ -1654,31 +1654,69 @@ def lfDefinitionValuesOfSignature (sig : HLSignature) : LFDefinitionValueMap := 
     out := out.insert d.name.eraseMacroScopes (eraseObjExprScopes d.value)
   return out
 
-/-- LF-definition values from `allDefs` reachable while unfolding a particular expression. -/
-partial def lfDefinitionValuesFromMapForWorklist (allDefs : LFDefinitionValueMap)
-    (seen : NameSet) (out : LFDefinitionValueMap) : List Name → LFDefinitionValueMap
-  | [] => out
+/-- Bounded statistics for dependency-restricted LF-definition environments. -/
+structure LFDefinitionDependencyStats where
+  /-- Number of distinct root identifiers found in the comparison/lowering input(s). -/
+  rootCount : Nat := 0
+  /-- Number of checked definitions retained after transitive dependency closure. -/
+  reachableDefinitions : Nat := 0
+  /-- Number of root/dependency names that were not checked definitions. -/
+  missingIdentifiers : Nat := 0
+  /-- Number of names skipped because they are shadowed by local binders. -/
+  blockedByLocal : Nat := 0
+  /-- Size of the unrestricted definition environment. -/
+  fullDefinitionCount : Nat := 0
+  deriving Inhabited, Repr, BEq
+
+/-- Worklist implementation for dependency-restricted LF-definition environments. -/
+partial def restrictLFDefinitionValuesForWorklist (allDefs : LFDefinitionValueMap)
+    (locals seen : NameSet) (out : LFDefinitionValueMap) (stats : LFDefinitionDependencyStats) :
+    List Name → LFDefinitionValueMap × LFDefinitionDependencyStats
+  | [] => (out, stats)
   | n :: rest =>
       let n := n.eraseMacroScopes
       if seen.contains n then
-        lfDefinitionValuesFromMapForWorklist allDefs seen out rest
+        restrictLFDefinitionValuesForWorklist allDefs locals seen out stats rest
       else
         let seen := seen.insert n
-        match allDefs.find? n with
-        | none => lfDefinitionValuesFromMapForWorklist allDefs seen out rest
-        | some value =>
-            let deps := freeLFObjectIdentifierArray value
-            lfDefinitionValuesFromMapForWorklist allDefs seen (out.insert n value)
-              (deps.toList ++ rest)
+        if locals.contains n then
+          restrictLFDefinitionValuesForWorklist allDefs locals seen out
+            { stats with blockedByLocal := stats.blockedByLocal + 1 } rest
+        else
+          match allDefs.find? n with
+          | none =>
+              restrictLFDefinitionValuesForWorklist allDefs locals seen out
+                { stats with missingIdentifiers := stats.missingIdentifiers + 1 } rest
+          | some value =>
+              let (_, deps) := freeLFObjectIdentifierArrayWithLocals locals {} #[] value
+              restrictLFDefinitionValuesForWorklist allDefs locals seen (out.insert n value)
+                { stats with reachableDefinitions := stats.reachableDefinitions + 1 }
+                (deps.toList ++ rest)
+
+/-- Restrict LF-definition values to the transitive closure reachable from root expressions. -/
+def restrictLFDefinitionValuesForExprs (defs : LFDefinitionValueMap) (locals : NameSet)
+    (roots : Array ObjExpr) : LFDefinitionValueMap × LFDefinitionDependencyStats :=
+  let (_, rootNames) := roots.foldl
+    (init := (({} : NameSet), #[]))
+    (fun (seen, acc) root => freeLFObjectIdentifierArrayWithLocals locals seen acc root)
+  restrictLFDefinitionValuesForWorklist defs locals {} {} {
+    rootCount := rootNames.size
+    fullDefinitionCount := defs.size } rootNames.toList
 
 /-- LF-definition values from `allDefs` reachable while unfolding a particular expression. -/
 def lfDefinitionValuesOfMapForExpr (allDefs : LFDefinitionValueMap) (e : ObjExpr) :
     LFDefinitionValueMap :=
-  lfDefinitionValuesFromMapForWorklist allDefs {} {} (freeLFObjectIdentifierArray e).toList
+  (restrictLFDefinitionValuesForExprs allDefs {} #[e]).1
 
 /-- LF-definition values that may be reached while unfolding a particular expression. -/
 def lfDefinitionValuesOfSignatureForExpr (sig : HLSignature) (e : ObjExpr) : LFDefinitionValueMap :=
   lfDefinitionValuesOfMapForExpr (lfDefinitionValuesOfSignature sig) e
+
+/-- Unfold only checked LF definitions reachable from an expression under local binders. -/
+def unfoldReachableLFDefinitionsInExprWithLocals (defs : LFDefinitionValueMap)
+    (locals : NameSet) (e : ObjExpr) : ObjExpr :=
+  let (defs, _) := restrictLFDefinitionValuesForExprs defs locals #[e]
+  unfoldLFDefinitionsInExprWithLocals defs locals e
 
 /-- Return the name of an LF eta argument, when it is a variable occurrence. -/
 def lfEtaArgumentName? : ObjExpr → Option Name
@@ -2171,11 +2209,12 @@ def normalizeLFTypeComparisonPairInLookupDetailed (lookup : LFCheckLookupContext
     { actual := actualCheap, expected := expectedCheap, compactSucceeded := true }
   else
     let defs := lfDefinitionValuesWithSyntaxDefs lookup
+    let (defs, _) := restrictLFDefinitionValuesForExprs defs {} #[actual, expected]
     if defs.isEmpty then
       { actual := actualCheap, expected := expectedCheap, compactSucceeded := false }
     else
-      { actual := normalizeLFExprForTypeComparisonWithDefs defs actual
-        expected := normalizeLFExprForTypeComparisonWithDefs defs expected
+      { actual := normalizeLFExprForConversionWithLocals defs {} actual
+        expected := normalizeLFExprForConversionWithLocals defs {} expected
         compactSucceeded := false }
 
 /-- Normalize a pair for diagnostics, unfolding checked LF and syntax definitions only if the
@@ -2868,8 +2907,17 @@ def lfDefinitionComparisonAccepted (defs : LFDefinitionValueMap) (locals : NameS
     if lfExprAlphaEq actualCheap expectedCheap then
       true
     else
-      lfExprAlphaEq (normalizeLFExprForConversionWithLocals defs locals actual)
-        (normalizeLFExprForConversionWithLocals defs locals expected)
+      let (restrictedDefs, _) := restrictLFDefinitionValuesForExprs defs locals #[actual, expected]
+      let restrictedAccepted :=
+        lfExprAlphaEq (normalizeLFExprForConversionWithLocals restrictedDefs locals actual)
+          (normalizeLFExprForConversionWithLocals restrictedDefs locals expected)
+      if restrictedAccepted then
+        true
+      else if restrictedDefs.size == defs.size then
+        false
+      else
+        lfExprAlphaEq (normalizeLFExprForConversionWithLocals defs locals actual)
+          (normalizeLFExprForConversionWithLocals defs locals expected)
 
 /-- Acceptedness for source-level LF-definition comparison, optionally using delta conversion. -/
 def lfDefinitionComparisonAcceptedWithOptions (defs : LFDefinitionValueMap) (locals : NameSet)
@@ -2883,12 +2931,29 @@ def lfDefinitionComparisonAcceptedWithOptions (defs : LFDefinitionValueMap) (loc
     let expectedCheap := normalizeLFExprForConversionWithLocals {} locals expected
     if lfExprAlphaEq actualCheap expectedCheap then
       true
-    else if options.enabled then
-      let env : LFDeltaConversionEnv := { defs, locals, options }
-      (LFDeltaConversion.convertObjExprWithFallback env actual expected).accepted
     else
-      lfExprAlphaEq (normalizeLFExprForConversionWithLocals defs locals actual)
-        (normalizeLFExprForConversionWithLocals defs locals expected)
+      let (restrictedDefs, _) := restrictLFDefinitionValuesForExprs defs locals #[actual, expected]
+      if options.enabled then
+        let env : LFDeltaConversionEnv := { defs := restrictedDefs, locals, options }
+        let result := LFDeltaConversion.convertObjExprWithFallback env actual expected
+        if result.accepted then
+          true
+        else if options.compareWithFullFallback && restrictedDefs.size != defs.size then
+          let env : LFDeltaConversionEnv := { defs, locals, options }
+          (LFDeltaConversion.convertObjExprWithFallback env actual expected).accepted
+        else
+          false
+      else
+        let restrictedAccepted :=
+          lfExprAlphaEq (normalizeLFExprForConversionWithLocals restrictedDefs locals actual)
+            (normalizeLFExprForConversionWithLocals restrictedDefs locals expected)
+        if restrictedAccepted then
+          true
+        else if restrictedDefs.size == defs.size then
+          false
+        else
+          lfExprAlphaEq (normalizeLFExprForConversionWithLocals defs locals actual)
+            (normalizeLFExprForConversionWithLocals defs locals expected)
 
 /-- Build a diagnostic entry for the current cheap-then-full comparison policy. -/
 def lfDefinitionComparisonProfileEntry (site : String) (owner : LFConversionProfileOwner)
@@ -2903,13 +2968,25 @@ def lfDefinitionComparisonProfileEntry (site : String) (owner : LFConversionProf
   let fallbackRan := !compactSucceeded
   let (accepted, normActual?, normExpected?, counts) :=
     if fallbackRan then
-      let actualFull := normalizeLFExprForConversionWithLocals defs locals actual
-      let expectedFull := normalizeLFExprForConversionWithLocals defs locals expected
-      let counts :=
-        mergeLFConversionNameCounts (countLFDefinitionUnfolds defs locals actual)
-          (countLFDefinitionUnfolds defs locals expected)
-      (lfExprAlphaEq actualFull expectedFull, some (objExprNodeCount actualFull),
-        some (objExprNodeCount expectedFull), counts)
+      let (restrictedDefs, _) := restrictLFDefinitionValuesForExprs defs locals #[actual, expected]
+      let actualRestricted := normalizeLFExprForConversionWithLocals restrictedDefs locals actual
+      let expectedRestricted :=
+        normalizeLFExprForConversionWithLocals restrictedDefs locals expected
+      let restrictedAccepted := lfExprAlphaEq actualRestricted expectedRestricted
+      let restrictedCounts :=
+        mergeLFConversionNameCounts (countLFDefinitionUnfolds restrictedDefs locals actual)
+          (countLFDefinitionUnfolds restrictedDefs locals expected)
+      if restrictedAccepted || restrictedDefs.size == defs.size then
+        (restrictedAccepted, some (objExprNodeCount actualRestricted),
+          some (objExprNodeCount expectedRestricted), restrictedCounts)
+      else
+        let actualFull := normalizeLFExprForConversionWithLocals defs locals actual
+        let expectedFull := normalizeLFExprForConversionWithLocals defs locals expected
+        let counts :=
+          mergeLFConversionNameCounts (countLFDefinitionUnfolds defs locals actual)
+            (countLFDefinitionUnfolds defs locals expected)
+        (lfExprAlphaEq actualFull expectedFull, some (objExprNodeCount actualFull),
+          some (objExprNodeCount expectedFull), counts)
     else
       (true, none, none, {})
   {
@@ -2950,12 +3027,21 @@ def lfDefinitionComparisonProfileEntryWithOptions (site : String)
       unfoldedCounts := {}
       deltaEnabled := options.enabled }
   else if options.enabled then
-    let env : LFDeltaConversionEnv := { defs, locals, options }
-    let result := LFDeltaConversion.convertObjExprWithFallback env actual expected
+    let (restrictedDefs, _) := restrictLFDefinitionValuesForExprs defs locals #[actual, expected]
+    let env : LFDeltaConversionEnv := { defs := restrictedDefs, locals, options }
+    let restrictedResult := LFDeltaConversion.convertObjExprWithFallback env actual expected
+    let result :=
+      if restrictedResult.accepted || !options.compareWithFullFallback ||
+          restrictedDefs.size == defs.size then
+        restrictedResult
+      else
+        let env : LFDeltaConversionEnv := { defs, locals, options }
+        LFDeltaConversion.convertObjExprWithFallback env actual expected
     let counts :=
       if result.fallbackUsed then
-        mergeLFConversionNameCounts (countLFDefinitionUnfolds defs locals actual)
-          (countLFDefinitionUnfolds defs locals expected)
+        let countDefs := if restrictedResult.accepted then restrictedDefs else defs
+        mergeLFConversionNameCounts (countLFDefinitionUnfolds countDefs locals actual)
+          (countLFDefinitionUnfolds countDefs locals expected)
       else
         {}
     let entry := LFDeltaConversion.profileEntry site owner actual expected result
@@ -3019,6 +3105,7 @@ def normalizeLFTypeComparisonPairInLookupProfiled (site : String)
     let fallbackRan := !result.compactSucceeded
     let counts :=
       if fallbackRan then
+        let (defs, _) := restrictLFDefinitionValuesForExprs defs {} #[actual, expected]
         mergeLFConversionNameCounts (countLFDefinitionUnfolds defs {} actual)
           (countLFDefinitionUnfolds defs {} expected)
       else

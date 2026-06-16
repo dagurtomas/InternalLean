@@ -61,6 +61,24 @@ def deltaSmokeDefs : LFDefinitionValueMap :=
   !r.accepted && r.stats.deltaSteps == 0 &&
     r.stats.blockedByLocal.find? `Alias == some 1
 
+/-- Definition environment for AR3 dependency-restriction smoke tests. -/
+def ar3DependencyDefs : LFDefinitionValueMap :=
+  ((({} : LFDefinitionValueMap).insert `A (.ident `B)).insert `B (.ident `C)).insert `C
+    (.ident `payload)
+
+#guard
+  let (defs, stats) := restrictLFDefinitionValuesForExprs ar3DependencyDefs {} #[.ident `A]
+  defs.size == 3 && stats.rootCount == 1 && stats.reachableDefinitions == 3 &&
+    normalizeLFExprForConversionWithLocals defs {} (.ident `A) == .ident `payload
+
+#guard
+  let (defs, _stats) := restrictLFDefinitionValuesForExprs ar3DependencyDefs {}
+    #[.lam #[`A] (.ident `A)]
+  defs.isEmpty
+
+#guard
+  lfExprEqModuloDefinitionsWithLocals ar3DependencyDefs {} (.ident `A) (.ident `payload)
+
 /-- Definitions whose free identifiers stress comparison-binder freshness. -/
 def deltaCaptureDefs : LFDefinitionValueMap :=
   ({} : LFDefinitionValueMap).insert `D (.ident `x)
