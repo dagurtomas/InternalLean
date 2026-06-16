@@ -114,13 +114,7 @@ def appendJudgmentTheorem (cache : CompiledLFCheckCache) (t : CheckedLFJudgmentT
       cache.structuralKernelReplayBase.certificates }
   let structuralReplayCtx :=
     if t.binders.isEmpty then
-      let stmt? :=
-        match t.checkedStructuralReplay? with
-        | some artifact => some artifact.statement
-        | none =>
-            match t.checkedStructuralKernelDerivation? with
-            | some checkedReplay => some checkedReplay.statement
-            | none => checkedLFJudgmentTheoremStatementToK t |>.toOption
+      let stmt? := checkedLFJudgmentTheoremContextStatementToK t |>.toOption
       match stmt? with
       | some stmt => { structuralReplayCtx with
           theorems := {
@@ -1031,7 +1025,7 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
   let structuralLocalReplayCtx ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' block compact local replay context" <|
       validatedReplayCtx.withLocalFrame localParameters structuralAssumptions
-  let (_structuralDeriv, structuralStmt, checkedStructuralReplay, replayMode, ctx) ←
+  let (_structuralDeriv, _structuralStmt, checkedStructuralReplay, replayMode, ctx) ←
     try
       let checkedStructuralReplay ← checkStructuralKernelReplayWithValidated
         s!"judgment_theorem '{t.name}' block compact replay" structuralSig
@@ -1067,22 +1061,30 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
         structuralExpandedReplayCtx structuralStmtExpanded structuralDerivExpanded
       pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay,
         StructuralReplayMode.expanded, ctx)
+  let canonical ← liftStructuralKernelExcept
+    s!"judgment_theorem '{t.name}' block canonical structural statement" <|
+      canonicalStructuralStatementOfTheorem ctx.checkedLFDefValues t
+  logCanonicalStructuralStatementProfile sig.name ctx.checkedLFDefValues t canonical
   let t := { t with
     structuralKernelDerivation? := none
     checkedStructuralKernelDerivation? := none
     checkedStructuralReplay? := some <|
-      CheckedStructuralReplayArtifact.ofChecked replayMode checkedStructuralReplay }
+      CheckedStructuralReplayArtifact.ofChecked replayMode checkedStructuralReplay
+        (some canonical) }
   let certificateEntries := kernelLFCertificateEntriesOfTheoremsToK #[t]
   let validatedReplayCtx ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' block replay certificate append" <|
       validatedReplayCtx.addCertificateEntries certificateEntries
   let validatedReplayCtx ←
     if t.binders.isEmpty then
+      let statement ← liftStructuralKernelExcept
+        s!"judgment_theorem '{t.name}' block replay theorem statement" <|
+          checkedLFJudgmentTheoremContextStatementToK t
       liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' block replay theorem append" <|
           validatedReplayCtx.addTheoremEntry {
             name := Kernel.KName.ofName t.name
-            statement := structuralStmt }
+            statement := statement }
     else
       pure validatedReplayCtx
   pure (t, { ctx with

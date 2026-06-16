@@ -460,3 +460,76 @@ run_cmd do
   let demandFromTheorem := structuralTheoremSchemaFilterForTheorem useParent
   unless demandFromTheorem.demandedTheorems.contains parentTheorem.name.eraseMacroScopes do
     throwError "applied theorem reference did not demand parent_id schema"
+
+
+declare_type_theory AR2CanonicalStatementSmoke where
+  syntax_sort Obj
+  lf_opaque base : Obj
+  lf_def Alias : Obj := base
+  lf_def idObj : Obj ⇒ Obj := fun x => x
+  judgment Good (x : Obj)
+  rule good_base : Good base
+  judgment_theorem folded : Good Alias := good_base
+  judgment_theorem expanded : Good base := good_base
+  judgment_theorem folded_id (x : Obj) (h : Good (idObj x)) : Good (idObj x) := h
+  judgment_theorem local_shadow (Alias : Obj) (h : Good Alias) : Good Alias := h
+
+run_cmd do
+  let some checked ← Lean.Elab.Command.liftCoreM <|
+      getCheckedTheory? `AR2CanonicalStatementSmoke
+    | throwError "missing AR2 canonical statement checked theory"
+  let findTheorem (n : Name) : Lean.Elab.Command.CommandElabM CheckedLFJudgmentTheorem := do
+    let some thm := checked.lfJudgmentTheorems.find? (fun t => t.name == n)
+      | throwError "missing AR2 canonical statement theorem '{n}'"
+    pure thm
+  let folded ← findTheorem `folded
+  let expanded ← findTheorem `expanded
+  let foldedId ← findTheorem `folded_id
+  let localShadow ← findTheorem `local_shadow
+  let some foldedArtifact := folded.checkedStructuralReplay?
+    | throwError "folded theorem did not get a replay artifact"
+  let some expandedArtifact := expanded.checkedStructuralReplay?
+    | throwError "expanded theorem did not get a replay artifact"
+  let some foldedCanonical := foldedArtifact.canonicalStatement?
+    | throwError "folded theorem did not cache canonical statement metadata"
+  let some expandedCanonical := expandedArtifact.canonicalStatement?
+    | throwError "expanded theorem did not cache canonical statement metadata"
+  unless foldedCanonical.canonicalStatement.alphaEq expandedCanonical.canonicalStatement do
+    throwError "folded and expanded theorem statements canonicalized differently"
+  unless foldedCanonical.dependencies.contains `Alias do
+    throwError "folded theorem canonical metadata did not record Alias as a dependency"
+  unless !foldedCanonical.sourceStatement.alphaEq foldedCanonical.canonicalStatement do
+    throwError "folded theorem source/canonical statements unexpectedly agree before unfolding"
+  let replayCtx ← match kernelLFReplayContextOfTheoremsToK checked.lfJudgmentTheorems with
+    | .ok ctx => pure ctx
+    | .error err => throwError "AR2 replay context reconstruction failed: {err}"
+  let foldedEntry? := replayCtx.theorems.find? (fun e => e.name == Kernel.KName.ofName `folded)
+  let some foldedEntry := foldedEntry?
+    | throwError "folded theorem missing from replay context"
+  unless foldedEntry.statement.alphaEq foldedCanonical.canonicalStatement do
+    throwError "replay context did not use the cached canonical folded theorem statement"
+  match checkedKernelLFReplayForTheorem checked folded with
+  | .ok checkedReplay =>
+      unless checkedReplay.statement.alphaEq foldedArtifact.statement do
+        throwError "audit replay payload stopped using the validated replay statement"
+  | .error err => throwError "audit reconstruction for folded theorem failed: {err}"
+  let defValues := checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs
+  let schema ← match kernelLFRuleSchemaOfTheoremToK false defValues foldedId with
+    | .ok schema => pure schema
+    | .error err => throwError "folded_id theorem schema lowering failed: {err}"
+  if (structuralJudgmentGlobalHeadNames schema.conclusionStmt).contains `idObj then
+    throwError "theorem schema conclusion reintroduced idObj instead of cached canonical form"
+  let some localShadowCanonical := localShadow.checkedStructuralReplay?.bind
+      (·.canonicalStatement?)
+    | throwError "local-shadow theorem did not cache canonical statement metadata"
+  if localShadowCanonical.dependencies.contains `Alias then
+    throwError "local theorem binder activated a same-named global definition"
+  let corruptedCanonical := {
+    foldedCanonical with dependencies := foldedCanonical.dependencies.push `Bogus }
+  let corruptedArtifact := { foldedArtifact with canonicalStatement? := some corruptedCanonical }
+  let corrupted := { folded with checkedStructuralReplay? := some corruptedArtifact }
+  match kernelLFReplayCertificateForCheckedTheorem checked corrupted with
+  | .ok _ => throwError "audit accepted corrupted canonical dependency metadata"
+  | .error err =>
+      unless err.contains "dependency" do
+        throwError "expected canonical dependency audit diagnostic, got: {err}"

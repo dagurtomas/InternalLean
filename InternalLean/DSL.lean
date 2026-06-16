@@ -1129,29 +1129,57 @@ def label : StructuralReplayMode → String
 
 end StructuralReplayMode
 
+/-- Cached canonical structural statement metadata for a checked theorem.
+
+The canonical statement is a performance/audit artifact produced only after ordinary LF checking
+and structural replay validation have accepted the theorem. The source statement is preserved for
+reconstruction checks, while the checked canonical expression lets theorem-schema lowering reuse the
+same normalized theorem conclusion with structural metavariables. -/
+structure CheckedCanonicalStructuralStatement where
+  /-- Compact structural statement lowered from the theorem source conclusion. -/
+  sourceStatement : Kernel.Judgment
+  /-- Canonical structural statement under the documented checked-definition unfolding policy. -/
+  canonicalStatement : Kernel.Judgment
+  /-- Canonical checked theorem conclusion before structural lowering. -/
+  canonicalCheckedExpr : CheckedLFExpr
+  /-- Checked LF definitions forced by canonicalization.
+  The names are stored in deterministic source-independent form. -/
+  dependencies : Array Name := #[]
+  deriving Inhabited, Repr, BEq
+
 /-- Compact checked structural replay artifact.
 
 The artifact is created only after structural replay succeeds. It records the checked statement,
-replay derivation, replay mode, and the size of the source-order replay prefix without copying the
-full structural signature and prior theorem context into every theorem record. -/
+replay derivation, replay mode, optional canonical statement metadata, and the size of the
+source-order replay prefix without copying the full structural signature and prior theorem context
+into every theorem record. -/
 structure CheckedStructuralReplayArtifact where
   mode : StructuralReplayMode := .compact
   statement : Kernel.Judgment
   derivation : Kernel.KernelLFDerivation
   contextTheoremCount : Nat := 0
   contextCertificateCount : Nat := 0
+  canonicalStatement? : Option CheckedCanonicalStructuralStatement := none
   deriving Inhabited, Repr, BEq
 
 namespace CheckedStructuralReplayArtifact
 
+/-- Statement used when a later theorem sees this artifact as a replay-context theorem. -/
+def contextStatement (artifact : CheckedStructuralReplayArtifact) : Kernel.Judgment :=
+  match artifact.canonicalStatement? with
+  | some canonical => canonical.canonicalStatement
+  | none => artifact.statement
+
 /-- Build a compact artifact from a successfully checked structural replay wrapper. -/
-def ofChecked (mode : StructuralReplayMode) (checked : Kernel.CheckedKernelLFDerivation) :
+def ofChecked (mode : StructuralReplayMode) (checked : Kernel.CheckedKernelLFDerivation)
+    (canonicalStatement? : Option CheckedCanonicalStructuralStatement := none) :
     CheckedStructuralReplayArtifact :=
   { mode := mode
     statement := checked.statement
     derivation := checked.derivation
     contextTheoremCount := checked.context.theorems.length
-    contextCertificateCount := checked.context.certificates.length }
+    contextCertificateCount := checked.context.certificates.length
+    canonicalStatement? := canonicalStatement? }
 
 end CheckedStructuralReplayArtifact
 

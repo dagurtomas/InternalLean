@@ -291,7 +291,7 @@ def replayAuditStructuralDerivationString (derivation : Kernel.KernelLFDerivatio
 def structuralKernelLFReplayStatementOfTheorem? (t : CheckedLFJudgmentTheorem) :
     Option Kernel.Judgment :=
   match t.checkedStructuralReplay? with
-  | some artifact => some artifact.statement
+  | some artifact => some artifact.contextStatement
   | none =>
       match t.checkedStructuralKernelDerivation? with
       | some checkedReplay => some checkedReplay.statement
@@ -363,6 +363,10 @@ def kernelLFReplayCertificateContextForTheorem (checked : CheckedSignature)
 /-- Build a structural independently checkable replay certificate from a checked LF theorem. -/
 def kernelLFReplayCertificateForCheckedTheorem (checked : CheckedSignature)
     (t : CheckedLFJudgmentTheorem) : Except String Kernel.KernelLFReplayCertificate := do
+  if let some artifact := t.checkedStructuralReplay? then
+    if let some canonical := artifact.canonicalStatement? then
+      checkCanonicalStructuralStatementArtifact
+        (checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs) t canonical
   let some (statement, derivation) := structuralKernelLFReplayPayloadOfTheorem? t
     | throw s!"checked LF judgment theorem '{t.name}' has no structural replay derivation"
   let signature ← checkedSignatureToKSignature checked.name checked.lfSyntaxDefs

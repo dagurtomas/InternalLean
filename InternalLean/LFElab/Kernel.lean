@@ -618,6 +618,172 @@ def checkedLFJudgmentTheoremStatementToK (t : CheckedLFJudgmentTheorem) :
   checkedLFJudgmentExprToKJudgment t.checkedJudgmentExpr t.judgmentHead {}
     (theoremBinderFreeLocals t)
 
+/-- Number of nodes in a structural kernel term, used only for bounded profile output. -/
+partial def kernelKTermNodeCount : Kernel.KTerm → Nat
+  | .ident _ | .fvar _ | .bvar _ | .mvar .. | .univ _ => 1
+  | .app f a | .arrow f a | .sigma f a | .pair f a | .jeq f a =>
+      1 + kernelKTermNodeCount f + kernelKTermNodeCount a
+  | .lam body | .fst body | .snd body => 1 + kernelKTermNodeCount body
+
+/-- Number of nodes in a structural kernel judgment, used only for bounded profile output. -/
+def kernelJudgmentNodeCount (j : Kernel.Judgment) : Nat :=
+  1 + j.args.foldl (fun total arg => total + kernelKTermNodeCount arg) 0
+
+/-- Collect checked LF-definition names mentioned in a checked expression. -/
+partial def collectCheckedLFDefinitionMentions (defs : CheckedLFDefinitionValueMap)
+    (locals : NameSet) (acc : Array Name) : CheckedLFExpr → Array Name
+  | .ident h =>
+      let n := h.name.eraseMacroScopes
+      if h.kind == .local || locals.contains n then acc else if (defs.find? n).isSome then
+        pushUniqueDiagnosticName acc n else acc
+  | .sort | .univ _ => acc
+  | .app f a =>
+      collectCheckedLFDefinitionMentions defs locals
+        (collectCheckedLFDefinitionMentions defs locals acc f) a
+  | .arrow x A B | .sigma x A B =>
+      let acc := collectCheckedLFDefinitionMentions defs locals acc A
+      let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
+      collectCheckedLFDefinitionMentions defs locals acc B
+  | .pair a b =>
+      collectCheckedLFDefinitionMentions defs locals
+        (collectCheckedLFDefinitionMentions defs locals acc a) b
+  | .fst e | .snd e => collectCheckedLFDefinitionMentions defs locals acc e
+  | .lam xs body =>
+      let locals := xs.foldl (fun locals x => locals.insert x.eraseMacroScopes) locals
+      collectCheckedLFDefinitionMentions defs locals acc body
+  | .jeq lhs rhs =>
+      collectCheckedLFDefinitionMentions defs locals
+        (collectCheckedLFDefinitionMentions defs locals acc lhs) rhs
+
+/-- Values from `allDefs` reachable while unfolding checked LF expressions. -/
+partial def checkedLFDefinitionValuesFromMapForWorklist (allDefs : CheckedLFDefinitionValueMap)
+    (seen : NameSet) (out : CheckedLFDefinitionValueMap) : List Name → CheckedLFDefinitionValueMap
+  | [] => out
+  | n :: rest =>
+      let n := n.eraseMacroScopes
+      if seen.contains n then
+        checkedLFDefinitionValuesFromMapForWorklist allDefs seen out rest
+      else
+        let seen := seen.insert n
+        match allDefs.find? n with
+        | none => checkedLFDefinitionValuesFromMapForWorklist allDefs seen out rest
+        | some value =>
+            let deps := collectCheckedLFDefinitionMentions allDefs {} #[] value
+            checkedLFDefinitionValuesFromMapForWorklist allDefs seen (out.insert n value)
+              (deps.toList ++ rest)
+
+/-- Checked LF-definition values reachable from one checked theorem conclusion. -/
+def checkedLFDefinitionValuesOfMapForCheckedExpr (allDefs : CheckedLFDefinitionValueMap)
+    (locals : NameSet) (e : CheckedLFExpr) : CheckedLFDefinitionValueMap :=
+  checkedLFDefinitionValuesFromMapForWorklist allDefs {} {}
+    (collectCheckedLFDefinitionMentions allDefs locals #[] e).toList
+
+/-- Count checked LF definitions expanded by bounded canonicalization. -/
+partial def countCheckedLFDefinitionUnfoldsCore (defs : CheckedLFDefinitionValueMap)
+    (locals : NameSet) (fuel : Nat) (counts : NameMap Nat) : CheckedLFExpr → NameMap Nat
+  | .ident h =>
+      let n := h.name.eraseMacroScopes
+      if h.kind == .local || locals.contains n then
+        counts
+      else
+        match fuel, defs.find? n with
+        | 0, _ | _, none => counts
+        | fuel + 1, some value =>
+            countCheckedLFDefinitionUnfoldsCore defs locals fuel
+              (incrementLFConversionNameCount counts n) value
+  | .sort | .univ _ => counts
+  | .app f a =>
+      countCheckedLFDefinitionUnfoldsCore defs locals fuel
+        (countCheckedLFDefinitionUnfoldsCore defs locals fuel counts f) a
+  | .arrow x A B | .sigma x A B =>
+      let counts := countCheckedLFDefinitionUnfoldsCore defs locals fuel counts A
+      let locals := match x with | some x => locals.insert x.eraseMacroScopes | none => locals
+      countCheckedLFDefinitionUnfoldsCore defs locals fuel counts B
+  | .pair a b =>
+      countCheckedLFDefinitionUnfoldsCore defs locals fuel
+        (countCheckedLFDefinitionUnfoldsCore defs locals fuel counts a) b
+  | .fst e | .snd e => countCheckedLFDefinitionUnfoldsCore defs locals fuel counts e
+  | .lam xs body =>
+      let locals := xs.foldl (fun locals x => locals.insert x.eraseMacroScopes) locals
+      countCheckedLFDefinitionUnfoldsCore defs locals fuel counts body
+  | .jeq lhs rhs =>
+      countCheckedLFDefinitionUnfoldsCore defs locals fuel
+        (countCheckedLFDefinitionUnfoldsCore defs locals fuel counts lhs) rhs
+
+/-- Count checked LF definitions expanded by the canonical statement unfolding policy. -/
+def countCheckedLFDefinitionUnfolds (defs : CheckedLFDefinitionValueMap) (locals : NameSet)
+    (e : CheckedLFExpr) : NameMap Nat :=
+  countCheckedLFDefinitionUnfoldsCore defs locals (defs.size * 4 + 32) {} e
+
+/-- Canonical checked-theorem statement metadata computed from checked artifacts. -/
+def canonicalStructuralStatementOfTheorem (defValues : CheckedLFDefinitionValueMap)
+    (t : CheckedLFJudgmentTheorem) : Except String CheckedCanonicalStructuralStatement := do
+  let locals := theoremBinderFreeLocals t
+  let sourceStatement ← checkedLFJudgmentTheoremStatementToK t
+  let restrictedDefs := checkedLFDefinitionValuesOfMapForCheckedExpr defValues locals
+    t.checkedJudgmentExpr
+  let canonicalCheckedExpr := unfoldLFDefinitionsInCheckedExpr restrictedDefs locals
+    t.checkedJudgmentExpr
+  let canonicalStatement ← checkedLFJudgmentExprToKJudgment canonicalCheckedExpr t.judgmentHead {}
+    locals
+  pure {
+    sourceStatement := sourceStatement
+    canonicalStatement := canonicalStatement
+    canonicalCheckedExpr := canonicalCheckedExpr
+    dependencies := restrictedDefs.toList.map (fun entry => entry.1.eraseMacroScopes) |>.toArray }
+
+/-- Log bounded canonicalization metadata under the existing conversion profile options. -/
+def logCanonicalStructuralStatementProfile (theoryName : Name)
+    (defValues : CheckedLFDefinitionValueMap) (t : CheckedLFJudgmentTheorem)
+    (canonical : CheckedCanonicalStructuralStatement) : CoreM Unit := do
+  let locals := theoremBinderFreeLocals t
+  let restrictedDefs := checkedLFDefinitionValuesOfMapForCheckedExpr defValues locals
+    t.checkedJudgmentExpr
+  logLFConversionProfileEntry {
+    site := "theorem_statement_canonicalization"
+    owner := {
+      theoryName := some theoryName
+      ownerKind := some "judgment_theorem"
+      ownerName := some t.name }
+    actualHead? := some t.judgmentHead.name
+    expectedHead? := some t.judgmentHead.name
+    actualSize := objExprNodeCount t.judgmentExpr
+    expectedSize := kernelJudgmentNodeCount canonical.sourceStatement
+    normalizedActualSize? := some (kernelJudgmentNodeCount canonical.canonicalStatement)
+    normalizedExpectedSize? := some (kernelJudgmentNodeCount canonical.canonicalStatement)
+    compactSucceeded := canonical.sourceStatement.alphaEq canonical.canonicalStatement
+    fullUnfoldFallback := false
+    accepted := true
+    unfoldedCounts := countCheckedLFDefinitionUnfolds restrictedDefs locals t.checkedJudgmentExpr }
+
+/-- Audit cached canonical statement metadata against the current checked artifacts. -/
+def checkCanonicalStructuralStatementArtifact (defValues : CheckedLFDefinitionValueMap)
+    (t : CheckedLFJudgmentTheorem) (cached : CheckedCanonicalStructuralStatement) :
+    Except String Unit := do
+  let expected ← canonicalStructuralStatementOfTheorem defValues t
+  unless cached.sourceStatement.alphaEq expected.sourceStatement do
+    throw s!"checked LF judgment theorem '{t.name}' canonical metadata has a stale source \
+      structural statement"
+  unless cached.canonicalStatement.alphaEq expected.canonicalStatement do
+    throw s!"checked LF judgment theorem '{t.name}' canonical metadata has a stale canonical \
+      structural statement"
+  unless cached.canonicalCheckedExpr == expected.canonicalCheckedExpr do
+    throw s!"checked LF judgment theorem '{t.name}' canonical metadata has a stale checked \
+      canonical expression"
+  unless cached.dependencies == expected.dependencies do
+    throw s!"checked LF judgment theorem '{t.name}' canonical metadata has stale dependency \
+      metadata: got {repr cached.dependencies}, expected {repr expected.dependencies}"
+
+/-- Statement for later replay-context entries, preferring checked canonical metadata. -/
+def checkedLFJudgmentTheoremContextStatementToK (t : CheckedLFJudgmentTheorem) :
+    Except String Kernel.Judgment := do
+  match t.checkedStructuralReplay? with
+  | some artifact => pure artifact.contextStatement
+  | none =>
+      match t.checkedStructuralKernelDerivation? with
+      | some checkedReplay => pure checkedReplay.statement
+      | none => checkedLFJudgmentTheoremStatementToK t
+
 /-- Extract structural local theorem assumptions from a checked LF theorem. -/
 def kernelLFLocalAssumptionEntriesOfTheoremToK (normalize? : Bool)
     (defValues : CheckedLFDefinitionValueMap) (t : CheckedLFJudgmentTheorem) :
@@ -771,13 +937,16 @@ def kernelLFRuleSchemaOfTheoremToK (normalize? : Bool)
           premises := premises ++
             [← checkedLFJudgmentExprToKJudgment (norm b.checkedTypeExpr) head theoremMetas]
     | none => pure ()
+  let conclusionExpr :=
+    match t.checkedStructuralReplay?.bind (·.canonicalStatement?) with
+    | some canonical => canonical.canonicalCheckedExpr
+    | none => norm t.checkedJudgmentExpr
   pure {
     name := Kernel.KName.ofName (lfJudgmentTheoremKernelRuleName t.name)
     metavariables := metavariables
     premises := premises
     conclusionStmt :=
-      (← checkedLFJudgmentExprToKJudgment (norm t.checkedJudgmentExpr) t.judgmentHead
-        theoremMetas) }
+      (← checkedLFJudgmentExprToKJudgment conclusionExpr t.judgmentHead theoremMetas) }
 
 /-- Lower checked LF theorem schemas to structural replay rule schemas. -/
 def kernelLFRuleSchemasOfTheoremsToK (normalize? : Bool)
@@ -796,13 +965,7 @@ def kernelLFReplayContextOfTheoremsToK (theorems : Array CheckedLFJudgmentTheore
   for prior in theorems do
     if prior.binders.isEmpty then
       if prior.hasCheckedKernelReplay || prior.derivation?.isSome then
-        let statement ←
-          match prior.checkedStructuralReplay? with
-          | some artifact => pure artifact.statement
-          | none =>
-              match prior.checkedStructuralKernelDerivation? with
-              | some checkedReplay => pure checkedReplay.statement
-              | none => checkedLFJudgmentTheoremStatementToK prior
+        let statement ← checkedLFJudgmentTheoremContextStatementToK prior
         theoremEntries := {
           name := Kernel.KName.ofName prior.name
           statement := statement } :: theoremEntries
@@ -1062,11 +1225,16 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
         structuralExpandedReplayCtx structuralStmtExpanded structuralDerivExpanded
       pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay,
         StructuralReplayMode.expanded)
+  let canonical ← liftStructuralKernelExcept
+    s!"judgment_theorem '{t.name}' canonical structural statement" <|
+      canonicalStructuralStatementOfTheorem lfCheckedDefValues t
+  logCanonicalStructuralStatementProfile sig.name lfCheckedDefValues t canonical
   pure { t with
     structuralKernelDerivation? := none
     checkedStructuralKernelDerivation? := none
     checkedStructuralReplay? := some <|
-      CheckedStructuralReplayArtifact.ofChecked replayMode checkedStructuralReplay }
+      CheckedStructuralReplayArtifact.ofChecked replayMode checkedStructuralReplay
+        (some canonical) }
 
 /-- Add checked structural-kernel replay validation to one incrementally checked LF theorem,
     reusing a compiled checked-theory replay cache. -/
@@ -1141,11 +1309,16 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
         structuralExpandedReplayCtx structuralStmtExpanded structuralDerivExpanded
       pure (structuralDerivExpanded, structuralStmtExpanded, checkedStructuralReplay,
         StructuralReplayMode.expanded)
+  let canonical ← liftStructuralKernelExcept
+    s!"judgment_theorem '{t.name}' cached canonical structural statement" <|
+      canonicalStructuralStatementOfTheorem cache.checkedLFDefValues t
+  logCanonicalStructuralStatementProfile cache.theoryName cache.checkedLFDefValues t canonical
   pure { t with
     structuralKernelDerivation? := none
     checkedStructuralKernelDerivation? := none
     checkedStructuralReplay? := some <|
-      CheckedStructuralReplayArtifact.ofChecked replayMode checkedStructuralReplay }
+      CheckedStructuralReplayArtifact.ofChecked replayMode checkedStructuralReplay
+        (some canonical) }
 
 
 /-- Convert a checked LF binding back to the high-level declaration shape used for checking
