@@ -740,6 +740,46 @@ def countCheckedLFDefinitionUnfolds (defs : CheckedLFDefinitionValueMap) (locals
     (e : CheckedLFExpr) : NameMap Nat :=
   countCheckedLFDefinitionUnfoldsCore defs locals (defs.size * 4 + 32) {} e
 
+/-- Count checked LF definitions a theorem fallback will force in its binders and conclusion. -/
+def countCheckedLFDefinitionUnfoldsInTheorem (defs : CheckedLFDefinitionValueMap)
+    (t : CheckedLFJudgmentTheorem) : NameMap Nat :=
+  let locals := theoremBinderFreeLocals t
+  let counts := countCheckedLFDefinitionUnfolds defs locals t.checkedJudgmentExpr
+  t.binders.foldl (init := counts) fun counts b =>
+    mergeLFConversionNameCounts counts <|
+      countCheckedLFDefinitionUnfolds defs locals b.checkedTypeExpr
+
+/-- Emit bounded diagnostics before structural replay switches to expanded/full unfolding. -/
+def emitStructuralReplayFallbackStart (theoryName : Name)
+    (defValues : CheckedLFDefinitionValueMap) (t : CheckedLFJudgmentTheorem)
+    (statement : Kernel.Judgment) : CoreM Unit := do
+  let counts := countCheckedLFDefinitionUnfoldsInTheorem defValues t
+  logLFConversionProfileEntry {
+    site := "structural_replay_fallback"
+    owner := {
+      theoryName := some theoryName
+      ownerKind := some "judgment_theorem"
+      ownerName := some t.name }
+    actualHead? := some t.judgmentHead.name
+    expectedHead? := some t.judgmentHead.name
+    actualSize := objExprNodeCount t.judgmentExpr
+    expectedSize := kernelJudgmentNodeCount statement
+    compactSucceeded := false
+    fullUnfoldFallback := true
+    accepted := true
+    unfoldedCounts := counts }
+  emitLFConversionProgressEntry {
+    site := "structural_replay_fallback_start"
+    owner := {
+      theoryName := some theoryName
+      ownerKind := some "judgment_theorem"
+      ownerName := some t.name }
+    targetHead? := some t.judgmentHead.name
+    targetSize := kernelJudgmentNodeCount statement
+    message :=
+      s!"expanded_signature=true, source_size={objExprNodeCount t.judgmentExpr}, " ++
+      s!"unfolded={renderLFConversionNameCounts counts}" }
+
 /-- Canonical checked-theorem statement metadata computed from checked artifacts. -/
 def canonicalStructuralStatementOfTheorem (defValues : CheckedLFDefinitionValueMap)
     (t : CheckedLFJudgmentTheorem) : Except String CheckedCanonicalStructuralStatement := do
@@ -1222,15 +1262,7 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
       pure (structuralDeriv, structuralStmt, checkedStructuralReplay,
         StructuralReplayMode.compact)
     catch _ =>
-      logLFConversionProfileEntry {
-        site := "structural_replay_fallback"
-        owner := {
-          theoryName := some sig.name
-          ownerKind := some "judgment_theorem"
-          ownerName := some t.name }
-        compactSucceeded := false
-        fullUnfoldFallback := true
-        accepted := true }
+      emitStructuralReplayFallbackStart sig.name lfCheckedDefValues t structuralStmt
       let structuralSigExpanded ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' expanded signature" <|
           checkedSignatureToKSignature sig.name checked.lfSyntaxDefs checked.lfOpaqueConsts
@@ -1305,15 +1337,7 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
       pure (structuralDeriv, structuralStmt, checkedStructuralReplay,
         StructuralReplayMode.compact)
     catch _ =>
-      logLFConversionProfileEntry {
-        site := "structural_replay_fallback"
-        owner := {
-          theoryName := some cache.theoryName
-          ownerKind := some "judgment_theorem"
-          ownerName := some t.name }
-        compactSucceeded := false
-        fullUnfoldFallback := true
-        accepted := true }
+      emitStructuralReplayFallbackStart cache.theoryName cache.checkedLFDefValues t structuralStmt
       let structuralSigExpanded ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' cached expanded signature" <|
           compiledLFCheckCacheStructuralSignature cache true theoremFilter

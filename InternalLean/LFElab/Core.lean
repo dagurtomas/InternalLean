@@ -2388,6 +2388,7 @@ structure LFConversionProfileEntry where
   deltaAccepted? : Option Bool := none
   deltaStats? : Option LFDeltaConversionStats := none
   deltaFuelExhausted? : Option String := none
+  fallbackDefinitionSummary? : Option String := none
   deriving Inhabited, Repr
 
 /-- Render optional owner metadata for a conversion-profile line. -/
@@ -2405,6 +2406,23 @@ def renderLFConversionNameCounts (counts : NameMap Nat) : String :=
   else
     let items := items.take 8 |>.map fun (n, count) => s!"{n}:{count}"
     String.intercalate ", " items
+
+/-- Render a bounded definition-environment summary for pre-fallback diagnostics. -/
+def renderLFConversionDefinitionSummary (defs : LFDefinitionValueMap) : String :=
+  let items := defs.toList
+  if items.isEmpty then
+    "defs=none, def_count=0"
+  else
+    let shown := items.take 8 |>.map fun (n, _) => toString n
+    let extra := items.length - shown.length
+    let suffix := if extra == 0 then "" else s!", ... (+{extra})"
+    s!"defs={String.intercalate ", " shown}{suffix}, def_count={items.length}"
+
+/-- Render an optional pre-fallback definition summary. -/
+def renderLFConversionFallbackDefinitionSuffix (entry : LFConversionProfileEntry) : String :=
+  match entry.fallbackDefinitionSummary? with
+  | some summary => s!", fallback_defs={summary}"
+  | none => ""
 
 /-- Render a bounded diagnostic suffix for delta-conversion statistics. -/
 def renderLFDeltaConversionStats (stats : LFDeltaConversionStats) : String :=
@@ -2448,6 +2466,7 @@ def renderLFConversionProfileEntry (entry : LFConversionProfileEntry) : String :
     s!"normalized_sizes={actualNorm}/{expectedNorm}, elapsed={elapsed}, " ++
     s!"compact={entry.compactSucceeded}, fallback={entry.fullUnfoldFallback}, " ++
     s!"accepted={entry.accepted}, unfolded={renderLFConversionNameCounts entry.unfoldedCounts}" ++
+    renderLFConversionFallbackDefinitionSuffix entry ++
     renderLFDeltaConversionProfileSuffix entry
 
 /-- Log a conversion-profile entry when profiling or fallback tracing requests it. -/
@@ -3052,6 +3071,144 @@ def lfDefinitionComparisonProfileEntryWithOptions (site : String)
   else
     lfDefinitionComparisonProfileEntry site owner defs locals actual expected elapsedMs?
 
+/-- Emit a bounded pre-fallback diagnostic before recursive LF-definition unfolding starts. -/
+def emitLFDefinitionComparisonFallbackStart (site : String)
+    (owner : LFConversionProfileOwner) (actual expected : ObjExpr) (envKind : String)
+    (defs : LFDefinitionValueMap) : CoreM Unit := do
+  let actual := eraseObjExprScopes actual
+  let expected := eraseObjExprScopes expected
+  let summary := s!"env={envKind}, {renderLFConversionDefinitionSummary defs}"
+  logLFConversionProfileEntry {
+    site := "definition_full_fallback_start"
+    owner := owner
+    actualHead? := lfExprHeadIdent? actual
+    expectedHead? := lfExprHeadIdent? expected
+    actualSize := objExprNodeCount actual
+    expectedSize := objExprNodeCount expected
+    compactSucceeded := false
+    fullUnfoldFallback := true
+    accepted := false
+    fallbackDefinitionSummary? := some summary }
+  let expectedHead := expected |> lfExprHeadIdent? |>.map toString |>.getD "-"
+  emitLFConversionProgressEntry {
+    site := "definition_full_fallback_start"
+    owner := owner
+    targetHead? := lfExprHeadIdent? actual
+    targetSize := objExprNodeCount actual
+    message :=
+      s!"match_site={site}, env={envKind}, expected_head={expectedHead}, " ++
+      s!"expected_size={objExprNodeCount expected}, " ++
+      renderLFConversionDefinitionSummary defs }
+
+/-- Build a conversion-profile entry, emitting pre-fallback diagnostics before recursive unfolding.
+The returned acceptedness matches `lfDefinitionComparisonProfileEntryWithOptions`. -/
+def lfDefinitionComparisonProfileEntryWithOptionsLogged (site : String)
+    (owner : LFConversionProfileOwner) (defs : LFDefinitionValueMap) (locals : NameSet)
+    (actual expected : ObjExpr) (options : LFDeltaConversionOptions)
+    (elapsedMs? : Option Nat := none) : CoreM LFConversionProfileEntry := do
+  let actual := eraseObjExprScopes actual
+  let expected := eraseObjExprScopes expected
+  let alphaSucceeded := lfExprAlphaEq actual expected
+  let actualCheap := normalizeLFExprForConversionWithLocals {} locals actual
+  let expectedCheap := normalizeLFExprForConversionWithLocals {} locals expected
+  let compactSucceeded := alphaSucceeded || lfExprAlphaEq actualCheap expectedCheap
+  if compactSucceeded then
+    return {
+      site, owner
+      actualHead? := lfExprHeadIdent? actual
+      expectedHead? := lfExprHeadIdent? expected
+      actualSize := objExprNodeCount actual
+      expectedSize := objExprNodeCount expected
+      normalizedActualSize? := none
+      normalizedExpectedSize? := none
+      elapsedMs?
+      compactSucceeded := true
+      fullUnfoldFallback := false
+      accepted := true
+      unfoldedCounts := {}
+      deltaEnabled := options.enabled }
+  else if options.enabled then
+    let (restrictedDefs, _) := restrictLFDefinitionValuesForExprs defs locals #[actual, expected]
+    let noFullFallback := { options with compareWithFullFallback := false }
+    let restrictedEnv : LFDeltaConversionEnv := {
+      defs := restrictedDefs
+      locals
+      options := noFullFallback }
+    let restrictedCore := LFDeltaConversion.convertObjExpr restrictedEnv actual expected
+    let restrictedResult ←
+      if restrictedCore.accepted || !options.compareWithFullFallback then
+        pure restrictedCore
+      else
+        emitLFDefinitionComparisonFallbackStart site owner actual expected "restricted-delta"
+          restrictedDefs
+        let env : LFDeltaConversionEnv := { defs := restrictedDefs, locals, options }
+        pure <| LFDeltaConversion.convertObjExprWithFallback env actual expected
+    let result ←
+      if restrictedResult.accepted || !options.compareWithFullFallback ||
+          restrictedDefs.size == defs.size then
+        pure restrictedResult
+      else
+        let fullEnvNoFallback : LFDeltaConversionEnv := {
+          defs
+          locals
+          options := noFullFallback }
+        let fullCore := LFDeltaConversion.convertObjExpr fullEnvNoFallback actual expected
+        if fullCore.accepted then
+          pure fullCore
+        else
+          emitLFDefinitionComparisonFallbackStart site owner actual expected "full-delta" defs
+          let fullEnv : LFDeltaConversionEnv := { defs, locals, options }
+          pure <| LFDeltaConversion.convertObjExprWithFallback fullEnv actual expected
+    let counts :=
+      if result.fallbackUsed then
+        let countDefs :=
+          if restrictedResult.accepted || restrictedDefs.size == defs.size then
+            restrictedDefs
+          else
+            defs
+        mergeLFConversionNameCounts (countLFDefinitionUnfolds countDefs locals actual)
+          (countLFDefinitionUnfolds countDefs locals expected)
+      else
+        {}
+    let entry := LFDeltaConversion.profileEntry site owner actual expected result
+    pure { entry with
+      elapsedMs?
+      compactSucceeded := false
+      unfoldedCounts := counts }
+  else
+    let (restrictedDefs, _) := restrictLFDefinitionValuesForExprs defs locals #[actual, expected]
+    emitLFDefinitionComparisonFallbackStart site owner actual expected "restricted" restrictedDefs
+    let actualRestricted := normalizeLFExprForConversionWithLocals restrictedDefs locals actual
+    let expectedRestricted :=
+      normalizeLFExprForConversionWithLocals restrictedDefs locals expected
+    let restrictedAccepted := lfExprAlphaEq actualRestricted expectedRestricted
+    let restrictedCounts :=
+      mergeLFConversionNameCounts (countLFDefinitionUnfolds restrictedDefs locals actual)
+        (countLFDefinitionUnfolds restrictedDefs locals expected)
+    let (accepted, normActual?, normExpected?, counts) ←
+      if restrictedAccepted || restrictedDefs.size == defs.size then
+        pure (restrictedAccepted, some (objExprNodeCount actualRestricted),
+          some (objExprNodeCount expectedRestricted), restrictedCounts)
+      else
+        emitLFDefinitionComparisonFallbackStart site owner actual expected "full" defs
+        let actualFull := normalizeLFExprForConversionWithLocals defs locals actual
+        let expectedFull := normalizeLFExprForConversionWithLocals defs locals expected
+        let counts :=
+          mergeLFConversionNameCounts (countLFDefinitionUnfolds defs locals actual)
+            (countLFDefinitionUnfolds defs locals expected)
+        pure (lfExprAlphaEq actualFull expectedFull, some (objExprNodeCount actualFull),
+          some (objExprNodeCount expectedFull), counts)
+    pure {
+      site, owner
+      actualHead? := lfExprHeadIdent? actual
+      expectedHead? := lfExprHeadIdent? expected
+      actualSize := objExprNodeCount actual
+      expectedSize := objExprNodeCount expected
+      normalizedActualSize? := normActual?
+      normalizedExpectedSize? := normExpected?
+      elapsedMs?, compactSucceeded := false, fullUnfoldFallback := true
+      accepted, unfoldedCounts := counts }
+
 /-- Emit an immediate progress line before a profiled source-level LF comparison starts. -/
 def emitLFDefinitionComparisonStartProgress (site : String) (owner : LFConversionProfileOwner)
     (actual expected : ObjExpr) : CoreM Unit := do
@@ -3076,7 +3233,7 @@ def lfExprEqModuloDefinitionsWithLocalsProfiled (site : String)
     if profile || deltaOptions.trace then
       emitLFDefinitionComparisonStartProgress site owner actual expected
     let start ← IO.monoMsNow
-    let entry := lfDefinitionComparisonProfileEntryWithOptions site owner defs locals actual
+    let entry ← lfDefinitionComparisonProfileEntryWithOptionsLogged site owner defs locals actual
       expected deltaOptions
     let stop ← IO.monoMsNow
     let entry := { entry with elapsedMs? := some (stop - start) }
@@ -3097,6 +3254,14 @@ def normalizeLFTypeComparisonPairInLookupProfiled (site : String)
     if profile then
       emitLFDefinitionComparisonStartProgress site owner actual expected
     let start ← IO.monoMsNow
+    let actualCheap := normalizeLFExprForTypeComparisonWithDefs {} actual
+    let expectedCheap := normalizeLFExprForTypeComparisonWithDefs {} expected
+    unless lfExprAlphaEq actualCheap expectedCheap do
+      let defs := lfDefinitionValuesWithSyntaxDefs lookup
+      let (restrictedDefs, _) := restrictLFDefinitionValuesForExprs defs {} #[actual, expected]
+      unless restrictedDefs.isEmpty do
+        emitLFDefinitionComparisonFallbackStart site owner actual expected "type-restricted"
+          restrictedDefs
     let result := normalizeLFTypeComparisonPairInLookupDetailed lookup actual expected
     let stop ← IO.monoMsNow
     let actual := eraseObjExprScopes actual

@@ -36,6 +36,26 @@ def diagnosticAppTower : Nat → ObjExpr
   (diagnosticObjExprString (diagnosticAppTower 80)).toList.length <
     (toString (diagnosticAppTower 80)).toList.length
 
+/-- Tiny definition map used to guard AR5 fallback-start rendering. -/
+def ar5FallbackSummaryDefs : LFDefinitionValueMap :=
+  ({} : LFDefinitionValueMap).insert `Alias (.ident `payload)
+
+#guard renderLFConversionDefinitionSummary ar5FallbackSummaryDefs == "defs=Alias, def_count=1"
+
+#guard
+  (renderLFConversionProfileEntry {
+    site := "definition_full_fallback_start"
+    owner := { theoryName := some `LFConversionProfileSmoke }
+    actualHead? := some `Alias
+    expectedHead? := some `payload
+    actualSize := 1
+    expectedSize := 1
+    compactSucceeded := false
+    fullUnfoldFallback := true
+    accepted := false
+    fallbackDefinitionSummary? := some "env=restricted, defs=Alias, def_count=1" }).contains
+      "fallback_defs=env=restricted, defs=Alias, def_count=1"
+
 declare_type_theory LFConversionProfileSmoke where
   syntax_sort Ctx
   syntax_sort Shape (Γ : Ctx)

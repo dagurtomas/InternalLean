@@ -1038,15 +1038,7 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
       pure (structuralDeriv, structuralStmt, checkedStructuralReplay,
         StructuralReplayMode.compact, ctx)
     catch _ =>
-      logLFConversionProfileEntry {
-        site := "structural_replay_fallback"
-        owner := {
-          theoryName := some sig.name
-          ownerKind := some "judgment_theorem"
-          ownerName := some t.name }
-        compactSucceeded := false
-        fullUnfoldFallback := true
-        accepted := true }
+      emitStructuralReplayFallbackStart sig.name ctx.checkedLFDefValues t structuralStmt
       let (structuralSigExpanded, validatedStructuralSigExpanded, ctx) ←
         getIntraBlockExpandedValidatedSignature ctx
       let structuralExpandedAssumptions ← liftStructuralKernelExcept
