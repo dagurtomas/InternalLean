@@ -2966,6 +2966,19 @@ def lfDefinitionComparisonProfileEntryWithOptions (site : String)
   else
     lfDefinitionComparisonProfileEntry site owner defs locals actual expected elapsedMs?
 
+/-- Emit an immediate progress line before a profiled source-level LF comparison starts. -/
+def emitLFDefinitionComparisonStartProgress (site : String) (owner : LFConversionProfileOwner)
+    (actual expected : ObjExpr) : CoreM Unit := do
+  let expectedHead := expected |> lfExprHeadIdent? |>.map toString |>.getD "-"
+  emitLFConversionProgressEntry {
+    site := "definition_compare_start"
+    owner := owner
+    targetHead? := lfExprHeadIdent? actual
+    targetSize := objExprNodeCount actual
+    message :=
+      s!"match_site={site}, expected_head={expectedHead}, " ++
+      s!"expected_size={objExprNodeCount expected}" }
+
 /-- Profile one source-level LF-definition comparison without changing acceptance. -/
 def lfExprEqModuloDefinitionsWithLocalsProfiled (site : String)
     (owner : LFConversionProfileOwner) (defs : LFDefinitionValueMap) (locals : NameSet)
@@ -2974,6 +2987,8 @@ def lfExprEqModuloDefinitionsWithLocalsProfiled (site : String)
   let traceFallbacks ← getBoolOption `internalLean.conversion.traceFallbacks
   let deltaOptions ← getLFDeltaConversionOptions
   if profile || traceFallbacks || deltaOptions.trace then
+    if profile || deltaOptions.trace then
+      emitLFDefinitionComparisonStartProgress site owner actual expected
     let start ← IO.monoMsNow
     let entry := lfDefinitionComparisonProfileEntryWithOptions site owner defs locals actual
       expected deltaOptions
@@ -2993,6 +3008,8 @@ def normalizeLFTypeComparisonPairInLookupProfiled (site : String)
   let profile ← getBoolOption `internalLean.conversion.profile
   let traceFallbacks ← getBoolOption `internalLean.conversion.traceFallbacks
   if profile || traceFallbacks then
+    if profile then
+      emitLFDefinitionComparisonStartProgress site owner actual expected
     let start ← IO.monoMsNow
     let result := normalizeLFTypeComparisonPairInLookupDetailed lookup actual expected
     let stop ← IO.monoMsNow
