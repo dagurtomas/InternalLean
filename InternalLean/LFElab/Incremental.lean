@@ -1011,6 +1011,8 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
     CoreM (CheckedLFJudgmentTheorem × IntraBlockKernelReplayContext) := do
   let some shallowDeriv := t.derivation?
     | pure (t, ctx)
+  emitStructuralPrimitiveRuleDemandStart "block_compact_signature" sig.name t.name
+    ctx.lfRuleSchemas t
   let structuralSig ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' block compact signature" ctx.structuralKernelSig
   let validatedStructuralSig ← liftStructuralKernelExcept
@@ -1039,6 +1041,8 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
         StructuralReplayMode.compact, ctx)
     catch _ =>
       emitStructuralReplayFallbackStart sig.name ctx.checkedLFDefValues t structuralStmt
+      emitStructuralPrimitiveRuleDemandStart "block_expanded_signature" sig.name t.name
+        ctx.lfRuleSchemas t
       let (structuralSigExpanded, validatedStructuralSigExpanded, ctx) ←
         getIntraBlockExpandedValidatedSignature ctx
       let structuralExpandedAssumptions ← liftStructuralKernelExcept

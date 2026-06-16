@@ -1072,6 +1072,16 @@ structure InternalRegistrationProfile where
   inheritedTheoremRuleSchemasDemanded : Nat := 0
   /-- Inherited theorem schemas lowered by the active demand filter. -/
   inheritedTheoremRuleSchemasLowered : Nat := 0
+  /-- Primitive rule schemas present while replay-validating this event. -/
+  primitiveRuleSchemasConsidered : Nat := 0
+  /-- Primitive rule schemas named by this event's replay derivation. -/
+  primitiveRuleSchemasDemanded : Nat := 0
+  /-- Primitive rule schemas lowered by the current compatibility replay signature. -/
+  primitiveRuleSchemasLowered : Nat := 0
+  /-- Demanded primitive rule names, in checked-signature order. -/
+  primitiveRuleSchemaDemandedNames : Array Name := #[]
+  /-- Lowered primitive rule names not demanded by this event, in checked-signature order. -/
+  primitiveRuleSchemaUndemandedLoweredNames : Array Name := #[]
   /-- Structural theorem-rule schemas generated for theorem references in this event. -/
   replayTheoremRuleSchemas : Nat := 0
   /-- Time spent applying the main environment extension updates, when profiled. -/

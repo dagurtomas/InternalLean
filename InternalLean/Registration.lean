@@ -79,7 +79,8 @@ def internalRegistrationProfileCacheSuffix (p : InternalRegistrationProfile) : S
 def internalRegistrationProfileReplaySuffix (p : InternalRegistrationProfile) : String :=
   if p.replayContextTheorems == 0 && p.replayContextCertificates == 0 &&
       p.replayCompactArtifacts == 0 && p.replayFullWrappers == 0 &&
-      p.replayTheoremRuleSchemas == 0 &&
+      p.replayTheoremRuleSchemas == 0 && p.primitiveRuleSchemasConsidered == 0 &&
+      p.primitiveRuleSchemasDemanded == 0 && p.primitiveRuleSchemasLowered == 0 &&
       p.inheritedTheoremRuleSchemasConsidered == 0 &&
       p.inheritedTheoremRuleSchemasDemanded == 0 &&
       p.inheritedTheoremRuleSchemasLowered == 0 then
@@ -88,6 +89,11 @@ def internalRegistrationProfileReplaySuffix (p : InternalRegistrationProfile) : 
     s!", replay context theorem(s)={p.replayContextTheorems}, certificate(s)=\
       {p.replayContextCertificates}, compact={p.replayCompactArtifacts}, full=\
         {p.replayFullWrappers}, structural-rules={p.replayTheoremRuleSchemas}, \
+        primitive-rules considered={p.primitiveRuleSchemasConsidered}, demanded=\
+        {p.primitiveRuleSchemasDemanded}, lowered={p.primitiveRuleSchemasLowered}, \
+        primitive-demanded={renderStructuralReplayNameList p.primitiveRuleSchemaDemandedNames}, \
+        primitive-undemanded-lowered=\
+        {renderStructuralReplayNameList p.primitiveRuleSchemaUndemandedLoweredNames}, \
         inherited-structural-rules considered={p.inheritedTheoremRuleSchemasConsidered}, \
         demanded={p.inheritedTheoremRuleSchemasDemanded}, \
         lowered={p.inheritedTheoremRuleSchemasLowered}"
@@ -118,6 +124,21 @@ def checkedTheoremFullReplayWrapperCount (theorems : Array CheckedLFJudgmentTheo
 def checkedTheoremStructuralRuleSchemaCount (theorems : Array CheckedLFJudgmentTheorem) : Nat :=
   theorems.foldl (init := 0) fun count t =>
     if checkedLFJudgmentTheoremNeedsStructuralRuleSchema t then count + 1 else count
+
+/-- Whether immediate registration progress diagnostics should be printed. -/
+def internalRegistrationProgressEnabled : CoreM Bool := do
+  let profileRegistration ← getBoolOption `internalLean.profileInternalDef
+  let profileConversion ← getBoolOption `internalLean.conversion.profile
+  let traceFallbacks ← getBoolOption `internalLean.conversion.traceFallbacks
+  pure (profileRegistration || profileConversion || traceFallbacks)
+
+/-- Emit one bounded registration progress line before a potentially long subphase. -/
+def emitInternalRegistrationProgress (theoryName : Name) (ownerKind : String)
+    (ownerName : Name) (stage : String) : CoreM Unit := do
+  if (← internalRegistrationProgressEnabled) then
+    IO.eprintln <|
+      s!"InternalLean registration progress theory={theoryName}, owner=\
+        {ownerKind}:{ownerName}, stage={stage}"
 
 /-- Measure one registration subphase only when registration profiling is enabled. -/
 def measureInternalRegistrationMs? (enabled : Bool) (x : CoreM α) : CoreM (α × Option Nat) := do
@@ -2194,6 +2215,7 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
   let profileTimings ← getBoolOption `internalLean.profileInternalDef
   let some _sig ← getTheory? theoryName
     | throwError "unknown type theory '{theoryName}'"
+  emitInternalRegistrationProgress theoryName "judgment_theorem" t.name "lookup-start"
   let ((cacheLookup, tForRegistry, tForCheck), lookupSetupMs?) ←
     measureInternalRegistrationMs? profileTimings do
       let cacheLookup ← getOrBuildCompiledLFCheckCacheForTheory theoryName
@@ -2226,13 +2248,18 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
         judgmentExpr := judgmentExpr
         proof := proof }
       pure (cacheLookup, tForRegistry, tForCheck)
+  emitInternalRegistrationProgress theoryName "judgment_theorem" t.name "lookup-done"
   let cache := cacheLookup.cache
+  emitInternalRegistrationProgress theoryName "judgment_theorem" t.name "lf-check-start"
   let (checkedTheoremRaw, lfCheckMs?) ←
     measureInternalRegistrationMs? profileTimings do
       checkOneLFJudgmentTheoremArtifactWithCache cache tForCheck
+  emitInternalRegistrationProgress theoryName "judgment_theorem" t.name "lf-check-done"
+  emitInternalRegistrationProgress theoryName "judgment_theorem" t.name "replay-start"
   let (checkedTheorem, replayValidationMs?) ←
     measureInternalRegistrationMs? profileTimings do
       validateIncrementalLFTheoremKernelReplayWithCache cache checkedTheoremRaw
+  emitInternalRegistrationProgress theoryName "judgment_theorem" t.name "replay-done"
   let (compiledCache, compiledCacheUpdateMs?) ←
     measureInternalRegistrationMs? profileTimings do
       pure <| cache.appendJudgmentTheorem checkedTheorem
@@ -2246,6 +2273,8 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
         setCompiledLFCheckCacheInEnv env theoryName compiledCache
   let schemaStats := structuralTheoremSchemaFilterStats cache.lfJudgmentTheorems
     (structuralTheoremSchemaFilterForTheorem checkedTheorem)
+  let primitiveStats := structuralPrimitiveRuleDemandStats cache.checkedRuleSchemas
+    (primitiveRuleAppsInCheckedLFTheorem checkedTheorem)
   recordInternalRegistrationProfile {
     theoryName := theoryName
     declName := t.name.eraseMacroScopes
@@ -2268,6 +2297,11 @@ def registerLFJudgmentTheorem (theoryName : Name) (t : LFJudgmentTheoremDecl) : 
     replayContextCertificates := checkedTheoremReplayContextCertificateCount checkedTheorem
     replayCompactArtifacts := checkedTheoremCompactReplayCount #[checkedTheorem]
     replayFullWrappers := checkedTheoremFullReplayWrapperCount #[checkedTheorem]
+    primitiveRuleSchemasConsidered := primitiveStats.considered
+    primitiveRuleSchemasDemanded := primitiveStats.demanded
+    primitiveRuleSchemasLowered := primitiveStats.lowered
+    primitiveRuleSchemaDemandedNames := primitiveStats.demandedNames
+    primitiveRuleSchemaUndemandedLoweredNames := primitiveStats.undemandedLoweredNames
     inheritedTheoremRuleSchemasConsidered := schemaStats.considered
     inheritedTheoremRuleSchemasDemanded := schemaStats.demanded
     inheritedTheoremRuleSchemasLowered := schemaStats.lowered
