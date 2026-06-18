@@ -754,8 +754,9 @@ def countCheckedLFDefinitionUnfoldsInTheorem (defs : CheckedLFDefinitionValueMap
 /-- Emit bounded diagnostics before structural replay switches to expanded/full unfolding. -/
 def emitStructuralReplayFallbackStart (theoryName : Name)
     (defValues : CheckedLFDefinitionValueMap) (t : CheckedLFJudgmentTheorem)
-    (statement : Kernel.Judgment) : CoreM Unit := do
+    (statement : Kernel.Judgment) (filterSummary? : Option String := none) : CoreM Unit := do
   let counts := countCheckedLFDefinitionUnfoldsInTheorem defValues t
+  let filterSuffix := filterSummary?.map (fun summary => s!", {summary}") |>.getD ""
   logLFConversionProfileEntry {
     site := "structural_replay_fallback"
     owner := {
@@ -780,7 +781,7 @@ def emitStructuralReplayFallbackStart (theoryName : Name)
     targetSize := kernelJudgmentNodeCount statement
     message :=
       s!"expanded_signature=true, source_size={objExprNodeCount t.judgmentExpr}, " ++
-      s!"unfolded={renderLFConversionNameCounts counts}" }
+      s!"unfolded={renderLFConversionNameCounts counts}{filterSuffix}" }
 
 /-- Canonical checked-theorem statement metadata computed from checked artifacts. -/
 def canonicalStructuralStatementOfTheorem (defValues : CheckedLFDefinitionValueMap)
@@ -900,10 +901,14 @@ end StructuralTheoremSchemaFilter
 structure StructuralTheoremSchemaFilterStats where
   /-- Theorem artifacts with binders that could have structural schemas. -/
   considered : Nat := 0
-  /-- Considered schemas selected by the active filter. -/
+  /-- Considered schemas selected by the active demand set. -/
   demanded : Nat := 0
   /-- Schemas actually lowered by the active filter. -/
   lowered : Nat := 0
+  /-- Demanded theorem-schema names, in checked-signature order. -/
+  demandedNames : Array Name := #[]
+  /-- Lowered theorem-schema names not demanded by the current theorem, in signature order. -/
+  undemandedLoweredNames : Array Name := #[]
   deriving Inhabited, Repr, BEq
 
 /-- Count theorem-schema filtering decisions without lowering theorem statements. -/
@@ -911,14 +916,27 @@ def structuralTheoremSchemaFilterStats (theorems : Array CheckedLFJudgmentTheore
     (filter : StructuralTheoremSchemaFilter) : StructuralTheoremSchemaFilterStats :=
   theorems.foldl (init := {}) fun stats t =>
     if checkedLFJudgmentTheoremNeedsStructuralRuleSchema t then
+      let name := t.name.eraseMacroScopes
       let considered := stats.considered + 1
-      if filter.allows t.name then
-        { stats with
-          considered := considered
-          demanded := stats.demanded + 1
-          lowered := stats.lowered + 1 }
+      let demanded := filter.demandedTheorems.contains name
+      let lowered := filter.allows name
+      let stats := { stats with considered := considered }
+      let stats :=
+        if demanded then
+          { stats with
+            demanded := stats.demanded + 1
+            demandedNames := stats.demandedNames.push name }
+        else
+          stats
+      if lowered then
+        if demanded then
+          { stats with lowered := stats.lowered + 1 }
+        else
+          { stats with
+            lowered := stats.lowered + 1
+            undemandedLoweredNames := stats.undemandedLoweredNames.push name }
       else
-        { stats with considered := considered }
+        stats
     else
       stats
 
@@ -1047,20 +1065,41 @@ def renderStructuralPrimitiveRuleDemandStats
       {renderStructuralReplayNameList stats.demandedNames}, undemanded_lowered=\
       {renderStructuralReplayNameList stats.undemandedLoweredNames}"
 
-/-- Emit an immediate bounded primitive-rule demand line before structural signature lowering. -/
-def emitStructuralPrimitiveRuleDemandStart (site : String) (theoryName : Name)
+/-- Render theorem-schema demand counters for a structural replay signature. -/
+def renderStructuralTheoremSchemaFilterStats
+    (stats : StructuralTheoremSchemaFilterStats) : String :=
+  s!"theorem-schemas considered={stats.considered}, demanded={stats.demanded}, " ++
+    s!"lowered={stats.lowered}, demanded_names=\
+      {renderStructuralReplayNameList stats.demandedNames}, undemanded_lowered=\
+      {renderStructuralReplayNameList stats.undemandedLoweredNames}"
+
+/-- Render all replay-signature demand filters without lowering any schema. -/
+def renderStructuralReplaySignatureFilterSummary (rules : Array CheckedLFRuleSchema)
+    (theorems : Array CheckedLFJudgmentTheorem)
+    (theoremFilter : StructuralTheoremSchemaFilter)
+    (primitiveRuleFilter : StructuralPrimitiveRuleSchemaFilter) : String :=
+  let primitiveStats := structuralPrimitiveRuleDemandStats rules primitiveRuleFilter
+  let theoremStats := structuralTheoremSchemaFilterStats theorems theoremFilter
+  s!"input_sizes=primitive_rules={rules.size}, judgment_theorems={theorems.size}, " ++
+    s!"primitive_include_all={primitiveRuleFilter.includeAllForCompatibility}, " ++
+    renderStructuralPrimitiveRuleDemandStats primitiveStats ++ ", " ++
+    s!"theorem_include_all={theoremFilter.includeAllForCompatibility}, " ++
+    renderStructuralTheoremSchemaFilterStats theoremStats
+
+/-- Emit a bounded replay-signature filter line before structural signature lowering. -/
+def emitStructuralReplaySignatureFilterStart (site : String) (theoryName : Name)
     (theoremName : Name) (rules : Array CheckedLFRuleSchema)
-    (filter : StructuralPrimitiveRuleSchemaFilter) : CoreM Unit := do
+    (theorems : Array CheckedLFJudgmentTheorem)
+    (theoremFilter : StructuralTheoremSchemaFilter)
+    (primitiveRuleFilter : StructuralPrimitiveRuleSchemaFilter) : CoreM Unit := do
   let profileRegistration ← getBoolOption `internalLean.profileInternalDef
   let profileConversion ← getBoolOption `internalLean.conversion.profile
   let traceFallbacks ← getBoolOption `internalLean.conversion.traceFallbacks
   if profileRegistration || profileConversion || traceFallbacks then
-    let stats := structuralPrimitiveRuleDemandStats rules filter
     IO.eprintln <|
-      s!"LF structural replay primitive-rule demand site={site}, theory={theoryName}, " ++
-      s!"owner=judgment_theorem:{theoremName}, include_all=" ++
-      s!"{filter.includeAllForCompatibility}, " ++
-      renderStructuralPrimitiveRuleDemandStats stats
+      s!"LF structural replay signature filters site={site}, theory={theoryName}, " ++
+      s!"owner=judgment_theorem:{theoremName}, " ++
+      renderStructuralReplaySignatureFilterSummary rules theorems theoremFilter primitiveRuleFilter
 
 /-- Theorem schemas demanded by applied theorem references in a checked derivation. -/
 partial def appliedTheoremRefsInCheckedLFDerivation : CheckedLFDerivation → NameSet
@@ -1380,8 +1419,10 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
     lfDefinitionValueMapFromCheckedDefs checked.lfSyntaxDefs checked.lfObjectDefs
   let theoremFilter := structuralTheoremSchemaFilterForTheorem t
   let primitiveRuleFilter := structuralPrimitiveRuleSchemaFilterForTheorem t
-  emitStructuralPrimitiveRuleDemandStart "compact_signature" sig.name t.name checked.lfRuleSchemas
-    primitiveRuleFilter
+  let filterSummary := renderStructuralReplaySignatureFilterSummary checked.lfRuleSchemas
+    checked.lfJudgmentTheorems theoremFilter primitiveRuleFilter
+  emitStructuralReplaySignatureFilterStart "compact_signature" sig.name t.name
+    checked.lfRuleSchemas checked.lfJudgmentTheorems theoremFilter primitiveRuleFilter
   let structuralSig ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' compact signature" <|
       checkedSignatureToKSignature sig.name checked.lfSyntaxDefs checked.lfOpaqueConsts
@@ -1409,8 +1450,9 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
         StructuralReplayMode.compact)
     catch _ =>
       emitStructuralReplayFallbackStart sig.name lfCheckedDefValues t structuralStmt
-      emitStructuralPrimitiveRuleDemandStart "expanded_signature" sig.name t.name
-        checked.lfRuleSchemas primitiveRuleFilter
+        (some filterSummary)
+      emitStructuralReplaySignatureFilterStart "expanded_signature" sig.name t.name
+        checked.lfRuleSchemas checked.lfJudgmentTheorems theoremFilter primitiveRuleFilter
       let structuralSigExpanded ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' expanded signature" <|
           checkedSignatureToKSignature sig.name checked.lfSyntaxDefs checked.lfOpaqueConsts
@@ -1456,8 +1498,10 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
     return values
   let theoremFilter := structuralTheoremSchemaFilterForTheorem t
   let primitiveRuleFilter := structuralPrimitiveRuleSchemaFilterForTheorem t
-  emitStructuralPrimitiveRuleDemandStart "cached_compact_signature" cache.theoryName t.name
-    cache.checkedRuleSchemas primitiveRuleFilter
+  let filterSummary := renderStructuralReplaySignatureFilterSummary cache.checkedRuleSchemas
+    cache.lfJudgmentTheorems theoremFilter primitiveRuleFilter
+  emitStructuralReplaySignatureFilterStart "cached_compact_signature" cache.theoryName t.name
+    cache.checkedRuleSchemas cache.lfJudgmentTheorems theoremFilter primitiveRuleFilter
   let structuralSig ← liftStructuralKernelExcept
     s!"judgment_theorem '{t.name}' cached compact signature" <|
       compiledLFCheckCacheStructuralSignature cache false theoremFilter primitiveRuleFilter
@@ -1489,8 +1533,9 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
         StructuralReplayMode.compact)
     catch _ =>
       emitStructuralReplayFallbackStart cache.theoryName cache.checkedLFDefValues t structuralStmt
-      emitStructuralPrimitiveRuleDemandStart "cached_expanded_signature" cache.theoryName t.name
-        cache.checkedRuleSchemas primitiveRuleFilter
+        (some filterSummary)
+      emitStructuralReplaySignatureFilterStart "cached_expanded_signature" cache.theoryName t.name
+        cache.checkedRuleSchemas cache.lfJudgmentTheorems theoremFilter primitiveRuleFilter
       let structuralSigExpanded ← liftStructuralKernelExcept
         s!"judgment_theorem '{t.name}' cached expanded signature" <|
           compiledLFCheckCacheStructuralSignature cache true theoremFilter primitiveRuleFilter

@@ -543,6 +543,25 @@ run_cmd do
   unless rejected do
     throwError "missing demanded primitive rule was accepted by structural lowering"
 
+run_cmd do
+  let some checked ← Lean.Elab.Command.liftCoreM <| getCheckedTheory? `RS1PrimitiveDemandChild
+    | throwError "missing RS1 primitive-demand child checked theory"
+  let some useParentConst := checked.lfJudgmentTheorems.find? (fun t =>
+      t.name == `use_parent_const)
+    | throwError "missing RS2 theorem-reference diagnostic theorem"
+  let summary := renderStructuralReplaySignatureFilterSummary checked.lfRuleSchemas
+    checked.lfJudgmentTheorems (structuralTheoremSchemaFilterForTheorem useParentConst)
+    (structuralPrimitiveRuleSchemaFilterForTheorem useParentConst)
+  for needle in #[
+      "input_sizes=primitive_rules=3, judgment_theorems=3",
+      "primitive_include_all=false",
+      "primitive-rules considered=3, demanded=0, lowered=0",
+      "theorem_include_all=false",
+      "theorem-schemas considered=1, demanded=1, lowered=1",
+      "demanded_names=parent_const"] do
+    unless summary.contains needle do
+      throwError "RS2 replay-signature diagnostic summary omitted '{needle}': {summary}"
+
 
 declare_type_theory AR2CanonicalStatementSmoke where
   syntax_sort Obj

@@ -1020,8 +1020,10 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
     | pure (t, ctx)
   let theoremFilter := structuralTheoremSchemaFilterForTheorem t
   let primitiveRuleFilter := structuralPrimitiveRuleSchemaFilterForTheorem t
-  emitStructuralPrimitiveRuleDemandStart "block_compact_signature" sig.name t.name
-    ctx.lfRuleSchemas primitiveRuleFilter
+  let filterSummary := renderStructuralReplaySignatureFilterSummary ctx.lfRuleSchemas
+    ctx.lfJudgmentTheorems theoremFilter primitiveRuleFilter
+  emitStructuralReplaySignatureFilterStart "block_compact_signature" sig.name t.name
+    ctx.lfRuleSchemas ctx.lfJudgmentTheorems theoremFilter primitiveRuleFilter
   let structuralSigResult := intraBlockKernelReplayStructuralSignature ctx false theoremFilter
     primitiveRuleFilter
   let structuralSig ← liftStructuralKernelExcept
@@ -1055,8 +1057,9 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
         StructuralReplayMode.compact, ctx)
     catch _ =>
       emitStructuralReplayFallbackStart sig.name ctx.checkedLFDefValues t structuralStmt
-      emitStructuralPrimitiveRuleDemandStart "block_expanded_signature" sig.name t.name
-        ctx.lfRuleSchemas primitiveRuleFilter
+        (some filterSummary)
+      emitStructuralReplaySignatureFilterStart "block_expanded_signature" sig.name t.name
+        ctx.lfRuleSchemas ctx.lfJudgmentTheorems theoremFilter primitiveRuleFilter
       let structuralSigExpandedResult := intraBlockKernelReplayStructuralSignature ctx true
         theoremFilter primitiveRuleFilter
       let structuralSigExpanded ← liftStructuralKernelExcept
