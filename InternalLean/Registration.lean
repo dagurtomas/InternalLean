@@ -139,6 +139,7 @@ def emitInternalRegistrationProgress (theoryName : Name) (ownerKind : String)
     IO.eprintln <|
       s!"InternalLean registration progress theory={theoryName}, owner=\
         {ownerKind}:{ownerName}, stage={stage}"
+    flushLFDiagnosticStreams
 
 /-- Measure one registration subphase only when registration profiling is enabled. -/
 def measureInternalRegistrationMs? (enabled : Bool) (x : CoreM α) : CoreM (α × Option Nat) := do

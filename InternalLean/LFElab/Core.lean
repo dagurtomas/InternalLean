@@ -2512,11 +2512,17 @@ def lfConversionProgressEnabled : CoreM Bool := do
   let deltaProfile ← getBoolOption `internalLean.conversion.delta.profile
   pure (profile || traceFallbacks || deltaProfile)
 
+/-- Flush Lean's diagnostic streams after an immediate progress line. -/
+def flushLFDiagnosticStreams : CoreM Unit := do
+  (← IO.getStdout).flush
+  (← IO.getStderr).flush
+
 /-- Emit a bounded progress line immediately for paths that may time out before Lean flushes
 ordinary messages. -/
 def emitLFConversionProgressEntry (entry : LFConversionProgressEntry) : CoreM Unit := do
   if (← lfConversionProgressEnabled) then
     IO.eprintln (renderLFConversionProgressEntry entry)
+    flushLFDiagnosticStreams
 
 namespace LFDeltaConversion
 

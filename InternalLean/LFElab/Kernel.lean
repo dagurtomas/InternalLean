@@ -1100,6 +1100,7 @@ def emitStructuralReplaySignatureFilterStart (site : String) (theoryName : Name)
       s!"LF structural replay signature filters site={site}, theory={theoryName}, " ++
       s!"owner=judgment_theorem:{theoremName}, " ++
       renderStructuralReplaySignatureFilterSummary rules theorems theoremFilter primitiveRuleFilter
+    flushLFDiagnosticStreams
 
 /-- Theorem schemas demanded by applied theorem references in a checked derivation. -/
 partial def appliedTheoremRefsInCheckedLFDerivation : CheckedLFDerivation → NameSet
