@@ -2720,6 +2720,67 @@ def forceDemanded? (env : LFDeltaConversionEnv) (side : LFDeltaConversionSide) (
           | none => pure none
       | _ => pure none
 
+/-- Return the exposed identifier head of an already weak-head object expression. -/
+def exposedIdentHead? (e : ObjExpr) : Option Name :=
+  match appHeadAndArgs (eraseObjExprScopes e) with
+  | (.ident n, _) => some n.eraseMacroScopes
+  | _ => none
+
+/-- Return true if an expression is headed by an unfoldable checked definition. -/
+def hasUnfoldableCheckedDefinitionHead (env : LFDeltaConversionEnv) (e : ObjExpr) : Bool :=
+  match appHeadAndArgs (eraseObjExprScopes e) with
+  | (.ident n, _) =>
+      let n := n.eraseMacroScopes
+      !env.locals.contains n && (env.defs.find? n).isSome
+  | _ => false
+
+/-- Peek at the exposed identifier after one checked-definition head unfolding. -/
+def oneStepForcedExposedIdentHead? (env : LFDeltaConversionEnv) (e : ObjExpr) :
+    M (Option Name) := do
+  let e := eraseObjExprScopes e
+  let (head, args) := appHeadAndArgs e
+  match head with
+  | .ident n =>
+      let n := n.eraseMacroScopes
+      if env.locals.contains n then
+        return none
+      match env.defs.find? n with
+      | none => return none
+      | some value =>
+          let forced := instantiateLambdaSpine (eraseObjExprScopes value) args
+          return exposedIdentHead? forced
+  | _ => return none
+
+/-- Does one checked-definition head unfolding expose the requested identifier head? -/
+def oneStepForceExposesHead (env : LFDeltaConversionEnv) (e : ObjExpr) (head? : Option Name) :
+    M Bool := do
+  match head? with
+  | none => pure false
+  | some head =>
+      if !hasUnfoldableCheckedDefinitionHead env e then
+        pure false
+      else
+        pure ((← oneStepForcedExposedIdentHead? env e) == some head.eraseMacroScopes)
+
+/-- Choose which side to force first for an expanded-vs-compact stuck pair. -/
+def preferredDeltaForceOrder (env : LFDeltaConversionEnv) (lhs rhs : ObjExpr) :
+    M (LFDeltaConversionSide × LFDeltaConversionSide) := do
+  let lhsHead? := exposedIdentHead? lhs
+  let rhsHead? := exposedIdentHead? rhs
+  if ← oneStepForceExposesHead env rhs lhsHead? then
+    pure (.rhs, .lhs)
+  else if ← oneStepForceExposesHead env lhs rhsHead? then
+    pure (.lhs, .rhs)
+  else
+    pure (.lhs, .rhs)
+
+/-- Force the selected side of a stuck pair. -/
+def forceSelected? (env : LFDeltaConversionEnv) (side : LFDeltaConversionSide)
+    (lhs rhs : ObjExpr) : M (Option ObjExpr) :=
+  match side with
+  | .lhs => forceDemanded? env .lhs lhs
+  | .rhs => forceDemanded? env .rhs rhs
+
 /-- Cache one final pair-conversion answer. -/
 def cachePair (key : LFDeltaPairKey) (accepted : Bool) : M Unit := do
   let st ← get
@@ -2779,12 +2840,32 @@ partial def compareStructural? (env : LFDeltaConversionEnv) (lhs rhs : ObjExpr)
         pure (some true)
       else
         pure none
-  | .app f a, .app g b =>
-      if ← go env f g then
-        recordStep (.congr "app")
-        pure (some (← go env a b))
-      else
-        pure (some false)
+  | lhs@(.app ..), rhs@(.app ..) =>
+      let (lhsHead, lhsArgs) := appHeadAndArgs lhs
+      let (rhsHead, rhsArgs) := appHeadAndArgs rhs
+      match lhsHead, rhsHead with
+      | .ident n, .ident m =>
+          if n.eraseMacroScopes != m.eraseMacroScopes then
+            pure none
+          else if lhsArgs.size != rhsArgs.size then
+            pure (some false)
+          else
+            let mut ok := true
+            for i in [:lhsArgs.size] do
+              if ok then
+                unless ← go env lhsArgs[i]! rhsArgs[i]! do
+                  ok := false
+            recordStep (.sameHead n.eraseMacroScopes)
+            pure (some ok)
+      | _, _ =>
+          match lhs, rhs with
+          | .app f a, .app g b =>
+              if ← go env f g then
+                recordStep (.congr "app")
+                pure (some (← go env a b))
+              else
+                pure (some false)
+          | _, _ => pure none
   | .arrow x A B, .arrow y C D =>
       if ← go env A C then
         let ok ← compareBinderBodies env x y B D go
@@ -2877,15 +2958,24 @@ partial def convertCore (env : LFDeltaConversionEnv) (lhs rhs : ObjExpr) : M Boo
   if structural?.getD false then
     cachePair key true
     return true
-  match ← forceDemanded? env .lhs lhsW.expr with
-  | some lhs' =>
-      if ← convertCore env lhs' rhsW.expr then
+  let (firstSide, secondSide) ← preferredDeltaForceOrder env lhsW.expr rhsW.expr
+  match ← forceSelected? env firstSide lhsW.expr rhsW.expr with
+  | some forced =>
+      let accepted ←
+        match firstSide with
+        | .lhs => convertCore env forced rhsW.expr
+        | .rhs => convertCore env lhsW.expr forced
+      if accepted then
         cachePair key true
         return true
   | none => pure ()
-  match ← forceDemanded? env .rhs rhsW.expr with
-  | some rhs' =>
-      if ← convertCore env lhsW.expr rhs' then
+  match ← forceSelected? env secondSide lhsW.expr rhsW.expr with
+  | some forced =>
+      let accepted ←
+        match secondSide with
+        | .lhs => convertCore env forced rhsW.expr
+        | .rhs => convertCore env lhsW.expr forced
+      if accepted then
         cachePair key true
         return true
   | none => pure ()

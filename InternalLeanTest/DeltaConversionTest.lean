@@ -223,6 +223,44 @@ def deltaCaptureDefs : LFDefinitionValueMap :=
     (.ident `other))) (.ident `payload)
   r.accepted && r.stats.deltaSteps == 0
 
+/-- Definitions for OC2 orientation-sensitive delta conversion tests. -/
+def oc2OrientationDefs : LFDefinitionValueMap :=
+  ((({} : LFDefinitionValueMap).insert `Expanded
+    (.lam #[`x] (.app (.ident `HugeBody) (.ident `x)))).insert `Compact
+      (.lam #[`x] (.app (.ident `Expanded) (.ident `x)))).insert `Alias (.ident `payload)
+
+#guard
+  let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := false }
+  let env : LFDeltaConversionEnv := { defs := oc2OrientationDefs, options }
+  let lhs := ObjExpr.app (.ident `Expanded) (.ident `payload)
+  let rhs := ObjExpr.app (.ident `Compact) (.ident `payload)
+  let r := LFDeltaConversion.convertObjExpr env lhs rhs
+  r.accepted && !r.fallbackUsed && r.stats.forcedRhs == 1 && r.stats.forcedLhs == 0 &&
+    r.stats.forcedByName.find? `Compact == some 1 &&
+      (r.stats.forcedByName.find? `Expanded).isNone
+
+#guard
+  let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := false }
+  let env : LFDeltaConversionEnv := { defs := oc2OrientationDefs, options }
+  let lhs := ObjExpr.app (.ident `Expanded) (.ident `Alias)
+  let rhs := ObjExpr.app (.ident `Expanded) (.ident `payload)
+  let r := LFDeltaConversion.convertObjExpr env lhs rhs
+  r.accepted && !r.fallbackUsed && r.stats.forcedByName.find? `Alias == some 1 &&
+    (r.stats.forcedByName.find? `Expanded).isNone
+
+#guard
+  let options : LFDeltaConversionOptions := {
+    enabled := true
+    compareWithFullFallback := false
+    maxDeltaSteps := 0 }
+  let lhs := ObjExpr.app (.ident `Expanded) (.ident `payload)
+  let rhs := ObjExpr.app (.ident `Compact) (.ident `payload)
+  let entry := lfDefinitionComparisonProfileEntryWithOptions "oc2_orientation_fuel" {}
+    oc2OrientationDefs {} lhs rhs options
+  !entry.accepted && entry.deltaFuelExhausted? == some "delta" &&
+    (renderLFConversionProfileEntry entry).contains "heads=Expanded/Compact" &&
+      (renderLFConversionProfileEntry entry).contains "fuel_exhausted=delta"
+
 #guard
   let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := false }
   let env : LFDeltaConversionEnv := {
@@ -370,7 +408,7 @@ forced=Alias:1, forced_lhs=1, forced_rhs=0, full_fallbacks=0, fuel_exhausted=-
 info: LF conversion profile site=delta_candidate, theory=DeltaConversionProfileSmoke,
 owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=0ms,
 compact=false, fallback=false, accepted=true, unfolded=none, delta=true, delta_accepted=true,
-delta_steps=1, pair_visits=3, pair_cache_hits=1, whnf_cache_hits=3, delta_cache_hits=0,
+delta_steps=1, pair_visits=2, pair_cache_hits=1, whnf_cache_hits=1, delta_cache_hits=0,
 forced=Alias:1, forced_lhs=0, forced_rhs=1, full_fallbacks=0, fuel_exhausted=-
 -/
 #guard_msgs (whitespace := lax) in
@@ -408,7 +446,7 @@ internal theorem DeltaObjectGoalConversionSmoke.delta_change :
 info: LF conversion profile site=candidate_match, theory=DeltaObjectGoalConversionSmoke,
 owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=0ms,
 compact=false, fallback=false, accepted=true, unfolded=none, delta=true, delta_accepted=true,
-delta_steps=1, pair_visits=3, pair_cache_hits=1, whnf_cache_hits=3, delta_cache_hits=0,
+delta_steps=1, pair_visits=2, pair_cache_hits=1, whnf_cache_hits=1, delta_cache_hits=0,
 forced=Alias:1, forced_lhs=0, forced_rhs=1, full_fallbacks=0, fuel_exhausted=-
 -/
 #guard_msgs (whitespace := lax) in
@@ -419,7 +457,7 @@ forced=Alias:1, forced_lhs=0, forced_rhs=1, full_fallbacks=0, fuel_exhausted=-
 info: LF conversion profile site=object_goal_conversion, theory=DeltaObjectGoalConversionSmoke,
 owner=-:-, heads=shapeIncl/shapeIncl, sizes=7/7, normalized_sizes=7/7, elapsed=0ms,
 compact=false, fallback=false, accepted=true, unfolded=none, delta=true, delta_accepted=true,
-delta_steps=1, pair_visits=3, pair_cache_hits=1, whnf_cache_hits=3, delta_cache_hits=0,
+delta_steps=1, pair_visits=2, pair_cache_hits=1, whnf_cache_hits=1, delta_cache_hits=0,
 forced=Alias:1, forced_lhs=1, forced_rhs=0, full_fallbacks=0, fuel_exhausted=-
 -/
 #guard_msgs (whitespace := lax) in
@@ -440,7 +478,7 @@ proof.
 
 conversion failure: unsupported LF conversion: head-directed delta conversion rejected the endpoints
 and full checked LF-definition unfolding fallback is disabled
-delta_steps=0, pair_visits=3, forced=none, fuel_exhausted=delta
+delta_steps=0, pair_visits=2, forced=none, fuel_exhausted=delta
 
 normalized actual: shapeIncl emptyCtx payload payload
 normalized expected: shapeIncl emptyCtx payload payload
