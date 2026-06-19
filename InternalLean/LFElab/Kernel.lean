@@ -783,6 +783,39 @@ def emitStructuralReplayFallbackStart (theoryName : Name)
       s!"expanded_signature=true, source_size={objExprNodeCount t.judgmentExpr}, " ++
       s!"unfolded={renderLFConversionNameCounts counts}{filterSuffix}" }
 
+/-- First rule-application name in a structural replay derivation, used for fallback diagnostics. -/
+def structuralReplayFirstRuleAppName? : Kernel.KernelLFDerivation → Option Name
+  | .ruleApp ruleName _ _ _ _ => some ruleName.raw.eraseMacroScopes
+  | .assumption .. | .theoremRef .. | .certificate .. => none
+
+/-- Render a caught structural replay exception as plain diagnostic text. -/
+def structuralReplayExceptionMessage : Exception → CoreM String
+  | .error _ msg => msg.toString
+  | .internal _ _ => pure "internal exception"
+
+/-- Bounded message for compact structural replay mismatch diagnostics. -/
+def renderStructuralRuleReplayMismatchMessage (ruleName? : Option Name) (reason : String)
+    (filterSummary? : Option String := none) : String :=
+  let ruleName := ruleName?.map toString |>.getD "-"
+  let reason := truncateDiagnosticString 240 (reason.replace "\n" " ")
+  let filterSuffix := filterSummary?.map (fun summary => s!", {summary}") |>.getD ""
+  s!"rule={ruleName}, reason={reason}{filterSuffix}"
+
+/-- Emit a bounded diagnostic before compact structural replay falls back to expanded replay. -/
+def emitStructuralRuleReplayMismatch (theoryName : Name) (t : CheckedLFJudgmentTheorem)
+    (statement : Kernel.Judgment) (derivation : Kernel.KernelLFDerivation) (reason : String)
+    (filterSummary? : Option String := none) : CoreM Unit := do
+  emitLFConversionProgressEntry {
+    site := "structural_rule_replay_mismatch"
+    owner := {
+      theoryName := some theoryName
+      ownerKind := some "judgment_theorem"
+      ownerName := some t.name }
+    targetHead? := some t.judgmentHead.name
+    targetSize := kernelJudgmentNodeCount statement
+    message := renderStructuralRuleReplayMismatchMessage
+      (structuralReplayFirstRuleAppName? derivation) reason filterSummary? }
+
 /-- Checked-definition membership map for no-unfolding source-level matching. -/
 def checkedDefinitionMembershipAsLFDefinitions
     (defs : CheckedLFDefinitionValueMap) : LFDefinitionValueMap := Id.run do
@@ -1481,7 +1514,10 @@ def validateIncrementalLFTheoremKernelReplay (sig : HLSignature) (checked : Chec
         structuralStmt structuralDeriv
       pure (structuralDeriv, structuralStmt, checkedStructuralReplay,
         StructuralReplayMode.compact)
-    catch _ =>
+    catch ex =>
+      let reason ← structuralReplayExceptionMessage ex
+      emitStructuralRuleReplayMismatch sig.name t structuralStmt structuralDeriv reason
+        (some filterSummary)
       emitStructuralReplayFallbackStart sig.name lfCheckedDefValues t structuralStmt
         (some filterSummary)
       emitStructuralReplaySignatureFilterStart "expanded_signature" sig.name t.name
@@ -1564,7 +1600,10 @@ def validateIncrementalLFTheoremKernelReplayWithCache (cache : CompiledLFCheckCa
         structuralStmt structuralDeriv
       pure (structuralDeriv, structuralStmt, checkedStructuralReplay,
         StructuralReplayMode.compact)
-    catch _ =>
+    catch ex =>
+      let reason ← structuralReplayExceptionMessage ex
+      emitStructuralRuleReplayMismatch cache.theoryName t structuralStmt structuralDeriv reason
+        (some filterSummary)
       emitStructuralReplayFallbackStart cache.theoryName cache.checkedLFDefValues t structuralStmt
         (some filterSummary)
       emitStructuralReplaySignatureFilterStart "cached_expanded_signature" cache.theoryName t.name

@@ -1055,7 +1055,10 @@ def validateLFTheoremKernelReplayInContext (sig : HLSignature)
         structuralStmt structuralDeriv
       pure (structuralDeriv, structuralStmt, checkedStructuralReplay,
         StructuralReplayMode.compact, ctx)
-    catch _ =>
+    catch ex =>
+      let reason ← structuralReplayExceptionMessage ex
+      emitStructuralRuleReplayMismatch sig.name t structuralStmt structuralDeriv reason
+        (some filterSummary)
       emitStructuralReplayFallbackStart sig.name ctx.checkedLFDefValues t structuralStmt
         (some filterSummary)
       emitStructuralReplaySignatureFilterStart "block_expanded_signature" sig.name t.name

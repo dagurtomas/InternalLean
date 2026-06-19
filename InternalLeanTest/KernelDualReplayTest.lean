@@ -659,6 +659,13 @@ declare_type_theory LR1LargeRuleConclusionSmoke where
   judgment_theorem use_good_step : Good step11 := good_step
   judgment_theorem use_good_wrap (x : Obj) : Good (wrap x) := good_wrap x
 
+#guard
+  let stmt : Kernel.Judgment := { head := Kernel.KName.ofName `Good }
+  let derivation := Kernel.KernelLFDerivation.ruleApp (Kernel.KName.ofName `good_rule)
+    stmt {} [] []
+  renderStructuralRuleReplayMismatchMessage (structuralReplayFirstRuleAppName? derivation)
+    "first\nmismatch" none == "rule=good_rule, reason=first mismatch"
+
 run_cmd do
   let some checked ← Lean.Elab.Command.liftCoreM <|
       getCheckedTheory? `LR1LargeRuleConclusionSmoke
@@ -669,7 +676,11 @@ run_cmd do
     pure thm
   let checkCompactRuleTheorem (n expectedHead : Name) : Lean.Elab.Command.CommandElabM Unit := do
     let thm ← findTheorem n
-    let some canonical := thm.checkedStructuralReplay?.bind (·.canonicalStatement?)
+    let some artifact := thm.checkedStructuralReplay?
+      | throwError "LR1 large-rule theorem '{n}' did not cache replay metadata"
+    unless artifact.mode == .compact do
+      throwError "LR1 large-rule theorem '{n}' did not replay compactly"
+    let some canonical := artifact.canonicalStatement?
       | throwError "LR1 large-rule theorem '{n}' did not cache canonical metadata"
     unless canonical.sourceStatement.alphaEq canonical.canonicalStatement do
       throwError "LR1 primitive-rule source conclusion '{n}' was unfolded during canonicalization"
