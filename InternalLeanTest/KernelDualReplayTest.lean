@@ -634,3 +634,52 @@ run_cmd do
   | .error err =>
       unless err.contains "dependency" do
         throwError "expected canonical dependency audit diagnostic, got: {err}"
+
+
+declare_type_theory LR1LargeRuleConclusionSmoke where
+  syntax_sort Obj
+  lf_opaque base : Obj
+  lf_def idObj : Obj ⇒ Obj := fun x => x
+  lf_def step0 : Obj := idObj base
+  lf_def step1 : Obj := idObj step0
+  lf_def step2 : Obj := idObj step1
+  lf_def step3 : Obj := idObj step2
+  lf_def step4 : Obj := idObj step3
+  lf_def step5 : Obj := idObj step4
+  lf_def step6 : Obj := idObj step5
+  lf_def step7 : Obj := idObj step6
+  lf_def step8 : Obj := idObj step7
+  lf_def step9 : Obj := idObj step8
+  lf_def step10 : Obj := idObj step9
+  lf_def step11 : Obj := idObj step10
+  lf_def wrap : Obj ⇒ Obj := fun x => idObj x
+  judgment Good (x : Obj)
+  rule good_step : Good step11
+  rule good_wrap (x : Obj) : Good (wrap x)
+  judgment_theorem use_good_step : Good step11 := good_step
+  judgment_theorem use_good_wrap (x : Obj) : Good (wrap x) := good_wrap x
+
+run_cmd do
+  let some checked ← Lean.Elab.Command.liftCoreM <|
+      getCheckedTheory? `LR1LargeRuleConclusionSmoke
+    | throwError "missing LR1 large-rule checked theory"
+  let findTheorem (n : Name) : Lean.Elab.Command.CommandElabM CheckedLFJudgmentTheorem := do
+    let some thm := checked.lfJudgmentTheorems.find? (fun t => t.name == n)
+      | throwError "missing LR1 large-rule theorem '{n}'"
+    pure thm
+  let checkCompactRuleTheorem (n expectedHead : Name) : Lean.Elab.Command.CommandElabM Unit := do
+    let thm ← findTheorem n
+    let some canonical := thm.checkedStructuralReplay?.bind (·.canonicalStatement?)
+      | throwError "LR1 large-rule theorem '{n}' did not cache canonical metadata"
+    unless canonical.sourceStatement.alphaEq canonical.canonicalStatement do
+      throwError "LR1 primitive-rule source conclusion '{n}' was unfolded during canonicalization"
+    unless canonical.dependencies.isEmpty do
+      throwError "LR1 primitive-rule source conclusion '{n}' recorded unfolded dependencies"
+    let defValues := checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs
+    let schema ← match kernelLFRuleSchemaOfTheoremToK false defValues thm with
+      | .ok schema => pure schema
+      | .error err => throwError "LR1 theorem schema lowering failed for '{n}': {err}"
+    unless (structuralJudgmentGlobalHeadNames schema.conclusionStmt).contains expectedHead do
+      throwError "LR1 theorem schema '{n}' did not retain checked-definition head {expectedHead}"
+  checkCompactRuleTheorem `use_good_step `step11
+  checkCompactRuleTheorem `use_good_wrap `wrap

@@ -783,30 +783,62 @@ def emitStructuralReplayFallbackStart (theoryName : Name)
       s!"expanded_signature=true, source_size={objExprNodeCount t.judgmentExpr}, " ++
       s!"unfolded={renderLFConversionNameCounts counts}{filterSuffix}" }
 
+/-- Checked-definition membership map for no-unfolding source-level matching. -/
+def checkedDefinitionMembershipAsLFDefinitions
+    (defs : CheckedLFDefinitionValueMap) : LFDefinitionValueMap := Id.run do
+  let mut out : LFDefinitionValueMap := {}
+  for (n, _) in defs.toList do
+    out := out.insert n.eraseMacroScopes .sort
+  return out
+
+/-- Whether a theorem's checked proof is a primitive rule application whose instantiated
+conclusion already matches the theorem statement at source level, treating identical checked LF
+object-definition heads as atomic. -/
+def primitiveRuleConclusionMatchesTheoremSource (defValues : CheckedLFDefinitionValueMap)
+    (t : CheckedLFJudgmentTheorem) : Bool :=
+  match t.derivation? with
+  | some (.ruleApp _ stmt _ _ _) =>
+      let locals := theoremBinderFreeLocals t
+      lfExprSameCheckedDefinitionHeadsEqual (checkedDefinitionMembershipAsLFDefinitions defValues)
+        locals t.judgmentExpr stmt
+  | _ => false
+
 /-- Canonical checked-theorem statement metadata computed from checked artifacts. -/
 def canonicalStructuralStatementOfTheorem (defValues : CheckedLFDefinitionValueMap)
     (t : CheckedLFJudgmentTheorem) : Except String CheckedCanonicalStructuralStatement := do
   let locals := theoremBinderFreeLocals t
   let sourceStatement ← checkedLFJudgmentTheoremStatementToK t
-  let restrictedDefs := checkedLFDefinitionValuesOfMapForCheckedExpr defValues locals
-    t.checkedJudgmentExpr
-  let canonicalCheckedExpr := unfoldLFDefinitionsInCheckedExpr restrictedDefs locals
-    t.checkedJudgmentExpr
-  let canonicalStatement ← checkedLFJudgmentExprToKJudgment canonicalCheckedExpr t.judgmentHead {}
-    locals
-  pure {
-    sourceStatement := sourceStatement
-    canonicalStatement := canonicalStatement
-    canonicalCheckedExpr := canonicalCheckedExpr
-    dependencies := restrictedDefs.toList.map (fun entry => entry.1.eraseMacroScopes) |>.toArray }
+  if primitiveRuleConclusionMatchesTheoremSource defValues t then
+    pure {
+      sourceStatement := sourceStatement
+      canonicalStatement := sourceStatement
+      canonicalCheckedExpr := t.checkedJudgmentExpr
+      dependencies := #[] }
+  else
+    let restrictedDefs := checkedLFDefinitionValuesOfMapForCheckedExpr defValues locals
+      t.checkedJudgmentExpr
+    let canonicalCheckedExpr := unfoldLFDefinitionsInCheckedExpr restrictedDefs locals
+      t.checkedJudgmentExpr
+    let canonicalStatement ← checkedLFJudgmentExprToKJudgment canonicalCheckedExpr t.judgmentHead {}
+      locals
+    pure {
+      sourceStatement := sourceStatement
+      canonicalStatement := canonicalStatement
+      canonicalCheckedExpr := canonicalCheckedExpr
+      dependencies := restrictedDefs.toList.map (fun entry => entry.1.eraseMacroScopes) |>.toArray }
 
 /-- Log bounded canonicalization metadata under the existing conversion profile options. -/
 def logCanonicalStructuralStatementProfile (theoryName : Name)
     (defValues : CheckedLFDefinitionValueMap) (t : CheckedLFJudgmentTheorem)
     (canonical : CheckedCanonicalStructuralStatement) : CoreM Unit := do
   let locals := theoremBinderFreeLocals t
-  let restrictedDefs := checkedLFDefinitionValuesOfMapForCheckedExpr defValues locals
-    t.checkedJudgmentExpr
+  let unfoldedCounts :=
+    if canonical.dependencies.isEmpty then
+      {}
+    else
+      let restrictedDefs := checkedLFDefinitionValuesOfMapForCheckedExpr defValues locals
+        t.checkedJudgmentExpr
+      countCheckedLFDefinitionUnfolds restrictedDefs locals t.checkedJudgmentExpr
   logLFConversionProfileEntry {
     site := "theorem_statement_canonicalization"
     owner := {
@@ -822,7 +854,7 @@ def logCanonicalStructuralStatementProfile (theoryName : Name)
     compactSucceeded := canonical.sourceStatement.alphaEq canonical.canonicalStatement
     fullUnfoldFallback := false
     accepted := true
-    unfoldedCounts := countCheckedLFDefinitionUnfolds restrictedDefs locals t.checkedJudgmentExpr }
+    unfoldedCounts := unfoldedCounts }
 
 /-- Audit cached canonical statement metadata against the current checked artifacts. -/
 def checkCanonicalStructuralStatementArtifact (defValues : CheckedLFDefinitionValueMap)

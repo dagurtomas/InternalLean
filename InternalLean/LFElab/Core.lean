@@ -2919,6 +2919,84 @@ def profileEntry (site : String) (owner : LFConversionProfileOwner)
 
 end LFDeltaConversion
 
+/-- Decompose an LF object application into a head and argument spine. -/
+partial def lfExprAppHeadAndArgs : ObjExpr → ObjExpr × Array ObjExpr
+  | .app f a =>
+      let (head, args) := lfExprAppHeadAndArgs f
+      (head, args.push a)
+  | e => (e, #[])
+
+/-- Return a checked LF-definition application head and arguments when the head is not local. -/
+def checkedLFDefinitionApp? (defs : LFDefinitionValueMap) (locals : NameSet)
+    (e : ObjExpr) : Option (Name × Array ObjExpr) :=
+  match lfExprAppHeadAndArgs e with
+  | (.ident n, args) =>
+      let n := n.eraseMacroScopes
+      if locals.contains n || (defs.find? n).isNone then none else some (n, args)
+  | _ => none
+
+/-- Structural equality that treats matching checked LF-definition heads as atomic constructors.
+
+This is a no-unfolding fast path: same checked-definition heads must have the same arity, and all
+arguments are compared recursively. Local binders shadow global checked definitions. -/
+partial def lfExprSameCheckedDefinitionHeadsEqual (defs : LFDefinitionValueMap)
+    (locals : NameSet) (actual expected : ObjExpr) : Bool :=
+  let actual := eraseObjExprScopes actual
+  let expected := eraseObjExprScopes expected
+  if lfExprAlphaEq actual expected then
+    true
+  else
+    match checkedLFDefinitionApp? defs locals actual,
+        checkedLFDefinitionApp? defs locals expected with
+    | some (actualHead, actualArgs), some (expectedHead, expectedArgs) => Id.run do
+        if actualHead != expectedHead || actualArgs.size != expectedArgs.size then
+          return false
+        for i in [:actualArgs.size] do
+          unless lfExprSameCheckedDefinitionHeadsEqual defs locals actualArgs[i]!
+              expectedArgs[i]! do
+            return false
+        return true
+    | _, _ =>
+        match actual, expected with
+        | .ident n, .ident m => n.eraseMacroScopes == m.eraseMacroScopes
+        | .sort, .sort => true
+        | .univ u, .univ v => u == v
+        | .app f a, .app g b =>
+            lfExprSameCheckedDefinitionHeadsEqual defs locals f g &&
+              lfExprSameCheckedDefinitionHeadsEqual defs locals a b
+        | .arrow x A B, .arrow y A' B'
+        | .arrow x A B, .funArrow y A' B'
+        | .funArrow x A B, .arrow y A' B'
+        | .funArrow x A B, .funArrow y A' B' =>
+            x.map (·.eraseMacroScopes) == y.map (·.eraseMacroScopes) &&
+              lfExprSameCheckedDefinitionHeadsEqual defs locals A A' &&
+                let bodyLocals :=
+                  match x with
+                  | some n => locals.insert n.eraseMacroScopes
+                  | none => locals
+                lfExprSameCheckedDefinitionHeadsEqual defs bodyLocals B B'
+        | .sigma x A B, .sigma y A' B' =>
+            x.map (·.eraseMacroScopes) == y.map (·.eraseMacroScopes) &&
+              lfExprSameCheckedDefinitionHeadsEqual defs locals A A' &&
+                let bodyLocals :=
+                  match x with
+                  | some n => locals.insert n.eraseMacroScopes
+                  | none => locals
+                lfExprSameCheckedDefinitionHeadsEqual defs bodyLocals B B'
+        | .pair a b, .pair a' b' =>
+            lfExprSameCheckedDefinitionHeadsEqual defs locals a a' &&
+              lfExprSameCheckedDefinitionHeadsEqual defs locals b b'
+        | .fst e, .fst e' | .snd e, .snd e' =>
+            lfExprSameCheckedDefinitionHeadsEqual defs locals e e'
+        | .lam xs body, .lam ys body' =>
+            xs.map (·.eraseMacroScopes) == ys.map (·.eraseMacroScopes) &&
+              let bodyLocals := xs.foldl (fun acc n => acc.insert n.eraseMacroScopes) locals
+              lfExprSameCheckedDefinitionHeadsEqual defs bodyLocals body body'
+        | .jeq lhs rhs, .jeq lhs' rhs' =>
+            lfExprSameCheckedDefinitionHeadsEqual defs locals lhs lhs' &&
+              lfExprSameCheckedDefinitionHeadsEqual defs locals rhs rhs'
+        | _, _ => false
+
 /-- Acceptedness for the current cheap-then-full LF-definition comparison policy. -/
 def lfDefinitionComparisonAccepted (defs : LFDefinitionValueMap) (locals : NameSet)
     (actual expected : ObjExpr) : Bool :=
@@ -2930,6 +3008,8 @@ def lfDefinitionComparisonAccepted (defs : LFDefinitionValueMap) (locals : NameS
     let actualCheap := normalizeLFExprForConversionWithLocals {} locals actual
     let expectedCheap := normalizeLFExprForConversionWithLocals {} locals expected
     if lfExprAlphaEq actualCheap expectedCheap then
+      true
+    else if lfExprSameCheckedDefinitionHeadsEqual defs locals actualCheap expectedCheap then
       true
     else
       let (restrictedDefs, _) := restrictLFDefinitionValuesForExprs defs locals #[actual, expected]
@@ -2955,6 +3035,8 @@ def lfDefinitionComparisonAcceptedWithOptions (defs : LFDefinitionValueMap) (loc
     let actualCheap := normalizeLFExprForConversionWithLocals {} locals actual
     let expectedCheap := normalizeLFExprForConversionWithLocals {} locals expected
     if lfExprAlphaEq actualCheap expectedCheap then
+      true
+    else if lfExprSameCheckedDefinitionHeadsEqual defs locals actualCheap expectedCheap then
       true
     else
       let (restrictedDefs, _) := restrictLFDefinitionValuesForExprs defs locals #[actual, expected]
@@ -2989,7 +3071,9 @@ def lfDefinitionComparisonProfileEntry (site : String) (owner : LFConversionProf
   let alphaSucceeded := lfExprAlphaEq actual expected
   let actualCheap := normalizeLFExprForConversionWithLocals {} locals actual
   let expectedCheap := normalizeLFExprForConversionWithLocals {} locals expected
-  let compactSucceeded := alphaSucceeded || lfExprAlphaEq actualCheap expectedCheap
+  let compactSucceeded :=
+    alphaSucceeded || lfExprAlphaEq actualCheap expectedCheap ||
+      lfExprSameCheckedDefinitionHeadsEqual defs locals actualCheap expectedCheap
   let fallbackRan := !compactSucceeded
   let (accepted, normActual?, normExpected?, counts) :=
     if fallbackRan then
@@ -3035,7 +3119,9 @@ def lfDefinitionComparisonProfileEntryWithOptions (site : String)
   let alphaSucceeded := lfExprAlphaEq actual expected
   let actualCheap := normalizeLFExprForConversionWithLocals {} locals actual
   let expectedCheap := normalizeLFExprForConversionWithLocals {} locals expected
-  let compactSucceeded := alphaSucceeded || lfExprAlphaEq actualCheap expectedCheap
+  let compactSucceeded :=
+    alphaSucceeded || lfExprAlphaEq actualCheap expectedCheap ||
+      lfExprSameCheckedDefinitionHeadsEqual defs locals actualCheap expectedCheap
   if compactSucceeded then
     {
       site, owner
