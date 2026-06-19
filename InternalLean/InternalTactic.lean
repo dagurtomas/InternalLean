@@ -649,6 +649,17 @@ def emitInternalProofProgress (site : String) (target : InternalDefTarget)
     stepCount?
     message }
 
+/-- Emit bounded object-goal conversion start diagnostics with both endpoints summarized. -/
+def emitInternalObjectGoalConversionStart (site : String) (target : InternalDefTarget)
+    (actual expected : ObjExpr) (message : String := "") : CoreM Unit := do
+  let expectedHead := expected |> lfExprHeadIdent? |>.map toString |>.getD "-"
+  let suffix :=
+    s!"actual_head={(lfExprHeadIdent? actual).map toString |>.getD "-"}, " ++
+    s!"actual_size={objExprNodeCount actual}, expected_head={expectedHead}, " ++
+    s!"expected_size={objExprNodeCount expected}"
+  let message := if message.isEmpty then suffix else s!"{message}, {suffix}"
+  emitInternalProofProgress site target (some actual) message
+
 /-- Check object goals through the direct-LF conversion interface. -/
 def checkObjectGoalConversion (sig : HLSignature) (_levels : Array Name) (ctx : Array HLBinding)
     (a b : ObjExpr) (deltaOptions : LFDeltaConversionOptions := {}) :
@@ -3287,10 +3298,18 @@ def evalInternalNativeResolvedTacticStep (stx : Syntax) (step : InternalNativeTa
             "Available object hypotheses:",
             renderInternalObjectContext goal.ctx])
       closeInternalNativeMainGoal mvarId goal (.ident hypName)
-  | .showGoal targetExpr | .changeGoal targetExpr =>
+  | .showGoal targetExpr =>
       let (session, mvarId, goal) ← getInternalNativeMainGoal stx
-      emitInternalProofProgress "native_object_conversion" goal.target (some goal.targetExpr)
-        "show/change: before goal conversion"
+      emitInternalObjectGoalConversionStart "native_show_conversion" goal.target goal.targetExpr
+        targetExpr "show: before goal conversion"
+      match objectGoalConversionCheck session.sig session.levels goal.ctx goal.targetExpr
+          targetExpr session.deltaOptions with
+      | .ok _ => replaceInternalNativeMainGoal mvarId { goal with targetExpr }
+      | .error err => throwErrorAt stx err
+  | .changeGoal targetExpr =>
+      let (session, mvarId, goal) ← getInternalNativeMainGoal stx
+      emitInternalObjectGoalConversionStart "native_change_conversion" goal.target goal.targetExpr
+        targetExpr "change: before goal conversion"
       match objectGoalConversionCheck session.sig session.levels goal.ctx goal.targetExpr
           targetExpr session.deltaOptions with
       | .ok _ => replaceInternalNativeMainGoal mvarId { goal with targetExpr }

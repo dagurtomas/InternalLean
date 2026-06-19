@@ -1831,8 +1831,12 @@ mutual
               renderInternalObjectContext goal.ctx])
         pure (#[{ stx, step := .assumption }], #[])
     | `(tactic| show $newTarget:term) =>
+        liftCoreM <| emitInternalProofProgress "native_show_target_elab" target
+          (some goal.target) "show: target elaboration start"
         let newTargetExpr ← withRef newTarget.raw <|
           elabInternalNativeQuotedTerm target sig goal.ctx none newTarget
+        liftCoreM <| emitInternalObjectGoalConversionStart "native_show_preelab_conversion"
+          target goal.target newTargetExpr "show: before pre-elaboration goal conversion"
         unless objectGoalsConvertible sig levels goal.ctx goal.target newTargetExpr
             goal.deltaOptions do
           throwErrorAt newTarget.raw (String.intercalate "\n" [
@@ -1845,8 +1849,12 @@ mutual
         pure (#[{ stx, step := .showGoal newTargetExpr }],
           #[{ goal with target := newTargetExpr }])
     | `(tactic| change $newTarget:term) =>
+        liftCoreM <| emitInternalProofProgress "native_change_target_elab" target
+          (some goal.target) "change: target elaboration start"
         let newTargetExpr ← withRef newTarget.raw <|
           elabInternalNativeQuotedTerm target sig goal.ctx none newTarget
+        liftCoreM <| emitInternalObjectGoalConversionStart "native_change_preelab_conversion"
+          target goal.target newTargetExpr "change: before pre-elaboration goal conversion"
         match objectGoalConversionCheck sig levels goal.ctx goal.target newTargetExpr
             goal.deltaOptions with
         | .ok _ =>
@@ -2451,6 +2459,9 @@ elab_rules (kind := internalTheorem) : command
 elab_rules (kind := internalTheoremBinder) : command
   | `($[$doc?:docComment]? internal theorem $declName:ident $binders:ttBinder* :
       $typeStx:ttExpr := $bodyStx:term) => do
+      if bodyStx.raw.isOfKind `Lean.Parser.Term.byTactic then
+        let target ← resolveInternalDefTarget declName.getId
+        emitInternalNativeTacticPrepareProgress target 0 "binder-command-start"
       let params ← binders.mapM elabHLBinding
       elabCanonicalLeanQuotedTheoremChecked doc? declName declName.getId binders params typeStx
         bodyStx
