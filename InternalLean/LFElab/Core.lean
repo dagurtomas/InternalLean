@@ -80,6 +80,11 @@ register_option internalLean.conversion.delta.includeSyntaxDefs : Bool := {
   descr := "include checked syntax_def bodies in experimental LF delta conversion environments"
 }
 
+register_option internalLean.conversion.ruleConclusion.delta : Bool := {
+  defValue := true
+  descr := "enable focused head-directed LF delta conversion for primitive rule conclusions"
+}
+
 initialize registerTraceClass `InternalLean.conversion
 initialize registerTraceClass `InternalLean.conversion.unfold
 initialize registerTraceClass `InternalLean.conversion.delta
@@ -2254,6 +2259,20 @@ def getLFDeltaConversionOptions : CoreM LFDeltaConversionOptions := do
     includeSyntaxDefs :=
       (← getBoolOption `internalLean.conversion.delta.includeSyntaxDefs) }
 
+/-- Delta-conversion options for the focused primitive-rule conclusion matcher.
+
+This enables the head-directed converter for rule conclusions by default while preserving the
+ordinary broad LF/object conversion option. Fuel and full-fallback settings are still read from the
+shared delta-conversion options. -/
+def getLFRuleConclusionDeltaConversionOptions : CoreM LFDeltaConversionOptions := do
+  let options ← getLFDeltaConversionOptions
+  let compareWithFullFallback ← getBoolOption `internalLean.conversion.delta.compareFallback true
+  let options := { options with compareWithFullFallback }
+  if (← getBoolOption `internalLean.conversion.ruleConclusion.delta true) then
+    pure { options with enabled := true }
+  else
+    pure options
+
 /-- Environment for one experimental delta-conversion run. -/
 structure LFDeltaConversionEnv where
   defs : LFDefinitionValueMap := {}
@@ -3319,10 +3338,14 @@ def emitLFDefinitionComparisonStartProgress (site : String) (owner : LFConversio
 /-- Profile one source-level LF-definition comparison without changing acceptance. -/
 def lfExprEqModuloDefinitionsWithLocalsProfiled (site : String)
     (owner : LFConversionProfileOwner) (defs : LFDefinitionValueMap) (locals : NameSet)
-    (actual expected : ObjExpr) : CoreM Bool := do
+    (actual expected : ObjExpr) (deltaOptions? : Option LFDeltaConversionOptions := none) :
+    CoreM Bool := do
   let profile ← getBoolOption `internalLean.conversion.profile
   let traceFallbacks ← getBoolOption `internalLean.conversion.traceFallbacks
-  let deltaOptions ← getLFDeltaConversionOptions
+  let deltaOptions ←
+    match deltaOptions? with
+    | some options => pure options
+    | none => getLFDeltaConversionOptions
   if profile || traceFallbacks || deltaOptions.trace then
     if profile || deltaOptions.trace then
       emitLFDefinitionComparisonStartProgress site owner actual expected

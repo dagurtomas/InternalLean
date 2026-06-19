@@ -1479,11 +1479,17 @@ partial def checkLFJudgmentDerivation (sig : HLSignature) (rules : Array Checked
         subst := subst.insert param.name (eraseObjExprScopes arg)
       let expectedConclusion := eraseObjExprScopes (substLFParams subst appliedRule.conclusionExpr)
       let actualStatement := eraseObjExprScopes expectedStatement
+      let ruleConclusionDeltaOptions ← getLFRuleConclusionDeltaConversionOptions
+      let ruleConclusionMatchSite :=
+        if statementMatchSite == "theorem_statement_match" then
+          "rule_conclusion_match"
+        else
+          statementMatchSite
       let statementsMatch ← lfExprEqModuloDefinitionsWithLocalsProfiled
-        statementMatchSite
+        ruleConclusionMatchSite
         { theoryName := some sig.name, ownerKind := some "judgment_theorem",
           ownerName := some theoremName }
-        defValues localNames actualStatement expectedConclusion
+        defValues localNames actualStatement expectedConclusion (some ruleConclusionDeltaOptions)
       if !statementsMatch then
         let mentioned :=
           collectLFDefinitionMentions defValues localNames (collectLFDefinitionMentions defValues

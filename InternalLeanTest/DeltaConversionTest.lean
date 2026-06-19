@@ -254,6 +254,97 @@ def deltaCaptureDefs : LFDefinitionValueMap :=
     (.ident `Alias) (.ident `payload)
   r.accepted && r.fallbackUsed && r.stats.fullFallbacks == 1
 
+set_option internalLean.conversion.delta false
+
+run_cmd do
+  let focused ← Lean.Elab.Command.liftCoreM getLFRuleConclusionDeltaConversionOptions
+  unless focused.enabled do
+    throwError "LR3 focused rule-conclusion delta is disabled unexpectedly"
+
+/-- A small source-level mismatch that focused primitive-rule conclusion delta can solve. -/
+def lr3RuleConclusionActual : ObjExpr :=
+  .app (.app (.app (.ident `shapeIncl) (.ident `emptyCtx)) (.ident `Alias)) (.ident `Alias)
+
+/-- The matching primitive-rule conclusion before source aliases are unfolded. -/
+def lr3RuleConclusionExpected : ObjExpr :=
+  .app (.app (.app (.ident `shapeIncl) (.ident `emptyCtx)) (.ident `payload)) (.ident `payload)
+
+#guard
+  let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := false }
+  let entry := lfDefinitionComparisonProfileEntryWithOptions "rule_conclusion_match" {}
+    deltaSmokeDefs {} lr3RuleConclusionActual lr3RuleConclusionExpected options
+  entry.accepted && !entry.fullUnfoldFallback &&
+    entry.deltaStats?.map (fun stats => stats.deltaSteps) == some 1 &&
+      entry.deltaStats?.bind (fun stats => stats.forcedByName.find? `Alias) == some 1
+
+#guard
+  let options : LFDeltaConversionOptions := {
+    enabled := true
+    compareWithFullFallback := false
+    maxDeltaSteps := 0 }
+  let entry := lfDefinitionComparisonProfileEntryWithOptions "rule_conclusion_match" {}
+    deltaSmokeDefs {} lr3RuleConclusionActual lr3RuleConclusionExpected options
+  !entry.accepted && !entry.fullUnfoldFallback && entry.deltaFuelExhausted? == some "delta"
+
+#guard
+  let options : LFDeltaConversionOptions := { enabled := true, compareWithFullFallback := false }
+  let defs := deltaSmokeDefs.insert `Wrap (.lam #[`x] (.app (.ident `box) (.ident `x)))
+  let actual := .app (.ident `Wrap) (.ident `Alias)
+  let expected := .app (.ident `Wrap) (.ident `payload)
+  let entry := lfDefinitionComparisonProfileEntryWithOptions "rule_conclusion_match" {}
+    defs {} actual expected options
+  entry.accepted && !entry.fullUnfoldFallback &&
+    entry.deltaStats?.bind (fun stats => stats.forcedByName.find? `Alias) == some 1 &&
+      entry.deltaStats?.bind (fun stats => stats.forcedByName.find? `Wrap) == none
+
+set_option internalLean.conversion.delta false
+set_option internalLean.conversion.delta.compareFallback false
+set_option internalLean.conversion.delta.maxDeltaSteps 100000
+
+declare_type_theory LR3FocusedRuleConclusionDeltaSmoke where
+  syntax_sort Ctx
+  syntax_sort Shape (Γ : Ctx)
+  judgment shapeIncl (Γ : Ctx) (S : Shape Γ) (T : Shape Γ)
+  lf_opaque emptyCtx : Ctx
+  lf_opaque payload : Shape emptyCtx
+  lf_def Alias : Shape emptyCtx := payload
+  rule shape_refl (S : Shape emptyCtx) where
+    conclusion : shapeIncl emptyCtx S S
+  judgment_theorem alias_by_payload_rule : shapeIncl emptyCtx Alias Alias :=
+    shape_refl payload
+
+set_option internalLean.conversion.delta.maxDeltaSteps 0
+
+/--
+error: judgment_theorem 'bad' in type theory 'LR3FocusedRuleConclusionFuelReject' applies rule
+'shape_refl' but the statement does not match the rule conclusion after LF-definition normalization:
+LF-definition normalization could not match expressions.
+actual: shapeIncl emptyCtx Alias Alias
+expected: shapeIncl emptyCtx payload payload
+normalized actual: shapeIncl emptyCtx payload payload
+normalized expected: shapeIncl emptyCtx payload payload
+LF definitions mentioned before unfolding: Alias
+LF definitions unfolded: Alias
+Normalization policy: LF matching unfolds earlier checked `lf_def` values, beta-reduces
+explicit LF lambdas, contracts structural eta-redexes, and alpha-renames binders
+to avoid local-binder capture.
+-/
+#guard_msgs (whitespace := lax) in
+declare_type_theory LR3FocusedRuleConclusionFuelReject where
+  syntax_sort Ctx
+  syntax_sort Shape (Γ : Ctx)
+  judgment shapeIncl (Γ : Ctx) (S : Shape Γ) (T : Shape Γ)
+  lf_opaque emptyCtx : Ctx
+  lf_opaque payload : Shape emptyCtx
+  lf_def Alias : Shape emptyCtx := payload
+  rule shape_refl (S : Shape emptyCtx) where
+    conclusion : shapeIncl emptyCtx S S
+  judgment_theorem bad : shapeIncl emptyCtx Alias Alias :=
+    shape_refl payload
+
+set_option internalLean.conversion.delta.compareFallback true
+set_option internalLean.conversion.delta.maxDeltaSteps 100000
+
 declare_type_theory DeltaConversionProfileSmoke where
   syntax_sort Ctx
   syntax_sort Shape (Γ : Ctx)
