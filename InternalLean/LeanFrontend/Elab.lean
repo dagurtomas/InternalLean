@@ -1835,49 +1835,44 @@ mutual
           (some goal.target) "show: target elaboration start"
         let newTargetExpr ← withRef newTarget.raw <|
           elabInternalNativeQuotedTerm target sig goal.ctx none newTarget
-        liftCoreM <| emitInternalObjectGoalConversionStart "native_show_preelab_conversion"
-          target goal.target newTargetExpr "show: before pre-elaboration goal conversion"
-        unless objectGoalsConvertible sig levels goal.ctx goal.target newTargetExpr
-            goal.deltaOptions do
-          throwErrorAt newTarget.raw (String.intercalate "\n" [
-            "native tactic `show` cannot replace the current object goal",
-            s!"  {diagnosticObjExprString goal.target}",
-            "with non-convertible/non-identical object goal",
-            s!"  {diagnosticObjExprString newTargetExpr}",
-            "",
-            "This is object judgmental conversion, not Lean equality."])
-        pure (#[{ stx, step := .showGoal newTargetExpr }],
-          #[{ goal with target := newTargetExpr }])
+        match ← liftCoreM <| checkObjectGoalConversionWithDiagnostics
+            "native_show_preelab_conversion" target sig levels goal.ctx goal.target
+            newTargetExpr goal.deltaOptions with
+        | .ok _ =>
+            pure (#[{ stx, step := .showGoal newTargetExpr }],
+              #[{ goal with target := newTargetExpr }])
+        | .error _ =>
+            throwErrorAt newTarget.raw (String.intercalate "\n" [
+              "native tactic `show` cannot replace the current object goal",
+              s!"  {diagnosticObjExprString goal.target}",
+              "with non-convertible/non-identical object goal",
+              s!"  {diagnosticObjExprString newTargetExpr}",
+              "",
+              "This is object judgmental conversion, not Lean equality."])
     | `(tactic| change $newTarget:term) =>
         liftCoreM <| emitInternalProofProgress "native_change_target_elab" target
           (some goal.target) "change: target elaboration start"
         let newTargetExpr ← withRef newTarget.raw <|
           elabInternalNativeQuotedTerm target sig goal.ctx none newTarget
-        liftCoreM <| emitInternalObjectGoalConversionStart "native_change_preelab_conversion"
-          target goal.target newTargetExpr "change: before pre-elaboration goal conversion"
-        match objectGoalConversionCheck sig levels goal.ctx goal.target newTargetExpr
-            goal.deltaOptions with
+        match ← liftCoreM <| checkObjectGoalConversionWithDiagnostics
+            "native_change_preelab_conversion" target sig levels goal.ctx goal.target
+            newTargetExpr goal.deltaOptions with
         | .ok _ =>
             pure (#[{ stx, step := .changeGoal newTargetExpr }],
               #[{ goal with target := newTargetExpr }])
         | .error err =>
-            if objectGoalsConvertible sig levels goal.ctx goal.target newTargetExpr
-                goal.deltaOptions then
-              pure (#[{ stx, step := .changeGoal newTargetExpr }],
-                #[{ goal with target := newTargetExpr }])
-            else
-              throwErrorAt newTarget.raw (String.intercalate "\n" [
-                "native tactic `change` cannot replace the current object goal",
-                s!"  {diagnosticObjExprString goal.target}",
-                s!"with\n  {diagnosticObjExprString newTargetExpr}",
-                "",
-                "The endpoints are not judgmentally convertible in the active object theory.",
-                "This tactic checks object conversion evidence; it does not use Lean equality or \
-                  an internal equality proof.",
-                "",
-                s!"conversion failure: {err}",
-                "",
-                objectGoalNormalizationMismatchString sig goal.ctx goal.target newTargetExpr])
+            throwErrorAt newTarget.raw (String.intercalate "\n" [
+              "native tactic `change` cannot replace the current object goal",
+              s!"  {diagnosticObjExprString goal.target}",
+              s!"with\n  {diagnosticObjExprString newTargetExpr}",
+              "",
+              "The endpoints are not judgmentally convertible in the active object theory.",
+              "This tactic checks object conversion evidence; it does not use Lean equality or \
+                an internal equality proof.",
+              "",
+              s!"conversion failure: {err}",
+              "",
+              objectGoalNormalizationMismatchString sig goal.ctx goal.target newTargetExpr])
     | `(tactic| have $name:ident : $typeTerm:term := $proofTerm:term) =>
         if internalObjectContextHasName goal.ctx name.getId then
           throwErrorAt name.raw "native tactic `have {name.getId}` failed: local name \
@@ -1936,28 +1931,30 @@ def elabInternalNativeResolvedSteps (target : InternalDefTarget) (sig : HLSignat
 /-- Emit one immediate progress line around native object-tactic elaboration. -/
 def emitInternalNativeTacticProgress (target : InternalDefTarget) (targetExpr : ObjExpr)
     (stepCount : Nat) (message : String) : CommandElabM Unit := do
-  liftCoreM <| emitLFConversionProgressEntry {
-    site := "native_tactic_compile"
-    owner := {
-      theoryName := some target.theoryName
-      ownerKind := some "internal"
-      ownerName := some target.localName }
-    targetHead? := lfExprHeadIdent? targetExpr
-    targetSize := objExprNodeCount targetExpr
-    stepCount? := some stepCount
-    message }
+  if (← liftCoreM lfConversionProgressEnabled) then
+    liftCoreM <| emitLFConversionProgressEntry {
+      site := "native_tactic_compile"
+      owner := {
+        theoryName := some target.theoryName
+        ownerKind := some "internal"
+        ownerName := some target.localName }
+      targetHead? := lfExprHeadIdent? targetExpr
+      targetSize := objExprNodeCount targetExpr
+      stepCount? := some stepCount
+      message }
 
 /-- Emit immediate progress before a native tactic target expression has been elaborated. -/
 def emitInternalNativeTacticPrepareProgress (target : InternalDefTarget)
     (stepCount : Nat) (message : String) : CommandElabM Unit := do
-  liftCoreM <| emitLFConversionProgressEntry {
-    site := "native_tactic_prepare"
-    owner := {
-      theoryName := some target.theoryName
-      ownerKind := some "internal"
-      ownerName := some target.localName }
-    stepCount? := some stepCount
-    message }
+  if (← liftCoreM lfConversionProgressEnabled) then
+    liftCoreM <| emitLFConversionProgressEntry {
+      site := "native_tactic_prepare"
+      owner := {
+        theoryName := some target.theoryName
+        ownerKind := some "internal"
+        ownerName := some target.localName }
+      stepCount? := some stepCount
+      message }
 
 /-- Elaborate a native object-tactic block to an object proof term. -/
 def elabInternalNativeByTerm (target : InternalDefTarget) (sig : HLSignature)
@@ -2025,13 +2022,21 @@ def elabCanonicalLeanQuotedTheoremChecked (doc? : Option (TSyntax ``Parser.Comma
     elabInternalTheoremSorryWithBinders doc? declNameStx declName #[] binders typeStx
     return ()
   let target ← resolveInternalDefTarget declName
+  emitInternalNativeTacticPrepareProgress target 0
+    s!"theorem-command-start body_kind={bodyStx.raw.getKind}"
   if bodyStx.raw.isOfKind `Lean.Parser.Term.byTactic then
     emitInternalNativeTacticPrepareProgress target 0 "scan"
   let nativeSteps? := internalNativeLeanBySteps? bodyStx.raw
+  let nativeStepCount := nativeSteps?.map (·.size) |>.getD 0
+  emitInternalNativeTacticPrepareProgress target nativeStepCount
+    s!"native-step-scan steps={nativeStepCount}, body_kind={bodyStx.raw.getKind}"
   if let some steps := nativeSteps? then
     emitInternalNativeTacticPrepareProgress target steps.size "start"
+  emitInternalNativeTacticPrepareProgress target nativeStepCount "type-elaboration-start"
   let typeExpr ← elabObjExpr typeStx
+  emitInternalNativeTacticProgress target typeExpr nativeStepCount "type-elaboration-done"
   let (params, typeExpr) ← elaborateLeanQuotedHeaderImplicits target params typeExpr
+  emitInternalNativeTacticProgress target typeExpr nativeStepCount "header-implicits-done"
   if let some steps := nativeSteps? then
     if internalNativeStepsContainDirectSorry steps then
       elabInternalTheoremSorryWithBinders doc? declNameStx declName #[] binders typeStx

@@ -73,6 +73,27 @@ run_cmd do
     fallbackDefinitionSummary? := some "env=restricted, defs=Alias, def_count=1" }).contains
       "fallback_defs=env=restricted, defs=Alias, def_count=1"
 
+#guard
+  (renderLFConversionProgressEntry {
+    site := "object_goal_full_fallback_start"
+    owner := {
+      theoryName := some `LFConversionProfileSmoke
+      ownerKind := some "internal"
+      ownerName := some `diag }
+    targetHead? := some `shapeIncl
+    targetSize := 7
+    message := "site=native_change_conversion, actual_head=shapeIncl, actual_size=7, \
+      expected_head=shapeIncl, expected_size=7, fallback_defs=defs=Alias, def_count=1" }).contains
+        "owner=internal:diag"
+
+#guard
+  let forced := ({} : Lean.NameMap Nat).insert `Compact 3
+  let result : LFDeltaConversionResult := {
+    stats := { deltaSteps := 3, pairVisits := 5, forcedByName := forced }
+    fuelExhausted? := some "delta" }
+  let summary := objectGoalDeltaFailureSummary result
+  summary.contains "forced=Compact:3" && summary.contains "fuel_exhausted=delta"
+
 declare_type_theory LFConversionProfileSmoke where
   syntax_sort Ctx
   syntax_sort Shape (Γ : Ctx)

@@ -2536,12 +2536,22 @@ def flushLFDiagnosticStreams : CoreM Unit := do
   (← IO.getStdout).flush
   (← IO.getStderr).flush
 
+/-- Write a progress line to process stderr, bypassing command-isolated streams when
+possible. -/
+def emitLFConversionProgressLine (line : String) : CoreM Unit := do
+  try
+    IO.FS.withFile "/dev/stderr" IO.FS.Mode.append fun h => do
+      h.putStrLn line
+      h.flush
+  catch _ =>
+    IO.eprintln line
+    flushLFDiagnosticStreams
+
 /-- Emit a bounded progress line immediately for paths that may time out before Lean flushes
 ordinary messages. -/
 def emitLFConversionProgressEntry (entry : LFConversionProgressEntry) : CoreM Unit := do
   if (← lfConversionProgressEnabled) then
-    IO.eprintln (renderLFConversionProgressEntry entry)
-    flushLFDiagnosticStreams
+    emitLFConversionProgressLine (renderLFConversionProgressEntry entry)
 
 namespace LFDeltaConversion
 

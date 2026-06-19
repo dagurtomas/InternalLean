@@ -637,28 +637,50 @@ def objectGoalDeltaFailureSummary (result : LFDeltaConversionResult) : String :=
 def emitInternalProofProgress (site : String) (target : InternalDefTarget)
     (targetExpr? : Option ObjExpr := none) (message : String := "")
     (stepIndex? : Option Nat := none) (stepCount? : Option Nat := none) : CoreM Unit := do
-  emitLFConversionProgressEntry {
-    site
-    owner := {
-      theoryName := some target.theoryName
-      ownerKind := some "internal"
-      ownerName := some target.localName }
-    targetHead? := targetExpr?.bind lfExprHeadIdent?
-    targetSize := targetExpr?.map objExprNodeCount |>.getD 0
-    stepIndex?
-    stepCount?
-    message }
+  if (← lfConversionProgressEnabled) then
+    emitLFConversionProgressEntry {
+      site
+      owner := {
+        theoryName := some target.theoryName
+        ownerKind := some "internal"
+        ownerName := some target.localName }
+      targetHead? := targetExpr?.bind lfExprHeadIdent?
+      targetSize := targetExpr?.map objExprNodeCount |>.getD 0
+      stepIndex?
+      stepCount?
+      message }
 
 /-- Emit bounded object-goal conversion start diagnostics with both endpoints summarized. -/
 def emitInternalObjectGoalConversionStart (site : String) (target : InternalDefTarget)
     (actual expected : ObjExpr) (message : String := "") : CoreM Unit := do
-  let expectedHead := expected |> lfExprHeadIdent? |>.map toString |>.getD "-"
-  let suffix :=
-    s!"actual_head={(lfExprHeadIdent? actual).map toString |>.getD "-"}, " ++
-    s!"actual_size={objExprNodeCount actual}, expected_head={expectedHead}, " ++
-    s!"expected_size={objExprNodeCount expected}"
-  let message := if message.isEmpty then suffix else s!"{message}, {suffix}"
-  emitInternalProofProgress site target (some actual) message
+  if (← lfConversionProgressEnabled) then
+    let expectedHead := expected |> lfExprHeadIdent? |>.map toString |>.getD "-"
+    let suffix :=
+      s!"actual_head={(lfExprHeadIdent? actual).map toString |>.getD "-"}, " ++
+      s!"actual_size={objExprNodeCount actual}, expected_head={expectedHead}, " ++
+      s!"expected_size={objExprNodeCount expected}"
+    let message := if message.isEmpty then suffix else s!"{message}, {suffix}"
+    emitInternalProofProgress site target (some actual) message
+
+/-- Emit a bounded delta-conversion summary for object-goal diagnostics. -/
+def emitInternalObjectGoalDeltaSummary (site : String) (target : InternalDefTarget)
+    (actual expected : ObjExpr) (result : LFDeltaConversionResult) (message : String) :
+    CoreM Unit := do
+  if (← lfConversionProgressEnabled) then
+    let fuel := result.fuelExhausted?.getD "-"
+    let summary :=
+      s!"{message}, accepted={result.accepted}, delta_steps={result.stats.deltaSteps}, " ++
+      s!"pair_visits={result.stats.pairVisits}, " ++
+      s!"forced={renderLFConversionNameCounts result.stats.forcedByName}, " ++
+      s!"fuel_exhausted={fuel}"
+    emitInternalObjectGoalConversionStart site target actual expected summary
+
+/-- Emit a bounded progress line before the full checked-definition fallback starts. -/
+def emitInternalObjectGoalFullFallbackStart (site : String) (target : InternalDefTarget)
+    (actual expected : ObjExpr) (defs : LFDefinitionValueMap) (message : String) : CoreM Unit := do
+  if (← lfConversionProgressEnabled) then
+    emitInternalObjectGoalConversionStart site target actual expected
+      s!"{message}, fallback_defs={renderLFConversionDefinitionSummary defs}"
 
 /-- Check object goals through the direct-LF conversion interface. -/
 def checkObjectGoalConversion (sig : HLSignature) (_levels : Array Name) (ctx : Array HLBinding)
@@ -697,6 +719,53 @@ def checkObjectGoalConversion (sig : HLSignature) (_levels : Array Name) (ctx : 
           objectGoalDeltaFailureSummary deltaResult]
     else
       checkObjectGoalConversionFullFallback defs locals a b
+
+/-- Check object goals while emitting bounded progress before potentially expensive paths. -/
+def checkObjectGoalConversionWithDiagnostics (site : String) (target : InternalDefTarget)
+    (sig : HLSignature) (_levels : Array Name) (ctx : Array HLBinding) (a b : ObjExpr)
+    (deltaOptions : LFDeltaConversionOptions := {}) :
+    CoreM (Except String CheckedLFObjectConversion) := do
+  let defs := objectTacticLFDefinitionValues sig
+  let locals := internalObjectLocalNames ctx
+  let a := eraseObjExprScopes a
+  let b := eraseObjExprScopes b
+  emitInternalObjectGoalConversionStart site target a b "start"
+  if objectGoalCheapEq a b then
+    return .ok <| mkObjectGoalConversionSuccess defs locals .syntacticRefl a b a b
+  else
+    let aCheap := normalizeLFExprForConversionWithLocals {} locals a
+    let bCheap := normalizeLFExprForConversionWithLocals {} locals b
+    if objectGoalCheapEq aCheap bCheap then
+      return .ok <| mkObjectGoalConversionSuccess defs locals .compactNormalization a b
+        aCheap bCheap
+    else if deltaOptions.enabled then
+      let env : LFDeltaConversionEnv := { defs, locals, options := deltaOptions }
+      let deltaResult := LFDeltaConversion.convertObjExpr env a b
+      emitInternalObjectGoalDeltaSummary "object_goal_delta_summary" target a b deltaResult
+        s!"site={site}"
+      if deltaResult.accepted then
+        return .ok <| mkObjectGoalConversionSuccess defs locals .deltaConversion a b
+          deltaResult.lhsDisplay deltaResult.rhsDisplay
+          (forcedLFDeltaDefinitionNames deltaResult.stats)
+      else if deltaOptions.compareWithFullFallback then
+        emitInternalObjectGoalFullFallbackStart "object_goal_full_fallback_start" target a b defs
+          s!"site={site}, reason=delta_rejected"
+        match checkObjectGoalConversionFullFallback defs locals a b with
+        | .ok conversion => return .ok conversion
+        | .error err =>
+            return .error <| String.intercalate "\n" [
+              err,
+              "head-directed delta conversion also rejected the endpoints",
+              objectGoalDeltaFailureSummary deltaResult]
+      else
+        return .error <| String.intercalate "\n" [
+          "unsupported LF conversion: head-directed delta conversion rejected the endpoints and \
+            full checked LF-definition unfolding fallback is disabled",
+          objectGoalDeltaFailureSummary deltaResult]
+    else
+      emitInternalObjectGoalFullFallbackStart "object_goal_full_fallback_start" target a b defs
+        s!"site={site}, reason=delta_disabled"
+      return checkObjectGoalConversionFullFallback defs locals a b
 
 /-- Build a bounded profile entry for the current object-goal conversion checker. -/
 def objectGoalConversionProfileEntry (sig : HLSignature) (ctx : Array HLBinding)
@@ -3300,18 +3369,14 @@ def evalInternalNativeResolvedTacticStep (stx : Syntax) (step : InternalNativeTa
       closeInternalNativeMainGoal mvarId goal (.ident hypName)
   | .showGoal targetExpr =>
       let (session, mvarId, goal) ← getInternalNativeMainGoal stx
-      emitInternalObjectGoalConversionStart "native_show_conversion" goal.target goal.targetExpr
-        targetExpr "show: before goal conversion"
-      match objectGoalConversionCheck session.sig session.levels goal.ctx goal.targetExpr
-          targetExpr session.deltaOptions with
+      match ← checkObjectGoalConversionWithDiagnostics "native_show_conversion" goal.target
+          session.sig session.levels goal.ctx goal.targetExpr targetExpr session.deltaOptions with
       | .ok _ => replaceInternalNativeMainGoal mvarId { goal with targetExpr }
       | .error err => throwErrorAt stx err
   | .changeGoal targetExpr =>
       let (session, mvarId, goal) ← getInternalNativeMainGoal stx
-      emitInternalObjectGoalConversionStart "native_change_conversion" goal.target goal.targetExpr
-        targetExpr "change: before goal conversion"
-      match objectGoalConversionCheck session.sig session.levels goal.ctx goal.targetExpr
-          targetExpr session.deltaOptions with
+      match ← checkObjectGoalConversionWithDiagnostics "native_change_conversion" goal.target
+          session.sig session.levels goal.ctx goal.targetExpr targetExpr session.deltaOptions with
       | .ok _ => replaceInternalNativeMainGoal mvarId { goal with targetExpr }
       | .error err => throwErrorAt stx err
   | .rwRule rawName symm =>
