@@ -3203,7 +3203,9 @@ def lfDefinitionComparisonProfileEntryWithOptionsLogged (site : String)
   let alphaSucceeded := lfExprAlphaEq actual expected
   let actualCheap := normalizeLFExprForConversionWithLocals {} locals actual
   let expectedCheap := normalizeLFExprForConversionWithLocals {} locals expected
-  let compactSucceeded := alphaSucceeded || lfExprAlphaEq actualCheap expectedCheap
+  let compactSucceeded :=
+    alphaSucceeded || lfExprAlphaEq actualCheap expectedCheap ||
+      lfExprSameCheckedDefinitionHeadsEqual defs locals actualCheap expectedCheap
   if compactSucceeded then
     return {
       site, owner

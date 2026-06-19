@@ -42,6 +42,23 @@ def ar5FallbackSummaryDefs : LFDefinitionValueMap :=
 
 #guard renderLFConversionDefinitionSummary ar5FallbackSummaryDefs == "defs=Alias, def_count=1"
 
+run_cmd do
+  let defs : LFDefinitionValueMap := ({} : LFDefinitionValueMap).insert `d (.ident `body)
+  let A : ObjExpr := .ident `A
+  let B : ObjExpr := .ident `B
+  let actual : ObjExpr := .app (.ident `d) (.arrow (some `x) A B)
+  let expected : ObjExpr := .app (.ident `d) (.funArrow (some `x) A B)
+  let accepted := lfDefinitionComparisonAccepted defs {} actual expected
+  let entry ← Lean.Elab.Command.liftCoreM <|
+    lfDefinitionComparisonProfileEntryWithOptionsLogged "logged_same_head"
+      { theoryName := some `LR1LoggedComparisonSmoke } defs {} actual expected {}
+  unless accepted do
+    throwError "non-logged acceptedness did not exercise LR1 same-head fast path"
+  unless entry.accepted do
+    throwError "logged profile path rejected a same-head fast-path comparison"
+  unless entry.compactSucceeded do
+    throwError "logged profile path accepted but did not mark compact"
+
 #guard
   (renderLFConversionProfileEntry {
     site := "definition_full_fallback_start"
