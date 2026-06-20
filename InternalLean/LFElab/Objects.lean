@@ -671,6 +671,14 @@ def checkLFJudgmentTheoremInContext (ctx : IntraBlockLFCheckContext)
     | throwError "judgment_theorem '{t.name}' in type theory '{sig.name}' has unchecked proof \
       '{diagnosticObjExprString t.proof}'; expected a local theorem assumption, checked \
         judgment theorem, or LF rule application"
+  let checkedDerivationStatement? ←
+    match derivation with
+    | .ruleApp .. =>
+        let checkedStatement ←
+          resolveLFExpr sig globalHeads theoremLocals "judgment_theorem" t.name
+            "checked proof statement" (checkedLFDerivationStatement derivation)
+        pure (some checkedStatement)
+    | _ => pure none
   let ruleSummary := summarizeLFRuleApplication? derivation
   let checkedTheorem : CheckedLFJudgmentTheorem := {
     name := t.name.eraseMacroScopes
@@ -685,7 +693,8 @@ def checkLFJudgmentTheoremInContext (ctx : IntraBlockLFCheckContext)
     proofRuleArgs := ruleSummary.proofRuleArgs
     premiseTheorems := ruleSummary.premiseTheorems
     sideConditionCertificateNames := ruleSummary.sideConditionCertificateNames
-    derivation? := some derivation }
+    derivation? := some derivation
+    checkedDerivationStatement? := checkedDerivationStatement? }
   let theoremName := t.name.eraseMacroScopes
   let availableStatements :=
     if t.binders.isEmpty then

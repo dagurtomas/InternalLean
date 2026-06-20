@@ -1212,6 +1212,8 @@ structure CheckedLFJudgmentTheorem where
   /-- Shallow checked proof replay tree, when the proof uses checked rule/theorem-reference
   syntax rather than an opaque placeholder. -/
   derivation? : Option CheckedLFDerivation := none
+  /-- Resolved statement carried by the shallow checked proof replay tree, when available. -/
+  checkedDerivationStatement? : Option CheckedLFExpr := none
   /-- Structural-kernel replay artifact lowered directly from the checked LF derivation. -/
   structuralKernelDerivation? : Option Kernel.KernelLFDerivation := none
   /-- Historical full checked structural-kernel replay wrapper. -/

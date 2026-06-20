@@ -824,6 +824,47 @@ def checkedDefinitionMembershipAsLFDefinitions
     out := out.insert n.eraseMacroScopes .sort
   return out
 
+/-- Erase checked-head metadata from a checked LF expression. -/
+partial def checkedLFExprToObjExpr : CheckedLFExpr → ObjExpr
+  | .ident h => .ident h.name.eraseMacroScopes
+  | .sort => .sort
+  | .univ u => .univ u
+  | .app f a => .app (checkedLFExprToObjExpr f) (checkedLFExprToObjExpr a)
+  | .arrow x A B =>
+      .arrow (x.map Name.eraseMacroScopes) (checkedLFExprToObjExpr A)
+        (checkedLFExprToObjExpr B)
+  | .sigma x A B =>
+      .sigma (x.map Name.eraseMacroScopes) (checkedLFExprToObjExpr A)
+        (checkedLFExprToObjExpr B)
+  | .pair a b => .pair (checkedLFExprToObjExpr a) (checkedLFExprToObjExpr b)
+  | .fst e => .fst (checkedLFExprToObjExpr e)
+  | .snd e => .snd (checkedLFExprToObjExpr e)
+  | .lam xs body => .lam (xs.map Name.eraseMacroScopes) (checkedLFExprToObjExpr body)
+  | .jeq lhs rhs => .jeq (checkedLFExprToObjExpr lhs) (checkedLFExprToObjExpr rhs)
+
+/-- Checked LF definitions as plain object-expression values for bounded delta conversion. -/
+def checkedLFDefinitionValuesAsLFDefinitions
+    (defs : CheckedLFDefinitionValueMap) : LFDefinitionValueMap := Id.run do
+  let mut out : LFDefinitionValueMap := {}
+  for (n, value) in defs.toList do
+    out := out.insert n.eraseMacroScopes (checkedLFExprToObjExpr value)
+  return out
+
+/-- Definition names forced by a bounded delta-conversion run during kernel metadata work. -/
+def kernelForcedLFDeltaDefinitionNames (stats : LFDeltaConversionStats) : Array Name :=
+  stats.forcedByName.toList.map (fun item => item.1.eraseMacroScopes) |>.toArray
+
+/-- Canonicalization-time delta conversion options.  This is a bounded, no-fallback attempt used
+only after ordinary LF checking and structural replay have accepted a theorem. -/
+def canonicalStatementDeltaOptions : LFDeltaConversionOptions := {
+  enabled := true
+  compareWithFullFallback := false
+  trace := false
+  maxPairVisits := 200000
+  maxDeltaSteps := 100000
+  maxWhnfDepth := 100000
+  includeSyntaxDefs := false }
+
 /-- Whether a theorem's checked proof is a primitive rule application whose instantiated
 conclusion already matches the theorem statement at source level, treating identical checked LF
 object-definition heads as atomic. -/
@@ -835,6 +876,33 @@ def primitiveRuleConclusionMatchesTheoremSource (defValues : CheckedLFDefinition
       lfExprSameCheckedDefinitionHeadsEqual (checkedDefinitionMembershipAsLFDefinitions defValues)
         locals t.judgmentExpr stmt
   | _ => false
+
+/-- If bounded delta conversion proves that a primitive rule conclusion is definitionally equal to
+its theorem source statement, choose a no-unfold canonical expression.  Binder-free theorems may use
+the already checked proof conclusion for replay-context entries; theorem-rule schemas keep their
+source conclusion so existing theorem-reference replay continues to instantiate the source rule.
+This does not affect theorem acceptedness; it runs only after ordinary checking and structural
+replay have succeeded. -/
+def primitiveRuleConclusionDeltaCanonical? (defValues : CheckedLFDefinitionValueMap)
+    (t : CheckedLFJudgmentTheorem) : Option (CheckedLFExpr × Array Name) :=
+  match t.derivation?, t.checkedDerivationStatement? with
+  | some (.ruleApp _ stmt _ _ _), some checkedStmt =>
+      let locals := theoremBinderFreeLocals t
+      let defs := checkedLFDefinitionValuesAsLFDefinitions defValues
+      let (restrictedDefs, _) := restrictLFDefinitionValuesForExprs defs locals
+        #[t.judgmentExpr, stmt]
+      let env : LFDeltaConversionEnv := {
+        defs := restrictedDefs
+        locals := locals
+        options := canonicalStatementDeltaOptions }
+      let result := LFDeltaConversion.convertObjExpr env t.judgmentExpr stmt
+      if result.accepted then
+        let canonicalCheckedExpr :=
+          if t.binders.isEmpty then checkedStmt else t.checkedJudgmentExpr
+        some (canonicalCheckedExpr, kernelForcedLFDeltaDefinitionNames result.stats)
+      else
+        none
+  | _, _ => none
 
 /-- Canonical checked-theorem statement metadata computed from checked artifacts. -/
 def canonicalStructuralStatementOfTheorem (defValues : CheckedLFDefinitionValueMap)
@@ -848,30 +916,41 @@ def canonicalStructuralStatementOfTheorem (defValues : CheckedLFDefinitionValueM
       canonicalCheckedExpr := t.checkedJudgmentExpr
       dependencies := #[] }
   else
-    let restrictedDefs := checkedLFDefinitionValuesOfMapForCheckedExpr defValues locals
-      t.checkedJudgmentExpr
-    let canonicalCheckedExpr := unfoldLFDefinitionsInCheckedExpr restrictedDefs locals
-      t.checkedJudgmentExpr
-    let canonicalStatement ← checkedLFJudgmentExprToKJudgment canonicalCheckedExpr t.judgmentHead {}
-      locals
-    pure {
-      sourceStatement := sourceStatement
-      canonicalStatement := canonicalStatement
-      canonicalCheckedExpr := canonicalCheckedExpr
-      dependencies := restrictedDefs.toList.map (fun entry => entry.1.eraseMacroScopes) |>.toArray }
+    match primitiveRuleConclusionDeltaCanonical? defValues t with
+    | some (canonicalCheckedExpr, dependencies) =>
+        let canonicalStatement ← checkedLFJudgmentExprToKJudgment canonicalCheckedExpr
+          t.judgmentHead {} locals
+        pure {
+          sourceStatement := sourceStatement
+          canonicalStatement := canonicalStatement
+          canonicalCheckedExpr := canonicalCheckedExpr
+          dependencies := dependencies }
+    | none =>
+        let restrictedDefs := checkedLFDefinitionValuesOfMapForCheckedExpr defValues locals
+          t.checkedJudgmentExpr
+        let canonicalCheckedExpr := unfoldLFDefinitionsInCheckedExpr restrictedDefs locals
+          t.checkedJudgmentExpr
+        let canonicalStatement ← checkedLFJudgmentExprToKJudgment canonicalCheckedExpr
+          t.judgmentHead {} locals
+        pure {
+          sourceStatement := sourceStatement
+          canonicalStatement := canonicalStatement
+          canonicalCheckedExpr := canonicalCheckedExpr
+          dependencies := restrictedDefs.toList.map (fun entry => entry.1.eraseMacroScopes)
+            |>.toArray }
 
 /-- Log bounded canonicalization metadata under the existing conversion profile options. -/
 def logCanonicalStructuralStatementProfile (theoryName : Name)
-    (defValues : CheckedLFDefinitionValueMap) (t : CheckedLFJudgmentTheorem)
+    (_defValues : CheckedLFDefinitionValueMap) (t : CheckedLFJudgmentTheorem)
     (canonical : CheckedCanonicalStructuralStatement) : CoreM Unit := do
-  let locals := theoremBinderFreeLocals t
+  let profile ← getBoolOption `internalLean.conversion.profile
+  let traceFallbacks ← getBoolOption `internalLean.conversion.traceFallbacks
+  let deltaProfile ← getBoolOption `internalLean.conversion.delta.profile
+  unless profile || traceFallbacks || deltaProfile do
+    return ()
   let unfoldedCounts :=
-    if canonical.dependencies.isEmpty then
-      {}
-    else
-      let restrictedDefs := checkedLFDefinitionValuesOfMapForCheckedExpr defValues locals
-        t.checkedJudgmentExpr
-      countCheckedLFDefinitionUnfolds restrictedDefs locals t.checkedJudgmentExpr
+    canonical.dependencies.foldl
+      (fun counts n => incrementLFConversionNameCount counts n.eraseMacroScopes) {}
   logLFConversionProfileEntry {
     site := "theorem_statement_canonicalization"
     owner := {
@@ -1247,7 +1326,11 @@ def kernelLFRuleSchemaOfTheoremToK (normalize? : Bool)
     | none => pure ()
   let conclusionExpr :=
     match t.checkedStructuralReplay?.bind (·.canonicalStatement?) with
-    | some canonical => canonical.canonicalCheckedExpr
+    | some canonical =>
+        if normalize? && canonical.sourceStatement.alphaEq canonical.canonicalStatement then
+          norm canonical.canonicalCheckedExpr
+        else
+          canonical.canonicalCheckedExpr
     | none => norm t.checkedJudgmentExpr
   pure {
     name := Kernel.KName.ofName (lfJudgmentTheoremKernelRuleName t.name)

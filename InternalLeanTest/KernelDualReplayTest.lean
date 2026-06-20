@@ -694,3 +694,59 @@ run_cmd do
       throwError "LR1 theorem schema '{n}' did not retain checked-definition head {expectedHead}"
   checkCompactRuleTheorem `use_good_step `step11
   checkCompactRuleTheorem `use_good_wrap `wrap
+
+
+declare_type_theory OC3DeltaCanonicalStatementSmoke where
+  syntax_sort Obj
+  lf_opaque base : Obj
+  lf_def idObj : Obj ⇒ Obj := fun x => x
+  lf_def compact : Obj := idObj base
+  lf_def compactOf : Obj ⇒ Obj := fun x => idObj x
+  judgment Good (x : Obj)
+  rule good_compact : Good compact
+  rule good_compact_of (x : Obj) : Good (compactOf x)
+  judgment_theorem expanded_source : Good (idObj base) := good_compact
+  judgment_theorem expanded_source_param (x : Obj) : Good (idObj x) := good_compact_of x
+
+run_cmd do
+  let some checked ← Lean.Elab.Command.liftCoreM <|
+      getCheckedTheory? `OC3DeltaCanonicalStatementSmoke
+    | throwError "missing OC3 delta-canonical checked theory"
+  let some thm := checked.lfJudgmentTheorems.find? (fun t => t.name == `expanded_source)
+    | throwError "missing OC3 expanded_source theorem"
+  let some artifact := thm.checkedStructuralReplay?
+    | throwError "OC3 expanded_source did not cache replay metadata"
+  unless artifact.mode == .compact do
+    throwError "OC3 expanded_source did not replay compactly"
+  let some canonical := artifact.canonicalStatement?
+    | throwError "OC3 expanded_source did not cache canonical metadata"
+  if canonical.sourceStatement.alphaEq canonical.canonicalStatement then
+    throwError "OC3 delta canonicalization unexpectedly kept the expanded source statement"
+  unless canonical.dependencies.contains `compact do
+    throwError "OC3 delta canonicalization did not record the forced compact definition"
+  let defValues := checkedLFDefinitionValues checked.lfSyntaxDefs checked.lfObjectDefs
+  let schema ← match kernelLFRuleSchemaOfTheoremToK false defValues thm with
+    | .ok schema => pure schema
+    | .error err => throwError "OC3 theorem schema lowering failed: {err}"
+  let heads := structuralJudgmentGlobalHeadNames schema.conclusionStmt
+  unless heads.contains `compact do
+    throwError "OC3 theorem schema did not retain the compact proof-conclusion head"
+  if heads.contains `idObj then
+    throwError "OC3 theorem schema reintroduced the expanded source head"
+  let some paramThm := checked.lfJudgmentTheorems.find? (fun t =>
+      t.name == `expanded_source_param)
+    | throwError "missing OC3 expanded_source_param theorem"
+  let some paramCanonical := paramThm.checkedStructuralReplay?.bind (·.canonicalStatement?)
+    | throwError "OC3 expanded_source_param did not cache canonical metadata"
+  unless paramCanonical.sourceStatement.alphaEq paramCanonical.canonicalStatement do
+    throwError "OC3 parameterized theorem schema stopped preserving the source conclusion"
+  unless paramCanonical.dependencies.contains `compactOf do
+    throwError "OC3 parameterized theorem did not record its delta-forced definition"
+  let paramSchema ← match kernelLFRuleSchemaOfTheoremToK false defValues paramThm with
+    | .ok schema => pure schema
+    | .error err => throwError "OC3 parameterized schema lowering failed: {err}"
+  let paramHeads := structuralJudgmentGlobalHeadNames paramSchema.conclusionStmt
+  unless paramHeads.contains `idObj do
+    throwError "OC3 parameterized theorem schema did not retain the source head"
+  if paramHeads.contains `compactOf then
+    throwError "OC3 parameterized theorem schema used the proof-conclusion head"
