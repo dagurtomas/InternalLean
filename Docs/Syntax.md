@@ -768,16 +768,24 @@ short progress lines around quoted-body elaboration, native candidate matching, 
 and native object-conversion searches, which helps diagnose long internal proof elaboration without
 printing proof terms.
 
-Head-directed delta conversion remains opt-in:
+Broad head-directed delta conversion remains opt-in for object-goal and candidate matching:
 
 ```lean
 set_option internalLean.conversion.delta true
 ```
 
-The delta path is useful for focused folded-definition comparisons. It is not enabled by default;
-turn it on only for local experiments or files that have been checked against the current fallback
-policy. `internalLean.conversion.delta.compareFallback` and the delta fuel options are developer
-controls for those experiments.
+The broad delta path is useful for local folded-definition experiments, but it is not enabled
+as a global default. Two narrower internal paths are separate from this option:
+
+- primitive rule-conclusion matching uses a focused bounded delta path by default, after
+  syntactic, compact-normalization, and same-checked-definition-head fast paths;
+- checked theorem canonical metadata may use a bounded no-full-fallback delta shortcut after the
+  ordinary theorem checker and structural replay have accepted the theorem.
+
+These focused paths keep broad object-goal and candidate delta conversion opt-in and do not change
+LF checking or structural replay trust boundaries. `internalLean.conversion.ruleConclusion.delta`
+controls the focused primitive-rule conclusion path. `internalLean.conversion.delta.compareFallback`
+and the delta fuel options are developer controls for broad-delta experiments.
 
 ## Deprecated syntax
 
